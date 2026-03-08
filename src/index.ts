@@ -1,284 +1,144 @@
 export interface Env {
   DB: D1Database;
-  MANIFEST_URL: string;
-  DISCORD_WEBHOOK_URL: string;
-  ADMIN_TOKEN: string;
-  PRICE_GUARD_KEY: string;
-  IGNORED_IP?: string;
+  MANIFEST_R2: R2Bucket;
 }
 
-// Returns a UTC date as YYYY-MM-DD
+type CounterColumn = "update_checks" | "downloads" | "errors";
+
+const MANIFEST_PATH = "/manifest/core/stable.json";
+const MANIFEST_KEY = "manifest/core/stable.json";
+const RELEASE_ARTIFACT_PATH = /^\/releases\/([^/]+)\/TGC-BUS-Core-\1\.zip$/;
+
 function utcDay(date: Date = new Date()): string {
   return date.toISOString().slice(0, 10);
 }
 
-// Returns the first day of the UTC month containing the given date, as YYYY-MM-DD
-function utcMonthStart(date: Date = new Date()): string {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1))
-    .toISOString()
-    .slice(0, 10);
-}
-
-// Upsert-increment a single counter column for the given day
-async function incrementCounter(
-  db: D1Database,
-  day: string,
-  column: "update_checks" | "downloads" | "errors" | "calculations"
-): Promise<void> {
+async function incrementCounter(db: D1Database, day: string, column: CounterColumn): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO metrics_daily(day, update_checks, downloads, errors, calculations) VALUES (?,0,0,0,0) ON CONFLICT(day) DO NOTHING"
+      "INSERT INTO metrics_daily(day, update_checks, downloads, errors) VALUES (?,0,0,0) ON CONFLICT(day) DO NOTHING"
     )
     .bind(day)
     .run();
+
   await db
     .prepare(`UPDATE metrics_daily SET ${column} = ${column} + 1 WHERE day = ?`)
     .bind(day)
     .run();
 }
 
-// Fetch manifest JSON; returns parsed object or null on failure
-async function fetchManifest(url: string): Promise<Record<string, unknown> | null> {
+async function incrementErrorCounterBestEffort(db: D1Database, day: string): Promise<void> {
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return (await res.json()) as Record<string, unknown>;
+    await incrementCounter(db, day, "errors");
   } catch {
-    return null;
+    // Best effort only; avoid masking original failures.
   }
 }
 
-// Aggregate totals for a range of days
-async function queryTotals(
-  db: D1Database,
-  startDay: string,
-  endDay: string
-): Promise<{ update_checks: number; downloads: number; errors: number; calculations: number }> {
+async function readManifestFromR2(env: Env): Promise<{ raw: string; parsed: Record<string, unknown> }> {
+  const object = await env.MANIFEST_R2.get(MANIFEST_KEY);
+  if (!object) {
+    throw new Error("manifest_not_found");
+  }
+
+  const raw = await object.text();
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return { raw, parsed };
+}
+
+function extractLatestDownloadUrl(manifest: Record<string, unknown>): string | null {
+  const latest = manifest.latest as Record<string, unknown> | undefined;
+  const download = latest?.download as Record<string, unknown> | undefined;
+  const value = download?.url;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function isValidReleaseArtifactUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    return RELEASE_ARTIFACT_PATH.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+async function querySummary(db: D1Database): Promise<{ update_checks: number; downloads: number; errors: number }> {
   const row = await db
     .prepare(
-      "SELECT COALESCE(SUM(update_checks),0) AS update_checks, COALESCE(SUM(downloads),0) AS downloads, COALESCE(SUM(errors),0) AS errors, COALESCE(SUM(calculations),0) AS calculations FROM metrics_daily WHERE day >= ? AND day <= ?"
+      "SELECT COALESCE(SUM(update_checks),0) AS update_checks, COALESCE(SUM(downloads),0) AS downloads, COALESCE(SUM(errors),0) AS errors FROM metrics_daily"
     )
-    .bind(startDay, endDay)
-    .first<{ update_checks: number; downloads: number; errors: number; calculations: number }>();
-  return row ?? { update_checks: 0, downloads: 0, errors: 0, calculations: 0 };
+    .first<{ update_checks: number; downloads: number; errors: number }>();
+
+  return row ?? { update_checks: 0, downloads: 0, errors: 0 };
 }
 
 export default {
-  // ─── HTTP handler ───────────────────────────────────────────────────────────
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const today = utcDay();
-    const clientIP = request.headers.get("CF-Connecting-IP");
+    const day = utcDay();
 
-    // /pg/ping
-    if (url.pathname === "/pg/ping") {
-      const pgCorsHeaders = {
-        "Access-Control-Allow-Origin": "https://priceguard.truegoodcraft.ca",
-      };
+    if (request.method !== "GET") {
+      return Response.json({ ok: false, error: "method_not_allowed" }, { status: 405 });
+    }
 
-      if (request.method === "OPTIONS") {
-        return new Response(null, {
-          status: 204,
+    if (url.pathname === MANIFEST_PATH) {
+      try {
+        const manifest = await readManifestFromR2(env);
+        return new Response(manifest.raw, {
+          status: 200,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      } catch {
+        await incrementErrorCounterBestEffort(env.DB, day);
+        return Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 });
+      }
+    }
+
+    if (url.pathname === "/update/check") {
+      try {
+        await incrementCounter(env.DB, day, "update_checks");
+        const manifest = await readManifestFromR2(env);
+        return new Response(manifest.raw, {
+          status: 200,
           headers: {
-            ...pgCorsHeaders,
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, X-PG-Key",
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json",
           },
         });
-      }
-
-      if (request.method !== "POST") {
-        return new Response(null, { status: 405, headers: pgCorsHeaders });
-      }
-
-      const priceGuardKey = request.headers.get("X-PG-Key");
-      if (priceGuardKey !== env.PRICE_GUARD_KEY) {
-        return new Response(null, { status: 401, headers: pgCorsHeaders });
-      }
-
-      const origin = request.headers.get("Origin");
-      if (origin !== "https://priceguard.truegoodcraft.ca") {
-        return new Response(null, { status: 403, headers: pgCorsHeaders });
-      }
-
-      try {
-        await incrementCounter(env.DB, today, "calculations");
       } catch {
-        return new Response(null, { status: 500, headers: pgCorsHeaders });
-      }
-
-      return new Response(null, { status: 204, headers: pgCorsHeaders });
-    }
-
-    // GET /update/check
-    if (request.method === "GET" && url.pathname === "/update/check") {
-      let counterError = false;
-      if (!(clientIP && env.IGNORED_IP && clientIP === env.IGNORED_IP)) {
-        try {
-          await incrementCounter(env.DB, today, "update_checks");
-        } catch {
-          counterError = true;
-        }
-      }
-
-      const manifest = await fetchManifest(env.MANIFEST_URL);
-
-      if (counterError && !(clientIP && env.IGNORED_IP && clientIP === env.IGNORED_IP)) {
-        try {
-          await incrementCounter(env.DB, today, "errors");
-        } catch {
-          // best-effort
-        }
-      }
-
-      if (!manifest) {
+        await incrementErrorCounterBestEffort(env.DB, day);
         return Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 });
       }
-
-      return new Response(JSON.stringify(manifest), {
-        headers: { "Content-Type": "application/json" },
-      });
     }
 
-    // GET /download/latest
-    if (request.method === "GET" && url.pathname === "/download/latest") {
-      let counterError = false;
-      if (!(clientIP && env.IGNORED_IP && clientIP === env.IGNORED_IP)) {
-        try {
-          await incrementCounter(env.DB, today, "downloads");
-        } catch {
-          counterError = true;
+    if (url.pathname === "/download/latest") {
+      try {
+        await incrementCounter(env.DB, day, "downloads");
+        const manifest = await readManifestFromR2(env);
+        const latestUrl = extractLatestDownloadUrl(manifest.parsed);
+
+        if (!latestUrl || !isValidReleaseArtifactUrl(latestUrl)) {
+          await incrementErrorCounterBestEffort(env.DB, day);
+          return Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 });
         }
-      }
 
-      const manifest = await fetchManifest(env.MANIFEST_URL);
-
-      if (counterError && !(clientIP && env.IGNORED_IP && clientIP === env.IGNORED_IP)) {
-        try {
-          await incrementCounter(env.DB, today, "errors");
-        } catch {
-          // best-effort
-        }
-      }
-
-      if (!manifest) {
+        return Response.redirect(latestUrl, 302);
+      } catch {
+        await incrementErrorCounterBestEffort(env.DB, day);
         return Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 });
       }
-
-      const latestUrl =
-        (manifest as any)?.latest?.download?.url ??
-        (manifest as any)?.latest?.url;
-      if (typeof latestUrl !== "string" || !latestUrl) {
-        return Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 });
-      }
-
-      return Response.redirect(latestUrl, 302);
     }
 
-    // GET /report  (protected)
-    if (request.method === "GET" && url.pathname === "/report") {
-      const token = request.headers.get("X-Admin-Token");
-      if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN) {
-        return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    if (url.pathname === "/report") {
+      try {
+        const summary = await querySummary(env.DB);
+        return Response.json(summary, { status: 200 });
+      } catch {
+        await incrementErrorCounterBestEffort(env.DB, day);
+        return Response.json({ ok: false, error: "report_unavailable" }, { status: 503 });
       }
-
-      const todayDate = new Date();
-      const yesterdayDate = new Date(todayDate);
-      yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
-
-      const yesterday = utcDay(yesterdayDate);
-      const sevenDaysAgoDate = new Date(todayDate);
-      sevenDaysAgoDate.setUTCDate(sevenDaysAgoDate.getUTCDate() - 6);
-      const sevenDaysAgo = utcDay(sevenDaysAgoDate);
-      const monthStart = utcMonthStart(todayDate);
-
-      const [todayTotals, yesterdayTotals, last7, mtd] = await Promise.all([
-        queryTotals(env.DB, today, today),
-        queryTotals(env.DB, yesterday, yesterday),
-        queryTotals(env.DB, sevenDaysAgo, today),
-        queryTotals(env.DB, monthStart, today),
-      ]);
-
-      return Response.json({
-        today: todayTotals,
-        yesterday: yesterdayTotals,
-        last_7_days: last7,
-        month_to_date: mtd,
-      });
     }
 
     return Response.json({ ok: false, error: "not_found" }, { status: 404 });
-  },
-
-  // ─── Scheduled cron ─────────────────────────────────────────────────────────
-  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
-    const todayDate = new Date();
-    const today = utcDay(todayDate);
-
-    const yesterdayDate = new Date(todayDate);
-    yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
-    const yesterday = utcDay(yesterdayDate);
-
-    const sevenDaysAgoDate = new Date(todayDate);
-    sevenDaysAgoDate.setUTCDate(sevenDaysAgoDate.getUTCDate() - 6);
-    const sevenDaysAgo = utcDay(sevenDaysAgoDate);
-
-    const monthStart = utcMonthStart(todayDate);
-
-    let yesterdayTotals: { update_checks: number; downloads: number; errors: number; calculations: number };
-    let last7Totals: { update_checks: number; downloads: number; errors: number; calculations: number };
-    let mtdTotals: { update_checks: number; downloads: number; errors: number; calculations: number };
-
-    try {
-      [yesterdayTotals, last7Totals, mtdTotals] = await Promise.all([
-        queryTotals(env.DB, yesterday, yesterday),
-        queryTotals(env.DB, sevenDaysAgo, today),
-        queryTotals(env.DB, monthStart, today),
-      ]);
-    } catch {
-      try {
-        await incrementCounter(env.DB, today, "errors");
-      } catch {
-        // best-effort
-      }
-      return;
-    }
-
-    const message = [
-      `📊 **BUS Core Lighthouse — Daily Report (${yesterday})**`,
-      "",
-      `**Yesterday (${yesterday})**`,
-      `  • Update checks: ${yesterdayTotals.update_checks}`,
-      `  • Downloads: ${yesterdayTotals.downloads}`,
-      `  • Calculations: ${yesterdayTotals.calculations}`,
-      `  • Errors: ${yesterdayTotals.errors}`,
-      "",
-      `**Last 7 days (${sevenDaysAgo} → ${today})**`,
-      `  • Update checks: ${last7Totals.update_checks}`,
-      `  • Downloads: ${last7Totals.downloads}`,
-      `  • Calculations: ${last7Totals.calculations}`,
-      `  • Errors: ${last7Totals.errors}`,
-      "",
-      `**Month to date (${monthStart} → ${today})**`,
-      `  • Update checks: ${mtdTotals.update_checks}`,
-      `  • Downloads: ${mtdTotals.downloads}`,
-      `  • Calculations: ${mtdTotals.calculations}`,
-      `  • Errors: ${mtdTotals.errors}`,
-    ].join("\n");
-
-    try {
-      const res = await fetch(env.DISCORD_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: message }),
-      });
-      if (!res.ok) throw new Error(`Discord webhook returned ${res.status}`);
-    } catch {
-      try {
-        await incrementCounter(env.DB, today, "errors");
-      } catch {
-        // best-effort
-      }
-    }
   },
 };

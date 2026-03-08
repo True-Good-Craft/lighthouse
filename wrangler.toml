@@ -2,13 +2,11 @@ name = "buscore-lighthouse"
 main = "src/index.ts"
 compatibility_date = "2026-02-26"
 
-[vars]
-MANIFEST_URL = "https://buscore.ca/manifest/core/stable.json"
-
 [[d1_databases]]
 binding = "DB"
 database_name = "buscore-lighthouse"
 database_id = "e46f2daa-7e97-45a3-9bf0-49003a42850c"
 
-[triggers]
-crons = ["0 9 * * *"]
+[[r2_buckets]]
+binding = "MANIFEST_R2"
+bucket_name = "buscore-manifest"
