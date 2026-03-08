@@ -82,20 +82,35 @@ export default {
     }
 
     if (url.pathname === MANIFEST_PATH) {
-      const object = await env.BUSCORE_BUCKET.get(MANIFEST_KEY);
+      try {
+        const obj = await env.BUSCORE_BUCKET.get(MANIFEST_KEY);
 
-      if (!object) {
+        if (!obj) {
+          await incrementErrorCounterBestEffort(env.DB, day);
+          return new Response(JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
+            status: 503,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          });
+        }
+
+        return new Response(obj.body, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "public, max-age=60",
+          },
+        });
+      } catch {
         await incrementErrorCounterBestEffort(env.DB, day);
-        return Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 });
+        return new Response(JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
+          status: 503,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
       }
-
-      return new Response(object.body, {
-        status: 200,
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "public, max-age=60",
-        },
-      });
     }
 
     if (url.pathname === "/update/check") {
