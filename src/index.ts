@@ -1,6 +1,6 @@
 export interface Env {
   DB: D1Database;
-  MANIFEST_R2: R2Bucket;
+  BUSCORE_BUCKET: R2Bucket;
 }
 
 type CounterColumn = "update_checks" | "downloads" | "errors";
@@ -36,7 +36,7 @@ async function incrementErrorCounterBestEffort(db: D1Database, day: string): Pro
 }
 
 async function readManifestFromR2(env: Env): Promise<{ raw: string; parsed: Record<string, unknown> }> {
-  const object = await env.MANIFEST_R2.get(MANIFEST_KEY);
+  const object = await env.BUSCORE_BUCKET.get(MANIFEST_KEY);
   if (!object) {
     throw new Error("manifest_not_found");
   }
@@ -82,16 +82,20 @@ export default {
     }
 
     if (url.pathname === MANIFEST_PATH) {
-      try {
-        const manifest = await readManifestFromR2(env);
-        return new Response(manifest.raw, {
-          status: 200,
-          headers: { "Content-Type": "application/json; charset=utf-8" },
-        });
-      } catch {
+      const object = await env.BUSCORE_BUCKET.get(MANIFEST_KEY);
+
+      if (!object) {
         await incrementErrorCounterBestEffort(env.DB, day);
         return Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 });
       }
+
+      return new Response(object.body, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=60",
+        },
+      });
     }
 
     if (url.pathname === "/update/check") {
