@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   MANIFEST_R2: R2Bucket;
+  ADMIN_TOKEN: string;
 }
 
 type CounterColumn = "update_checks" | "downloads" | "errors";
@@ -202,6 +203,11 @@ export default {
     }
 
     if (url.pathname === "/report") {
+      const token = request.headers.get("X-Admin-Token");
+      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+        return withCors(Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
+      }
+
       try {
         const now = new Date();
         const todayDay = utcDay(now);
