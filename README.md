@@ -1,21 +1,21 @@
 # buscore-lighthouse
 
-BUS Core update "lighthouse": manifest proxy + daily counters + Discord summaries.
+BUS Core update lighthouse: manifest proxy + daily counters + protected on-demand reporting.
 
 ## Overview
 
 A single Cloudflare Worker that:
 
-1. **Proxies** the BUS Core update manifest JSON from a configurable public URL.
+1. **Serves** the BUS Core update manifest JSON from R2.
 2. **Counts** update checks and "latest download" clicks into deterministic daily totals stored in D1. 
-3. **Posts** daily summaries (yesterday, last 7 days, month-to-date) to a Discord channel via webhook.
+3. **Exposes** protected aggregate stats at `GET /report`.
 
 ## Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/update/check` | Increment `update_checks`, return manifest JSON |
-| GET | `/download/latest` | Increment `downloads`, 302-redirect to `latest.url` from manifest |
+| GET | `/download/latest` | Increment `downloads`, 302-redirect to `latest.download.url` from manifest |
 | GET | `/report` | Return JSON totals (protected by `X-Admin-Token` header) |
 
 ## Setup
@@ -53,18 +53,12 @@ npx wrangler d1 migrations apply buscore-lighthouse --remote
 ### 5. Set secrets
 
 ```bash
-npx wrangler secret put DISCORD_WEBHOOK_URL
 npx wrangler secret put ADMIN_TOKEN
 ```
 
 ### 6. Configure `wrangler.toml`
 
-Set `MANIFEST_URL` in the `[vars]` section to your actual manifest URL:
-
-```toml
-[vars]
-MANIFEST_URL = "https://your-server.example.com/manifest.json"
-```
+Ensure the existing bindings are configured for your environment (`DB` and `MANIFEST_R2`).
 
 ### 7. Deploy
 
@@ -91,7 +85,9 @@ The worker expects the manifest JSON to have at least this shape for the `/downl
 ```json
 {
   "latest": {
-    "url": "https://example.com/download/buscore-latest.zip"
+    "download": {
+      "url": "https://example.com/releases/v1.2.3/TGC-BUS-Core-v1.2.3.zip"
+    }
   }
 }
 ```
@@ -120,12 +116,6 @@ CREATE TABLE IF NOT EXISTS metrics_daily (
 }
 ```
 
-## Cron schedule
+## Scheduling
 
-The worker fires daily at 09:00 UTC (`0 9 * * *`) and posts a summary to the Discord webhook.
-To change the schedule, edit `wrangler.toml`:
-
-```toml
-[triggers]
-crons = ["0 9 * * *"]
-```
+This worker has no cron trigger and does not send outbound report summaries.

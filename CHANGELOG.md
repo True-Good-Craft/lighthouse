@@ -13,3 +13,5 @@
 - Add strict CORS handling to `/pg/ping` (OPTIONS + explicit origin allowlist).
 - Extend reporting logic only; no schema changes or new counters were introduced.
 - Improve operational visibility by exposing trend-oriented computed metrics from existing aggregates.
+- Remove scheduled Discord reporting and outbound report-post delivery.
+- Simplify Lighthouse to protected on-demand reporting via `GET /report`.
