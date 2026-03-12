@@ -11,24 +11,33 @@
 
 `fetch(request, env)` in `src/index.ts` handles:
 
-- `GET /manifest/core/stable.json`
-  - Reads `manifest/core/stable.json` from `MANIFEST_R2`.
+### Manifest Service
+
+- `GET /manifest/core/stable.json` — **Canonical public manifest read route**
+  - Returns manifest JSON from `MANIFEST_R2` to web pages, downloads pages, and other clients.
+  - **Never increments any counters** (no counting on success; only error counts on failure).
   - Returns `200` manifest JSON on success.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` when unavailable.
 
-- `GET /update/check`
-  - Increments `update_checks` in D1 for current UTC day, unless the request IP matches `IGNORED_IP`.
-  - Returns manifest JSON.
+- `GET /update/check` — **Manifest proxy with conditional counting gate**
+  - Returns manifest JSON from `MANIFEST_R2` in all cases (with or without header).
+  - Increments `update_checks` in D1 (current UTC day) **only when both conditions are true**:
+    - Request header `X-BUS-Update-Source` equals exactly `core`, AND
+    - Request IP does not match `IGNORED_IP`
+  - Intended to be called by BUS Core with the `X-BUS-Update-Source: core` header to count genuine update checks.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` on manifest errors.
 
-- `GET /download/latest`
-  - Increments `downloads` in D1 for current UTC day, unless the request IP matches `IGNORED_IP`.
+### Download Service
+
+- `GET /download/latest` — **Counted download initiation endpoint**
+  - Increments `downloads` in D1 (current UTC day), unless the request IP matches `IGNORED_IP`.
   - Redirects (`302`) to the validated release artifact URL from `manifest.latest.download.url`.
   - Accepts either a relative release URL (for example `/releases/TGC-BUS-Core-1.0.2.zip`) or an absolute URL using the same release path format.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` when URL is missing/invalid.
 
-- `GET /releases/:filename`
+- `GET /releases/:filename` — **Raw asset delivery (no counting)**
   - Serves release artifacts directly from `MANIFEST_R2` using key `releases/:filename`.
+  - **Never increments any counters** (ensures no double-counting after `/download/latest` redirect).
   - Allowed filename format: `TGC-BUS-Core-<semver>.zip`.
   - Returns `200` with artifact body when object exists.
   - Returns `404` JSON `{ "ok": false, "error": "not_found" }` when missing or filename is invalid.

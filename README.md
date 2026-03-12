@@ -14,7 +14,8 @@ A single Cloudflare Worker that:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/update/check` | Increment `update_checks`, return manifest JSON |
+| GET | `/manifest/core/stable.json` | Return manifest JSON (public, no counting) |
+| GET | `/update/check` | Return manifest JSON; increment `update_checks` only with `X-BUS-Update-Source: core` header |
 | GET | `/download/latest` | Increment `downloads`, 302-redirect to `latest.download.url` from manifest |
 | GET | `/report` | Return JSON totals (protected by `X-Admin-Token` header) |
 

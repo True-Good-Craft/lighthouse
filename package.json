@@ -1,6 +1,6 @@
 {
   "name": "buscore-lighthouse",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "BUS Core update lighthouse: manifest proxy + daily counters + protected on-demand reporting.",
   "scripts": {
     "dev": "wrangler dev",

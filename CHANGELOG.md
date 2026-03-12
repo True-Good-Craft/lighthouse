@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0] - 2026-03-12
+
+### Fixed
+- Fix analytics drift where internal and public manifest reads could inflate `update_checks` counters.
+- Gate `update_checks` counting in `GET /update/check` to only increment when header `X-BUS-Update-Source: core` is present.
+- Designate `GET /manifest/core/stable.json` as the canonical public manifest read route with no counter increment.
+- Preserve counted download intent on `GET /download/latest` without double-counting via `GET /releases/:filename`.
+
+### Changed
+- `GET /update/check` now requires `X-BUS-Update-Source: core` header to increment counters; returns manifest normally in all cases, with or without the header.
+- `GET /manifest/core/stable.json` now explicitly documented as the public manifest hydration route.
+
 ## [1.1.1] - 2026-03-11
 
 ### Fixed
