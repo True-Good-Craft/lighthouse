@@ -31,16 +31,13 @@
 
 ## Unreleased
 
-### Added
-- Track Price Guard calculation events via D1 `calculations` metric.
-- Include `calculations` in `/report` output.
-- Include `calculations` in scheduled Discord daily summary.
-- Add derived analytics in `/report` trends: daily change percentages, weekly change percentages, and conversion ratio.
+### Planned (not shipped)
+- Evaluate Price Guard calculation event tracking via D1 `calculations` metric.
+- Evaluate whether `calculations` should be included in `/report` if and when ingestion ships.
+- Evaluate migration of future Price Guard metrics from KV-based signaling to D1 aggregates.
+- Evaluate introducing `/pg/ping` with strict auth/CORS only if approved and documented in SOT.
+- Evaluate migration from fixed aggregate columns to a generic metric-ledger model where appropriate.
 
-### Changed
-- Migrate Price Guard ping from KV to D1.
-- Add strict CORS handling to `/pg/ping` (OPTIONS + explicit origin allowlist).
-- Extend reporting logic only; no schema changes or new counters were introduced.
-- Improve operational visibility by exposing trend-oriented computed metrics from existing aggregates.
-- Remove scheduled Discord reporting and outbound report-post delivery.
-- Simplify Lighthouse to protected on-demand reporting via `GET /report`.
+### Clarifications
+- Current shipped Lighthouse already uses protected, on-demand reporting via `GET /report`.
+- Current shipped Lighthouse has no cron summaries and no outbound Discord reporting.

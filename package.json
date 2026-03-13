@@ -1,7 +1,7 @@
 {
   "name": "buscore-lighthouse",
   "version": "1.3.0",
-  "description": "BUS Core update lighthouse: manifest proxy + daily counters + protected on-demand reporting.",
+  "description": "Standalone deterministic metrics worker: manifest proxy + fixed daily counters + protected on-demand reporting.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

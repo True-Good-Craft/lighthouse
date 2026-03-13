@@ -1,23 +1,96 @@
 # buscore-lighthouse
 
-BUS Core update lighthouse: manifest proxy + daily counters + protected on-demand reporting.
+Lighthouse is a single Cloudflare Worker that provides a small, deterministic, privacy-first, aggregate-only metrics primitive.
 
-## Overview
+Architectural rule:
+- Lighthouse is a standalone service and operationally independent.
+- It is independently runnable and not hard-dependent on BUS Core or any other external service.
+- BUS Core is a current observed client/traffic source, but Lighthouse core operation must remain independent.
+- Integrations must remain optional, additive, and non-blocking.
 
-A single Cloudflare Worker that:
+## Glossary
 
-1. **Serves** the BUS Core update manifest JSON from R2.
-2. **Counts** update checks and "latest download" clicks into deterministic daily totals stored in D1. 
-3. **Exposes** protected aggregate stats at `GET /report`.
+- Aggregate-only: stores only daily aggregate counters, not user-level event logs or identifiers.
+- Operationally independent: can run and serve core routes without requiring any other service to be available.
+- Observed client: an external system that calls Lighthouse (for example BUS Core) without becoming a runtime dependency.
+- Core operation: manifest serving, aggregate counting, and protected on-demand reporting.
+- Optional integration: an additive external integration that does not block core operation when unavailable.
+- Shipped behavior: behavior currently implemented and documented as present reality.
+- Future direction: planned or proposed behavior not yet shipped.
 
-## Endpoints
+## Current System
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/manifest/core/stable.json` | Return manifest JSON (public, no counting) |
-| GET | `/update/check` | Return manifest JSON; increment `update_checks` only with `X-BUS-Update-Source: core` header |
-| GET | `/download/latest` | Increment `downloads`, 302-redirect to `latest.download.url` from manifest |
-| GET | `/report` | Return JSON totals (protected by `X-Admin-Token` header) |
+Lighthouse currently does three things:
+
+1. Serves the BUS Core manifest from R2.
+2. Increments fixed daily aggregate counters in D1.
+3. Exposes protected, on-demand aggregate reporting.
+
+It does not store user-level telemetry or identifiers.
+
+## Routes
+
+| Method | Path | Behavior |
+|--------|------|----------|
+| GET | `/manifest/core/stable.json` | Return manifest JSON from R2 (no counting) |
+| GET | `/update/check` | Return manifest JSON and increment `update_checks` unless request IP matches `IGNORED_IP` |
+| GET | `/download/latest` | Increment `downloads` unless request IP matches `IGNORED_IP`, then `302` redirect to latest release URL from manifest |
+| GET | `/releases/:filename` | Serve release artifact from R2 key `releases/:filename` (no counting) |
+| GET | `/report` | Return protected aggregate report (requires `X-Admin-Token`) |
+
+Notes:
+- `/manifest/core/stable.json` and `/releases/:filename` never increment counters.
+- `/update/check` does not require `X-BUS-Update-Source: core` for counting.
+- If `IGNORED_IP` is configured and matches `CF-Connecting-IP`, counting is suppressed while normal responses are still returned.
+
+## Report Response
+
+`GET /report` returns:
+
+```json
+{
+  "today": { "update_checks": 0, "downloads": 0, "errors": 0 },
+  "yesterday": { "update_checks": 0, "downloads": 0, "errors": 0 },
+  "last_7_days": { "update_checks": 0, "downloads": 0, "errors": 0 },
+  "month_to_date": { "update_checks": 0, "downloads": 0, "errors": 0 },
+  "trends": {
+    "downloads_change_percent": 0,
+    "update_checks_change_percent": 0,
+    "weekly_downloads_change_percent": 0,
+    "weekly_update_checks_change_percent": 0,
+    "conversion_ratio": 0
+  }
+}
+```
+
+Contract note:
+- `/report` is treated as an operator contract.
+- Field additions/removals or semantic changes must be deliberate and documented in SOT/changelog, not ad-hoc.
+
+## D1 Schema (Current)
+
+```sql
+CREATE TABLE IF NOT EXISTS metrics_daily (
+  day           TEXT    PRIMARY KEY,
+  update_checks INTEGER NOT NULL DEFAULT 0,
+  downloads     INTEGER NOT NULL DEFAULT 0,
+  errors        INTEGER NOT NULL DEFAULT 0
+);
+```
+
+## Configuration
+
+Required bindings/secrets:
+- `DB`
+- `MANIFEST_R2`
+- `ADMIN_TOKEN`
+- `IGNORED_IP` (optional)
+
+## Scheduling
+
+Lighthouse is on-demand only.
+- No cron trigger.
+- No outbound Discord posting.
 
 ## Setup
 
@@ -59,7 +132,7 @@ npx wrangler secret put ADMIN_TOKEN
 
 ### 6. Configure `wrangler.toml`
 
-Ensure the existing bindings are configured for your environment (`DB` and `MANIFEST_R2`).
+Ensure existing bindings are configured for your environment (`DB` and `MANIFEST_R2`).
 
 ### 7. Deploy
 
@@ -78,45 +151,3 @@ npm run dev
 ```bash
 npm run typecheck
 ```
-
-## Manifest shape
-
-The worker expects the manifest JSON to have at least this shape for the `/download/latest` redirect:
-
-```json
-{
-  "latest": {
-    "download": {
-      "url": "https://example.com/releases/v1.2.3/TGC-BUS-Core-v1.2.3.zip"
-    }
-  }
-}
-```
-
-## D1 schema
-
-```sql
-CREATE TABLE IF NOT EXISTS metrics_daily (
-  day           TEXT    PRIMARY KEY,
-  update_checks INTEGER NOT NULL DEFAULT 0,
-  downloads     INTEGER NOT NULL DEFAULT 0,
-  errors        INTEGER NOT NULL DEFAULT 0
-);
-```
-
-## Report endpoint
-
-`GET /report` requires the header `X-Admin-Token: <ADMIN_TOKEN>` and returns:
-
-```json
-{
-  "today":         { "update_checks": 0, "downloads": 0, "errors": 0 },
-  "yesterday":     { "update_checks": 0, "downloads": 0, "errors": 0 },
-  "last_7_days":   { "update_checks": 0, "downloads": 0, "errors": 0 },
-  "month_to_date": { "update_checks": 0, "downloads": 0, "errors": 0 }
-}
-```
-
-## Scheduling
-
-This worker has no cron trigger and does not send outbound report summaries.

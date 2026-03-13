@@ -3,11 +3,35 @@
 ## 1. System Overview
 
 - Lighthouse is a single Cloudflare Worker that acts as a minimal, privacy-first, aggregate-only stats source.
+- Lighthouse is a generic, deterministic metrics primitive; BUS Core is a current observed client/use-case, not a runtime dependency.
 - It serves/proxies manifest data from R2, records daily aggregate counters in D1, and exposes an admin-protected `GET /report` endpoint.
 - It does not run scheduled reporting and does not post reports to Discord.
 - Runtime surface: Worker `fetch` handler only.
 
-## 2. Entry Points
+### Operational Independence Rule
+
+Operational Independence Rule: Lighthouse must remain an independently runnable service. It may observe, receive traffic from, or report on BUS Core and other systems, but its core operation must not require BUS Core or any other external service to be available. All integrations must be optional, additive, and non-blocking.
+
+Additional constraints:
+- Lighthouse is a standalone service, not an architectural submodule of BUS Core or any other product.
+- External services may call Lighthouse or consume Lighthouse outputs, but no Lighthouse core feature may require those services to be up.
+- Proposed features that create hard runtime dependencies on external products are out of scope unless reworked to preserve independent operation.
+
+## 2. Architecture Invariants
+
+The following rules are non-negotiable unless this SOT is explicitly revised:
+
+- Lighthouse is a single Cloudflare Worker.
+- Lighthouse is privacy-first and aggregate-only.
+- Lighthouse is operationally independent and independently runnable.
+- Core operation must not depend on BUS Core or any external service.
+- Reporting is on-demand.
+- No cron behavior unless explicitly approved in this SOT.
+- No outbound posting or outbound integrations unless explicitly approved in this SOT.
+- The current fixed metric model (`update_checks`, `downloads`, `errors`) is shipped behavior unless this SOT explicitly changes it.
+- SOT, changelog, and implementation must stay aligned.
+
+## 3. Entry Points
 
 `fetch(request, env)` in `src/index.ts` handles:
 
@@ -52,14 +76,14 @@
   - Non-`GET` methods return `405` JSON `{ "ok": false, "error": "method_not_allowed" }`.
   - Unmatched routes return `404` JSON `{ "ok": false, "error": "not_found" }`.
 
-## 3. Persistence
+## 4. Persistence
 
 - D1 binding: `DB`
 - Table: `metrics_daily`
 - Aggregate counters: `update_checks`, `downloads`, `errors`
 - Day key format: UTC `YYYY-MM-DD`
 
-## 4. Configuration
+## 5. Configuration
 
 Required bindings/secrets used by code:
 
@@ -73,19 +97,27 @@ Not used by current code:
 - Discord webhook secrets
 - Cron triggers
 
-## 5. Reporting Model
+## 6. Reporting Model
 
 - Reporting is on-demand only via authenticated `GET /report`.
 - No scheduled handler.
 - No outbound report delivery.
 
-## 6. Privacy and Security
+### Report Contract Stability
+
+- `GET /report` is an operator-facing contract, not an ad-hoc analytics surface.
+- Current shipped response shape includes: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`.
+- Current shipped `trends` fields include: `downloads_change_percent`, `update_checks_change_percent`, `weekly_downloads_change_percent`, `weekly_update_checks_change_percent`, `conversion_ratio`.
+- `conversion_ratio` is defined as today downloads divided by today update checks (with safe zero-denominator handling).
+- Changes to `/report` response fields or semantics require explicit SOT update and changelog entry in the same change set.
+
+## 7. Privacy and Security
 
 - Aggregate-only storage in D1.
 - No user identifiers, cookies, or tracking.
 - `/report` is protected by `X-Admin-Token` exact match to `env.ADMIN_TOKEN`.
 
-## 7. Explicit Non-Features
+## 8. Explicit Non-Features
 
 - No `/health` route in current code.
 - No scheduled/cron reporting.

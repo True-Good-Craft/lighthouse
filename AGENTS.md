@@ -16,13 +16,12 @@ Violation of these rules constitutes policy failure.
 Authority sources in descending order:
 
 1. **SOT.md** — Canonical authority for intended system behavior.
-2. **API_CONTRACT.md** — Authoritative for public/stable API surface (where applicable).
-3. **CHANGELOG.md** — Authoritative for recorded shipped changes.
-4. **Code** — Must implement behavior defined in SOT and API contract.
+2. **CHANGELOG.md** — Authoritative for recorded shipped changes.
+3. **Code** — Must implement behavior defined in SOT.
 
 **Rules:**
-- Code must not intentionally drift from SOT or API contract.
-- If code and SOT/API contract disagree, the mismatch must be explicitly flagged.
+- Code must not intentionally drift from SOT.
+- If code and SOT disagree, the mismatch must be explicitly flagged.
 - Agents must not silently "fix" behavior by guessing intent.
 - When conflict exists, stop and report—do not proceed based on assumption.
 
@@ -193,10 +192,34 @@ No such automation currently exists. Compliance is currently manual and mandator
 
 ---
 
+## 11. Service Independence Rule
+
+Lighthouse must remain an independently runnable standalone service.
+
+Repository policy:
+- Changes must not introduce hard runtime dependencies on BUS Core or other TGC services.
+- Integrations with BUS Core, Price Guard, Discord, email, cron, or any external system must remain optional, additive, and non-blocking.
+- If a proposed change requires another service to be available for Lighthouse core operation, stop and escalate for redesign.
+
+---
+
+## 12. Change Control Rule
+
+For any non-trivial behavioral change:
+- Update `SOT.md`.
+- Update `CHANGELOG.md`.
+- Update operator-facing docs when behavior or operations are affected.
+
+Hard constraints:
+- Future-direction docs must never describe unshipped behavior as present reality.
+- No change may introduce cross-service hard dependency without an explicit SOT change.
+
+---
+
 ## Summary
 
 **Before making changes:**
-1. Read SOT.md, API_CONTRACT.md, and CHANGELOG.md
+1. Read SOT.md and CHANGELOG.md
 2. Understand current documented behavior
 
 **When making changes:**
