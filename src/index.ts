@@ -449,6 +449,52 @@ export default {
       );
     }
 
+    if (url.pathname === "/_dev/capture-traffic") {
+      const targetDay = utcDay(addUtcDays(new Date(), -1));
+      const hadRowBefore = await hasBuscoreTrafficRowForDay(env.DB, targetDay);
+
+      let failureReason: string | null = null;
+      try {
+        await captureTrafficForDay(env, targetDay);
+      } catch (error) {
+        failureReason = error instanceof Error ? error.message : "capture_exception";
+      }
+
+      const hasRowAfter = await hasBuscoreTrafficRowForDay(env.DB, targetDay);
+      const appearsSuccessful = !failureReason && hasRowAfter;
+
+      let result: "captured" | "skipped" | "failed" = "skipped";
+      let details = "No traffic row present after capture attempt.";
+
+      if (failureReason) {
+        result = "failed";
+        details = failureReason;
+      } else if (!hasRowAfter) {
+        result = "skipped";
+        details = "Capture attempt completed but no traffic row exists for target day.";
+      } else if (!hadRowBefore) {
+        result = "captured";
+        details = "Traffic row is now present for target day.";
+      } else {
+        result = "skipped";
+        details = "Traffic row already existed for target day.";
+      }
+
+      return withCors(
+        Response.json(
+          {
+            ok: appearsSuccessful,
+            target_day: targetDay,
+            attempted: true,
+            appears_successful: appearsSuccessful,
+            result,
+            details,
+          },
+          { status: 200 }
+        )
+      );
+    }
+
     if (url.pathname === "/report") {
       const token = request.headers.get("X-Admin-Token");
       if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {

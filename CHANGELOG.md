@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.3] - 2026-03-23
+
+### Added
+- Add temporary development-only route `GET /_dev/capture-traffic` to trigger the existing shared Buscore traffic capture helper on demand for the previous completed UTC day.
+
+### Changed
+- The temporary route returns a compact capture diagnostic payload with `target_day`, `attempted`, `appears_successful`, `result` (`captured`/`skipped`/`failed`), and `details`.
+- The temporary route does not alter cron behavior, `/report` behavior, or non-traffic metrics behavior.
+
 ## [1.4.2] - 2026-03-23
 
 ### Changed
