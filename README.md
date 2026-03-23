@@ -88,9 +88,9 @@ Contract note:
 - `/report` is treated as an operator contract.
 - Field additions/removals or semantic changes must be deliberate and documented in SOT/changelog, not ad-hoc.
 - Existing top-level fields `today`, `yesterday`, `last_7_days`, `month_to_date`, and `trends` remain intact and semantically unchanged.
-- On each authenticated `/report` request, Lighthouse checks whether the previous completed UTC day exists in `buscore_traffic_daily`; if missing, it attempts one best-effort backfill for that exact day before assembling the report.
-- This lazy backfill reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.
-- If lazy backfill fails, `/report` still returns successfully with traffic fields based only on currently stored data.
+- On each authenticated `/report` request, Lighthouse performs one best-effort refresh capture for the previous completed UTC day before assembling the report.
+- This refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.
+- If this refresh fails, `/report` still returns successfully with traffic fields based only on currently stored data.
 - `traffic.latest_day` is the most recent completed UTC day snapshot stored in D1 and includes `captured_at`.
 - `traffic.last_7_days` aggregates stored traffic rows within the last seven UTC days and includes `days_with_data`, `avg_daily_visits`, and `avg_daily_requests`.
 - If a traffic window has no stored data, its traffic fields return `null` instead of synthetic zeroes.
@@ -141,7 +141,7 @@ Traffic capture notes:
 - If the Cloudflare pull fails or returns GraphQL errors, Lighthouse skips the row for that day rather than writing synthetic zeroes.
 - If the query returns no daily row for the selected day/hostname, Lighthouse treats the run as failed and skips the row.
 - Lighthouse validates that the response includes a numeric daily request `count` field; if missing/undefined/non-numeric, the run is treated as failed and the row is skipped.
-- Authenticated `/report` also performs one best-effort lazy backfill attempt for the previous completed UTC day only when that day is missing, using the same per-day capture logic.
+- Authenticated `/report` also performs one best-effort refresh capture for the previous completed UTC day before report assembly, using the same per-day capture logic.
 
 ## Setup
 

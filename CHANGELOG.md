@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3] - 2026-03-23
+
+### Changed
+- Refine authenticated `GET /report` traffic behavior to always perform one best-effort refresh capture for the previous completed UTC day before assembling the report, instead of only capturing when that row is missing.
+- Reuse the same shared per-day capture logic as scheduled daily capture, preserving idempotent one-row-per-day UPSERT semantics.
+- If the `/report` refresh attempt fails, Lighthouse still returns the report successfully using whatever stored traffic data exists.
+
 ## [1.5.2] - 2026-03-23
 
 ### Removed

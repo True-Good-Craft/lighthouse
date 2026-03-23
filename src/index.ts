@@ -293,15 +293,6 @@ async function upsertBuscoreTrafficDaily(
     .run();
 }
 
-async function hasBuscoreTrafficRowForDay(db: D1Database, day: string): Promise<boolean> {
-  const row = await db
-    .prepare("SELECT 1 AS exists_flag FROM buscore_traffic_daily WHERE day = ? LIMIT 1")
-    .bind(day)
-    .first<{ exists_flag: number }>();
-
-  return !!row;
-}
-
 async function captureTrafficForDay(env: Env, day: string): Promise<void> {
   if (!env.CF_API_TOKEN || !env.CF_ZONE_TAG) {
     console.warn("Skipping Buscore traffic capture because CF_API_TOKEN or CF_ZONE_TAG is missing.");
@@ -483,16 +474,13 @@ export default {
       try {
         const now = new Date();
         const previousCompletedDay = utcDay(addUtcDays(now, -1));
-        const hasPreviousDayTraffic = await hasBuscoreTrafficRowForDay(env.DB, previousCompletedDay);
-        if (!hasPreviousDayTraffic) {
-          try {
-            await captureTrafficForDay(env, previousCompletedDay);
-          } catch (error) {
-            console.warn(
-              "Best-effort previous-day Buscore traffic backfill during /report failed; returning report with stored traffic only.",
-              error
-            );
-          }
+        try {
+          await captureTrafficForDay(env, previousCompletedDay);
+        } catch (error) {
+          console.warn(
+            "Best-effort previous-day Buscore traffic refresh during /report failed; returning report with stored traffic only.",
+            error
+          );
         }
 
         const todayDay = utcDay(now);
