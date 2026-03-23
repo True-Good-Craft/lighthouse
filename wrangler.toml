@@ -10,3 +10,6 @@ database_id = "e46f2daa-7e97-45a3-9bf0-49003a42850c"
 [[r2_buckets]]
 binding = "MANIFEST_R2"
 bucket_name = "bus-core"
+
+[triggers]
+crons = ["5 0 * * *"]

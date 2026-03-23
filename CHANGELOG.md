@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.4.1] - 2026-03-23
+
+### Fixed
+- Tighten Cloudflare GraphQL traffic capture validation so a daily snapshot row is only written when a numeric daily `pageViews` metric is present in the single-query response.
+- If the GraphQL query returns no daily result row (for example due to dataset/filter mismatch), Lighthouse now treats this as capture failure and skips writing the day instead of inserting synthetic zero traffic.
+
+## [1.4.0] - 2026-03-23
+
+### Added
+- Add additive Buscore traffic telemetry capture via a daily Lighthouse cron that pulls one completed UTC day snapshot from the Cloudflare GraphQL Analytics API into D1 table `buscore_traffic_daily`.
+- Extend `GET /report` with a compact top-level `traffic` object containing `latest_day` and `last_7_days` traffic summaries.
+
+### Changed
+- Lighthouse now includes scheduled daily traffic capture in addition to the existing `fetch` request surface.
+- Traffic capture uses a single Cloudflare GraphQL query per scheduled run, always scoped to the previous completed UTC day for hostname `buscore.ca` and zone `CF_ZONE_TAG`.
+- Successful traffic pulls upsert one final row per day, making reruns idempotent for the same UTC day.
+- If the Cloudflare traffic pull fails or returns GraphQL errors, Lighthouse skips that day rather than writing synthetic zeroes; core metrics and existing `/report` fields continue to operate unchanged.
+- Traffic `pageviews` are sourced from a direct daily Cloudflare page view metric; `visits` remain `null` in the current implementation because the chosen single daily query does not use a documented direct visits metric for this path.
+- Add explicit version/release authority: shipped Lighthouse behavior is authorized by `SOT.md`, recorded in `CHANGELOG.md`, and versioned by `package.json`; behavioral changes are not released unless all three are updated together.
+
 ## [1.3.0] - 2026-03-12
 
 ### Changed

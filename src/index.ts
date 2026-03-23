@@ -3,14 +3,53 @@ export interface Env {
   MANIFEST_R2: R2Bucket;
   ADMIN_TOKEN: string;
   IGNORED_IP: string;
+  CF_API_TOKEN: string;
+  CF_ZONE_TAG: string;
 }
 
 type CounterColumn = "update_checks" | "downloads" | "errors";
+type TrafficTotals = { row_count: number; visits: number | null; pageviews: number | null };
+type TrafficRow = { day: string; visits: number | null; pageviews: number; referrer_summary: string | null };
+type CloudflareGraphQLResponse = {
+  data?: {
+    viewer?: {
+      zones?: Array<{
+        buscoreTraffic?: Array<{
+          sum?: {
+            pageViews?: number | null;
+          };
+        }>;
+      }>;
+    };
+  };
+  errors?: Array<{ message?: string }> | null;
+};
 
 const MANIFEST_PATH = "/manifest/core/stable.json";
 const MANIFEST_KEY = "manifest/core/stable.json";
 const RELEASE_PATH = /^\/releases\/([^/]+)$/;
 const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
+const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
+const BUSCORE_HOST = "buscore.ca";
+const BUSCORE_TRAFFIC_QUERY = `query DailyBuscoreTraffic($zoneTag: string, $day: Date!, $host: string!) {
+  viewer {
+    zones(filter: { zoneTag: $zoneTag }) {
+      buscoreTraffic: httpRequests1dGroups(
+        limit: 1
+        filter: {
+          date_geq: $day
+          date_leq: $day
+          clientRequestHTTPHost: $host
+          requestSource: "eyeball"
+        }
+      ) {
+        sum {
+          pageViews
+        }
+      }
+    }
+  }
+}`;
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -119,6 +158,133 @@ async function queryTotalsInRange(db: D1Database, startDay: string, endDay: stri
   return row ?? { update_checks: 0, downloads: 0, errors: 0 };
 }
 
+async function queryTrafficTotalsInRange(db: D1Database, startDay: string, endDay: string): Promise<TrafficTotals> {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS row_count, CASE WHEN COUNT(visits) = 0 THEN NULL ELSE SUM(visits) END AS visits, CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(pageviews) END AS pageviews FROM buscore_traffic_daily WHERE day >= ? AND day <= ?"
+    )
+    .bind(startDay, endDay)
+    .first<TrafficTotals>();
+
+  return row ?? { row_count: 0, visits: null, pageviews: null };
+}
+
+async function queryLatestTrafficRow(db: D1Database): Promise<TrafficRow | null> {
+  const row = await db
+    .prepare(
+      "SELECT day, visits, pageviews, referrer_summary FROM buscore_traffic_daily ORDER BY day DESC LIMIT 1"
+    )
+    .first<TrafficRow>();
+
+  return row ?? null;
+}
+
+function trafficWindowFromTotals(totals: TrafficTotals): { visits: number | null; pageviews: number | null; referrer_summary: string | null } {
+  if (totals.row_count === 0) {
+    return {
+      visits: null,
+      pageviews: null,
+      referrer_summary: null,
+    };
+  }
+
+  return {
+    visits: totals.visits,
+    pageviews: totals.pageviews,
+    referrer_summary: null,
+  };
+}
+
+function latestTrafficWindow(row: TrafficRow | null): { day: string | null; visits: number | null; pageviews: number | null; referrer_summary: string | null } {
+  if (!row) {
+    return {
+      day: null,
+      visits: null,
+      pageviews: null,
+      referrer_summary: null,
+    };
+  }
+
+  return {
+    day: row.day,
+    visits: row.visits,
+    pageviews: row.pageviews,
+    referrer_summary: row.referrer_summary,
+  };
+}
+
+async function fetchPreviousCompletedBuscoreTraffic(env: Env, day: string): Promise<{ visits: number | null; pageviews: number }> {
+  const response = await fetch(CLOUDFLARE_GRAPHQL_ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.CF_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: BUSCORE_TRAFFIC_QUERY,
+      variables: {
+        zoneTag: env.CF_ZONE_TAG,
+        day,
+        host: BUSCORE_HOST,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`cloudflare_graphql_http_${response.status}`);
+  }
+
+  const payload = (await response.json()) as CloudflareGraphQLResponse;
+  if (payload.errors && payload.errors.length > 0) {
+    const message = payload.errors.map((error) => error.message || "graphql_error").join("; ");
+    throw new Error(`cloudflare_graphql_payload_${message}`);
+  }
+
+  const row = payload.data?.viewer?.zones?.[0]?.buscoreTraffic?.[0];
+  if (!row) {
+    throw new Error("cloudflare_graphql_empty_daily_result");
+  }
+
+  const pageviews = row.sum?.pageViews;
+  if (typeof pageviews !== "number" || !Number.isFinite(pageviews)) {
+    throw new Error("cloudflare_graphql_missing_pageviews_metric");
+  }
+
+  return {
+    visits: null,
+    pageviews,
+  };
+}
+
+async function upsertBuscoreTrafficDaily(
+  db: D1Database,
+  snapshot: { day: string; visits: number | null; pageviews: number; referrer_summary: string | null; captured_at: string }
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO buscore_traffic_daily(day, visits, pageviews, referrer_summary, captured_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(day) DO UPDATE SET visits = excluded.visits, pageviews = excluded.pageviews, referrer_summary = excluded.referrer_summary, captured_at = excluded.captured_at"
+    )
+    .bind(snapshot.day, snapshot.visits, snapshot.pageviews, snapshot.referrer_summary, snapshot.captured_at)
+    .run();
+}
+
+async function capturePreviousCompletedBuscoreTraffic(env: Env): Promise<void> {
+  if (!env.CF_API_TOKEN || !env.CF_ZONE_TAG) {
+    console.warn("Skipping Buscore traffic capture because CF_API_TOKEN or CF_ZONE_TAG is missing.");
+    return;
+  }
+
+  const day = utcDay(addUtcDays(new Date(), -1));
+  const traffic = await fetchPreviousCompletedBuscoreTraffic(env, day);
+  await upsertBuscoreTrafficDaily(env.DB, {
+    day,
+    visits: traffic.visits,
+    pageviews: traffic.pageviews,
+    referrer_summary: null,
+    captured_at: new Date().toISOString(),
+  });
+}
+
 function percentChange(current: number, baseline: number): number {
   return ((current - baseline) / Math.max(1, baseline)) * 100;
 }
@@ -141,6 +307,14 @@ function withCors(response: Response): Response {
 }
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      capturePreviousCompletedBuscoreTraffic(env).catch((error) => {
+        console.warn("Buscore traffic capture skipped after Cloudflare GraphQL failure.", error);
+      })
+    );
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const day = utcDay();
@@ -277,12 +451,14 @@ export default {
         const previous7EndDay = utcDay(addUtcDays(now, -7));
         const monthStartDay = utcMonthStart(now);
 
-        const [today, yesterday, last7Days, previous7Days, monthToDate] = await Promise.all([
+        const [today, yesterday, last7Days, previous7Days, monthToDate, latestTraffic, last7Traffic] = await Promise.all([
           queryTotalsInRange(env.DB, todayDay, todayDay),
           queryTotalsInRange(env.DB, yesterdayDay, yesterdayDay),
           queryTotalsInRange(env.DB, last7StartDay, todayDay),
           queryTotalsInRange(env.DB, previous7StartDay, previous7EndDay),
           queryTotalsInRange(env.DB, monthStartDay, todayDay),
+          queryLatestTrafficRow(env.DB),
+          queryTrafficTotalsInRange(env.DB, last7StartDay, todayDay),
         ]);
 
         return withCors(
@@ -298,6 +474,10 @@ export default {
                 weekly_downloads_change_percent: percentChange(last7Days.downloads, previous7Days.downloads),
                 weekly_update_checks_change_percent: percentChange(last7Days.update_checks, previous7Days.update_checks),
                 conversion_ratio: safeRatio(today.downloads, today.update_checks),
+              },
+              traffic: {
+                latest_day: latestTrafficWindow(latestTraffic),
+                last_7_days: trafficWindowFromTotals(last7Traffic),
               },
             },
             { status: 200 }
