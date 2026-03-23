@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.2] - 2026-03-23
+
+### Changed
+- `GET /report` now performs a best-effort lazy backfill check for the previous completed UTC day traffic snapshot: if that day is missing in `buscore_traffic_daily`, Lighthouse attempts one capture for that exact day before assembling the report.
+- Lazy backfill reuses the same traffic capture logic as scheduled daily capture and does not replace cron behavior.
+- If lazy backfill fails, `/report` still returns successfully using currently stored traffic data only; no synthetic traffic rows are created.
+
 ## [1.4.1] - 2026-03-23
 
 ### Fixed

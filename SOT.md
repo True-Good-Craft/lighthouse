@@ -94,6 +94,10 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
     - `if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) { ...401 unauthorized... }`
   - On auth failure: returns `401` JSON `{ "ok": false, "error": "unauthorized" }`.
   - On success: returns aggregate stats JSON with `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, and additive top-level `traffic`.
+  - Before assembling the response, Lighthouse checks whether `buscore_traffic_daily` contains a row for the previous completed UTC day.
+  - If the previous-day row is missing, Lighthouse attempts one best-effort capture for that exact day using the same traffic capture logic as the scheduled path.
+  - If this lazy backfill attempt fails, `/report` still returns successfully using only currently stored traffic data.
+  - This behavior is additive and does not replace the scheduled daily capture job.
 
 - Fallback behavior
   - `OPTIONS` returns `200`.
@@ -138,6 +142,8 @@ Not used by current code:
 - Reporting is on-demand only via authenticated `GET /report`.
 - No outbound report delivery.
 - Scheduled traffic capture is separate from report delivery and only writes one daily Buscore traffic snapshot into D1.
+- `GET /report` includes a best-effort lazy backfill check for the previous completed UTC day only when that day is missing from `buscore_traffic_daily`.
+- Lazy backfill reuses the same per-day capture logic as scheduled capture, remains idempotent via per-day upsert, and does not block successful report responses on capture failure.
 
 ### Report Contract Stability
 

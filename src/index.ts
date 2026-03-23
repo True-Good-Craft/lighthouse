@@ -268,13 +268,21 @@ async function upsertBuscoreTrafficDaily(
     .run();
 }
 
-async function capturePreviousCompletedBuscoreTraffic(env: Env): Promise<void> {
+async function hasBuscoreTrafficRowForDay(db: D1Database, day: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 AS exists_flag FROM buscore_traffic_daily WHERE day = ? LIMIT 1")
+    .bind(day)
+    .first<{ exists_flag: number }>();
+
+  return !!row;
+}
+
+async function captureTrafficForDay(env: Env, day: string): Promise<void> {
   if (!env.CF_API_TOKEN || !env.CF_ZONE_TAG) {
     console.warn("Skipping Buscore traffic capture because CF_API_TOKEN or CF_ZONE_TAG is missing.");
     return;
   }
 
-  const day = utcDay(addUtcDays(new Date(), -1));
   const traffic = await fetchPreviousCompletedBuscoreTraffic(env, day);
   await upsertBuscoreTrafficDaily(env.DB, {
     day,
@@ -283,6 +291,11 @@ async function capturePreviousCompletedBuscoreTraffic(env: Env): Promise<void> {
     referrer_summary: null,
     captured_at: new Date().toISOString(),
   });
+}
+
+async function capturePreviousCompletedBuscoreTraffic(env: Env): Promise<void> {
+  const day = utcDay(addUtcDays(new Date(), -1));
+  await captureTrafficForDay(env, day);
 }
 
 function percentChange(current: number, baseline: number): number {
@@ -444,6 +457,19 @@ export default {
 
       try {
         const now = new Date();
+        const previousCompletedDay = utcDay(addUtcDays(now, -1));
+        const hasPreviousDayTraffic = await hasBuscoreTrafficRowForDay(env.DB, previousCompletedDay);
+        if (!hasPreviousDayTraffic) {
+          try {
+            await captureTrafficForDay(env, previousCompletedDay);
+          } catch (error) {
+            console.warn(
+              "Best-effort previous-day Buscore traffic backfill during /report failed; returning report with stored traffic only.",
+              error
+            );
+          }
+        }
+
         const todayDay = utcDay(now);
         const yesterdayDay = utcDay(addUtcDays(now, -1));
         const last7StartDay = utcDay(addUtcDays(now, -6));
