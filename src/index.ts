@@ -31,15 +31,16 @@ const RELEASE_PATH = /^\/releases\/([^/]+)$/;
 const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 const BUSCORE_HOST = "buscore.ca";
-const BUSCORE_TRAFFIC_QUERY = `query DailyBuscoreTraffic($zoneTag: string, $day: Date!, $host: string!) {
+const BUSCORE_TRAFFIC_QUERY = `query DailyBuscoreTraffic($zoneTag: string, $start: Time!, $end: Time!, $host: string!) {
   viewer {
     zones(filter: { zoneTag: $zoneTag }) {
-      buscoreTraffic: httpRequests1dGroups(
+      buscoreTraffic: httpRequestsAdaptiveGroups(
         limit: 1
         filter: {
-          date_geq: $day
-          date_leq: $day
+          datetime_geq: $start
+          datetime_lt: $end
           clientRequestHTTPHost: $host
+          requestSource: "eyeball"
         }
       ) {
         sum {
@@ -223,7 +224,8 @@ async function fetchPreviousCompletedBuscoreTraffic(env: Env, day: string): Prom
       query: BUSCORE_TRAFFIC_QUERY,
       variables: {
         zoneTag: env.CF_ZONE_TAG,
-        day,
+        start: `${day}T00:00:00Z`,
+        end: `${utcDay(addUtcDays(new Date(`${day}T00:00:00Z`), 1))}T00:00:00Z`,
         host: BUSCORE_HOST,
       },
     }),
