@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.2] - 2026-03-23
+
+### Removed
+- Remove temporary development route `GET /_dev/capture-traffic` after live traffic-capture testing.
+
+### Changed
+- Keep scheduled daily traffic capture and authenticated `/report` lazy backfill paths unchanged by removing only the temporary route surface.
+
 ## [1.5.1] - 2026-03-23
 
 ### Changed
@@ -19,15 +27,6 @@
 
 ### Fixed
 - Resolve live capture failure `cloudflare_graphql_payload_unknown field "pageViews"` by aligning metric selection with valid fields on the selected query node.
-
-## [1.4.3] - 2026-03-23
-
-### Added
-- Add temporary development-only route `GET /_dev/capture-traffic` to trigger the existing shared Buscore traffic capture helper on demand for the previous completed UTC day.
-
-### Changed
-- The temporary route returns a compact capture diagnostic payload with `target_day`, `attempted`, `appears_successful`, `result` (`captured`/`skipped`/`failed`), and `details`.
-- The temporary route does not alter cron behavior, `/report` behavior, or non-traffic metrics behavior.
 
 ## [1.4.2] - 2026-03-23
 

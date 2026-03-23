@@ -99,15 +99,6 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - If this lazy backfill attempt fails, `/report` still returns successfully using only currently stored traffic data.
   - This behavior is additive and does not replace the scheduled daily capture job.
 
-- `GET /_dev/capture-traffic` — **Temporary development-only trigger route**
-  - No auth; intended only as a short-lived debug aid.
-  - Computes the previous completed UTC day only.
-  - Never targets the current UTC day.
-  - Calls the same shared per-day traffic capture helper used by scheduled cron and `/report` lazy backfill.
-  - Does not change cron schedule, `/report` semantics, or non-traffic metric behavior.
-  - Returns diagnostic JSON including `target_day`, `attempted`, `appears_successful`, `result` (`captured`/`skipped`/`failed`), and `details`.
-  - Must not report success when no row exists for the target day after the attempt.
-
 - Fallback behavior
   - `OPTIONS` returns `200`.
   - Non-`GET` methods return `405` JSON `{ "ok": false, "error": "method_not_allowed" }`.
