@@ -31,8 +31,10 @@ type CloudflareReferrersGraphQLResponse = {
     viewer?: {
       zones?: Array<{
         referrerData?: Array<{
-          httpReferer?: string | null;
           count?: number | null;
+          dimensions?: {
+            clientRequestHTTPReferer?: string | null;
+          };
         }>;
       }>;
     };
@@ -79,10 +81,11 @@ const BUSCORE_REFERRERS_QUERY = `query DailyBuscoreReferrers($zoneTag: string, $
           clientRequestHTTPHost: $host
           requestSource: "eyeball"
         }
-        groupBy: [httpReferer]
       ) {
-        httpReferer
         count
+        dimensions {
+          clientRequestHTTPReferer
+        }
       }
     }
   }
@@ -351,7 +354,7 @@ async function fetchTopReferrersForDay(env: Env, day: string): Promise<Array<{ r
 
   const referrers: Array<{ referrer: string; count: number }> = [];
   for (const row of rows) {
-    const referer = row.httpReferer ?? null;
+    const referer = row.dimensions?.clientRequestHTTPReferer ?? null;
     const count = row.count ?? null;
 
     if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) {
