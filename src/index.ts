@@ -339,28 +339,36 @@ async function fetchTopReferrersForDay(env: Env, day: string): Promise<Array<{ r
   });
 
   if (!response.ok) {
+    const errorMsg = `HTTP ${response.status}`;
+    console.error(`[Referrer Capture] Query failed: ${errorMsg}`);
     throw new Error(`cloudflare_referrers_graphql_http_${response.status}`);
   }
 
   const payload = (await response.json()) as CloudflareReferrersGraphQLResponse;
   if (payload.errors && payload.errors.length > 0) {
     const message = payload.errors.map((error) => error.message || "graphql_error").join("; ");
+    console.error(`[Referrer Capture] GraphQL error(s): ${message}`);
     throw new Error(`cloudflare_referrers_graphql_payload_${message}`);
   }
 
   const rows = payload.data?.viewer?.zones?.[0]?.referrerData;
   if (!rows || rows.length === 0) {
+    console.warn(
+      `[Referrer Capture] Query returned no rows. Payload structure: data=${!!payload.data}, viewer=${!!payload.data?.viewer}, zones=${!!payload.data?.viewer?.zones}, referrerData=${rows ? "exists but empty" : "missing"}`
+    );
     throw new Error("cloudflare_referrers_graphql_empty_result");
   }
 
   console.log(`[Referrer Capture] Query succeeded; ${rows.length} raw referrer row(s) returned from Cloudflare`);
 
   const referrers: Array<{ referrer: string; count: number }> = [];
+  let skippedCount = 0;
   for (const row of rows) {
     const referer = row.dimensions?.clientRequestHTTPReferer ?? null;
     const count = row.count ?? null;
 
     if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) {
+      skippedCount++;
       continue;
     }
 
@@ -368,10 +376,18 @@ async function fetchTopReferrersForDay(env: Env, day: string): Promise<Array<{ r
     referrers.push({ referrer: normalizedReferer, count });
   }
 
+  if (skippedCount > 0) {
+    console.log(`[Referrer Capture] Skipped ${skippedCount} row(s) with invalid/missing count metric`);
+  }
+
   if (referrers.length === 0) {
+    console.error(
+      `[Referrer Capture] No valid entries after filtering. All ${rows.length} rows either had invalid count or normalized to nothing.`
+    );
     throw new Error("cloudflare_referrers_no_valid_entries");
   }
 
+  console.log(`[Referrer Capture] Normalized to ${referrers.length} unique referrer(s) after aggregation`);
   return referrers;
 }
 
@@ -424,9 +440,9 @@ async function fetchReferrerSummaryForDay(env: Env, day: string): Promise<string
     console.log(`[Referrer Capture] Capture succeeded for day ${day}; referrer_summary will be populated.`);
     return summary;
   } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
     console.warn(
-      `[Referrer Capture] Referrer query failed for day ${day}; traffic totals will still be captured with referrer_summary=null.`,
-      error
+      `[Referrer Capture] Referrer capture failed for day ${day}; traffic totals will still be captured with referrer_summary=null. Error: ${errorMsg}`
     );
     return null;
   }
