@@ -50,6 +50,7 @@ Notes:
 - `/update/check` does not require `X-BUS-Update-Source: core` for counting.
 - If `IGNORED_IP` is configured and matches `CF-Connecting-IP`, counting is suppressed while normal responses are still returned.
 - `POST /metrics/pageview` is unauthenticated by design, accepts partial payloads, and still returns `204` for malformed or rate-limited submissions.
+- `POST /metrics/pageview` and its `OPTIONS` preflight only grant browser CORS access to `https://buscore.ca` and `https://www.buscore.ca`; Lighthouse does not use wildcard allow-origin on that route.
 - The deployed site emitter contract is accepted as-is: page-load-only, beacon-first, `fetch(..., { keepalive: true })` fallback, no retries, and no session logic.
 
 ## Report Response

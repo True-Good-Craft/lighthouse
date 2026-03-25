@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.8.1] - 2026-03-25
+
+### Fixed
+- Fix first-party pageview ingestion CORS so `POST /metrics/pageview` and its `OPTIONS` preflight return explicit allow-origin headers for `https://buscore.ca` and `https://www.buscore.ca` instead of wildcard `*`.
+- Prevent non-allowed origins from receiving broad wildcard browser access on the pageview ingestion route while preserving existing `OPTIONS 200` and `POST 204` behavior.
+
 ## [1.8.0] - 2026-03-25
 
 ### Added

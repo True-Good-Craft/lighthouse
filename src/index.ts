@@ -72,6 +72,7 @@ const RELEASE_PATH = /^\/releases\/([^/]+)$/;
 const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 const BUSCORE_HOST = "buscore.ca";
+const PAGEVIEW_ALLOWED_ORIGINS = new Set(["https://buscore.ca", "https://www.buscore.ca"]);
 const PAGEVIEW_INGEST_VERSION = "1.8.0";
 const PAGEVIEW_RATE_LIMIT_PER_MINUTE = 50;
 const PAGEVIEW_RAW_RETENTION_DAYS = 30;
@@ -743,11 +744,27 @@ function safeRatio(numerator: number, denominator: number): number {
   return numerator / Math.max(1, denominator);
 }
 
-function withCors(response: Response, allowMethods: string = "GET, OPTIONS"): Response {
+function withCors(request: Request, response: Response, allowMethods: string = "GET, OPTIONS"): Response {
   const headers = new Headers(response.headers);
-  for (const [key, value] of Object.entries(BASE_CORS_HEADERS)) {
-    headers.set(key, value);
+
+  if (new URL(request.url).pathname === PAGEVIEW_METRICS_PATH) {
+    const origin = request.headers.get("Origin");
+    if (origin && PAGEVIEW_ALLOWED_ORIGINS.has(origin)) {
+      headers.set("Access-Control-Allow-Origin", origin);
+      headers.set("Access-Control-Allow-Headers", "Content-Type");
+      headers.set("Vary", "Origin");
+    } else {
+      headers.delete("Access-Control-Allow-Origin");
+      headers.delete("Access-Control-Allow-Headers");
+      headers.delete("Access-Control-Allow-Credentials");
+      headers.delete("Vary");
+    }
+  } else {
+    for (const [key, value] of Object.entries(BASE_CORS_HEADERS)) {
+      headers.set(key, value);
+    }
   }
+
   headers.set("Access-Control-Allow-Methods", allowMethods);
 
   return new Response(response.body, {
@@ -777,7 +794,7 @@ export default {
 
     if (request.method === "OPTIONS") {
       const allowMethods = url.pathname === PAGEVIEW_METRICS_PATH ? "POST, OPTIONS" : "GET, OPTIONS";
-      return withCors(new Response(null, { status: 200 }), allowMethods);
+      return withCors(request, new Response(null, { status: 200 }), allowMethods);
     }
 
     if (url.pathname === PAGEVIEW_METRICS_PATH && request.method === "POST") {
@@ -786,11 +803,11 @@ export default {
           console.warn("Pageview ingest failed after 204 response.", error);
         })
       );
-      return withCors(new Response(null, { status: 204 }), "POST, OPTIONS");
+      return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
     }
 
     if (request.method !== "GET") {
-      return withCors(Response.json({ ok: false, error: "method_not_allowed" }, { status: 405 }));
+      return withCors(request, Response.json({ ok: false, error: "method_not_allowed" }, { status: 405 }));
     }
 
     if (url.pathname === MANIFEST_PATH) {
@@ -800,6 +817,7 @@ export default {
         if (!obj) {
           await incrementErrorCounterBestEffort(env.DB, day);
           return withCors(
+            request,
             new Response(JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
               status: 503,
               headers: {
@@ -810,6 +828,7 @@ export default {
         }
 
         return withCors(
+          request,
           new Response(obj.body, {
             status: 200,
             headers: {
@@ -821,6 +840,7 @@ export default {
       } catch {
         await incrementErrorCounterBestEffort(env.DB, day);
         return withCors(
+          request,
           new Response(JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
             status: 503,
             headers: {
@@ -838,6 +858,7 @@ export default {
         }
         const manifest = await readManifestFromR2(env);
         return withCors(
+          request,
           new Response(manifest.raw, {
             status: 200,
             headers: {
@@ -848,7 +869,7 @@ export default {
         );
       } catch {
         await incrementErrorCounterBestEffort(env.DB, day);
-        return withCors(Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 }));
+        return withCors(request, Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 }));
       }
     }
 
@@ -863,13 +884,13 @@ export default {
 
         if (!redirectUrl) {
           await incrementErrorCounterBestEffort(env.DB, day);
-          return withCors(Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 }));
+          return withCors(request, Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 }));
         }
 
-        return withCors(Response.redirect(redirectUrl, 302));
+        return withCors(request, Response.redirect(redirectUrl, 302));
       } catch {
         await incrementErrorCounterBestEffort(env.DB, day);
-        return withCors(Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 }));
+        return withCors(request, Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 }));
       }
     }
 
@@ -878,12 +899,12 @@ export default {
       const filename = releaseMatch[1];
 
       if (!RELEASE_FILENAME.test(filename)) {
-        return withCors(Response.json({ ok: false, error: "not_found" }, { status: 404 }));
+        return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
       }
 
       const object = await env.MANIFEST_R2.get(`releases/${filename}`);
       if (!object) {
-        return withCors(Response.json({ ok: false, error: "not_found" }, { status: 404 }));
+        return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
       }
 
       const headers = new Headers();
@@ -895,6 +916,7 @@ export default {
       }
 
       return withCors(
+        request,
         new Response(object.body, {
           status: 200,
           headers,
@@ -905,7 +927,7 @@ export default {
     if (url.pathname === "/report") {
       const token = request.headers.get("X-Admin-Token");
       if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
-        return withCors(Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
+        return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
       }
 
       try {
@@ -958,6 +980,7 @@ export default {
         ]);
 
         return withCors(
+          request,
           Response.json(
             {
               today,
@@ -995,10 +1018,10 @@ export default {
         );
       } catch {
         await incrementErrorCounterBestEffort(env.DB, day);
-        return withCors(Response.json({ ok: false, error: "report_unavailable" }, { status: 503 }));
+        return withCors(request, Response.json({ ok: false, error: "report_unavailable" }, { status: 503 }));
       }
     }
 
-    return withCors(Response.json({ ok: false, error: "not_found" }, { status: 404 }));
+    return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
   },
 };
