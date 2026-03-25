@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.8.7] - 2026-03-25
+
+### Fixed
+- Fix `POST /metrics/pageview` body-capture diagnostics to preserve and pass a structured capture result from the request path (`raw`, `body_capture_stage_reached`, `capture_error`) into deferred ingest work.
+- Complete `POST /metrics/pageview` body capture on the request path before returning `204`, then pass that same captured result into deferred ingest processing to eliminate read-after-response race behavior.
+- Expose previously swallowed body-read exceptions as `capture_error` when body capture fails, instead of collapsing all failures to `null` body text.
+- Ensure invalid-json debug logging uses the same captured raw body string passed to parser handling, so `raw_body_length` and `raw_body_preview` reflect the real captured value.
+
+### Added
+- Add temporary explicit body-capture debug snapshots for both accepted and invalid-json pageview ingest paths with `body_capture_stage_reached`, `raw_body_length`, and `capture_error` fields.
+
+### Changed
+- Bump `ingest_version` emitted to raw pageview rows from `1.8.6` to `1.8.7`.
+
 ## [1.8.6] - 2026-03-25
 
 ### Fixed

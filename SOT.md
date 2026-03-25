@@ -104,12 +104,13 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - Never emits client-visible error detail for malformed, partial, or rate-limited submissions.
   - Uses `ctx.waitUntil(...)` so response completion stays fast for beacon and keepalive callers.
   - Reads request body exactly once as raw text and then JSON-decodes from that same raw string, without requiring strict request `Content-Type` matching for valid JSON bodies.
-  - For `POST /metrics/pageview`, raw body capture is initiated on the request path before returning `204`, and ingest persistence/parsing work continues in `ctx.waitUntil(...)`.
+  - For `POST /metrics/pageview`, raw body capture is completed on the request path before returning `204`, and ingest persistence/parsing work continues in `ctx.waitUntil(...)`.
   - Validates the canonical emitter shape: `type = "pageview"`, required string fields `client_ts`, `path`, `url`, `referrer`, `device`, `viewport`, `lang`, `tz`, and required object field `utm` (which may be `{}`).
   - Optional fields `src` and `utm.{source,medium,campaign,content}` may be omitted and are stored as `NULL` when missing.
   - Empty-string values are accepted for `referrer`, `lang`, and `tz` and are stored as empty strings.
   - If the body is unreadable, empty, invalid JSON, or contract-invalid on required fields, Lighthouse still returns `204` and records the submission as dropped-invalid when persistence is available.
-  - Temporary ingest debugging aid (version-scoped) logs invalid-json drops only, capturing request `Content-Type`, raw body length, first about 500 characters of raw body text, and an inferred beacon/fetch transport hint from request metadata.
+  - Temporary ingest debugging aid (version-scoped) logs body-capture snapshots for accepted and invalid-json ingest paths, including `body_capture_stage_reached`, `raw_body_length`, and `capture_error`.
+  - The same temporary debug aid includes invalid-json raw body preview logging (first about 500 characters) plus request `Content-Type` and inferred beacon/fetch transport hint from request metadata.
   - Performs server-side enrichment with canonical `received_at`, canonical `received_day`, parsed `referrer_domain`, Cloudflare `country` when available, `request_id` from `CF-Ray` when available, and fixed `ingest_version`.
   - Canonical ordering and aggregation are always based on `received_at` / `received_day`, never `client_ts`.
   - Accepted submissions are marked `js_fired = true`.

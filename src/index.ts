@@ -49,6 +49,24 @@ type PageviewSummaryRow = {
   days_with_data?: number | null;
 };
 type TopPageviewDimRow = { value: string; pageviews: number };
+type PageviewBodyCapture = {
+  raw: string | null;
+  body_capture_stage_reached: boolean;
+  capture_error: string | null;
+};
+type PageviewRequestContext = {
+  method: string;
+  origin: string | null;
+  contentType: string | null;
+  clientIp: string | null;
+  country: string | null;
+  requestId: string | null;
+  userAgent: string | null;
+  secFetchMode: string | null;
+  secFetchDest: string | null;
+  keepalive: boolean;
+  transportHint: string;
+};
 type CloudflareGraphQLResponse = {
   data?: {
     viewer?: {
@@ -73,7 +91,7 @@ const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 const BUSCORE_HOST = "buscore.ca";
 const PAGEVIEW_ALLOWED_ORIGINS = new Set(["https://buscore.ca", "https://www.buscore.ca"]);
-const PAGEVIEW_INGEST_VERSION = "1.8.6";
+const PAGEVIEW_INGEST_VERSION = "1.8.7";
 const PAGEVIEW_INVALID_JSON_DEBUG_ENABLED = true;
 const PAGEVIEW_INVALID_JSON_DEBUG_PREVIEW_CHARS = 500;
 const PAGEVIEW_RATE_LIMIT_PER_MINUTE = 50;
@@ -284,6 +302,18 @@ function parseReferrerDomain(referrer: string | null): string | null {
     return hostname || null;
   } catch {
     return null;
+  }
+}
+
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
   }
 }
 
@@ -605,10 +635,14 @@ function buildPageviewRawEvent(
   };
 }
 
-function inferPageviewTransportHint(request: Request): string {
-  const secFetchMode = nullIfBlank(request.headers.get("Sec-Fetch-Mode"));
-  const secFetchDest = nullIfBlank(request.headers.get("Sec-Fetch-Dest"));
-  const keepalive = (request as Request & { keepalive?: boolean }).keepalive === true;
+function inferPageviewTransportHint(context: {
+  secFetchMode: string | null;
+  secFetchDest: string | null;
+  keepalive: boolean;
+}): string {
+  const secFetchMode = context.secFetchMode;
+  const secFetchDest = context.secFetchDest;
+  const keepalive = context.keepalive;
 
   if (keepalive && secFetchMode === "no-cors") {
     return "beacon_or_keepalive_fetch_likely";
@@ -633,28 +667,56 @@ function inferPageviewTransportHint(request: Request): string {
   return "unknown";
 }
 
-function logInvalidJsonDebug(request: Request, metadata: { requestId: string | null }, bodyText: string | null): void {
+function buildPageviewRequestContext(request: Request): PageviewRequestContext {
+  const secFetchMode = nullIfBlank(request.headers.get("Sec-Fetch-Mode"));
+  const secFetchDest = nullIfBlank(request.headers.get("Sec-Fetch-Dest"));
+  const keepalive = (request as Request & { keepalive?: boolean }).keepalive === true;
+
+  return {
+    method: request.method,
+    origin: nullIfBlank(request.headers.get("Origin")),
+    contentType: request.headers.get("Content-Type"),
+    clientIp: getClientIp(request),
+    country: getCountry(request),
+    requestId: getRequestId(request),
+    userAgent: nullIfBlank(request.headers.get("User-Agent")),
+    secFetchMode,
+    secFetchDest,
+    keepalive,
+    transportHint: inferPageviewTransportHint({ secFetchMode, secFetchDest, keepalive }),
+  };
+}
+
+function logPageviewBodyCaptureDebug(
+  stage: "accepted" | "invalid_json",
+  context: PageviewRequestContext,
+  capture: PageviewBodyCapture,
+  rawBodyPreview: string | null
+): void {
   if (!PAGEVIEW_INVALID_JSON_DEBUG_ENABLED) {
     return;
   }
 
-  const contentType = request.headers.get("Content-Type");
-  const rawBodyLength = bodyText === null ? null : bodyText.length;
-  const rawBodyPreview =
-    bodyText === null ? null : bodyText.slice(0, PAGEVIEW_INVALID_JSON_DEBUG_PREVIEW_CHARS);
+  const rawBodyLength = capture.raw === null ? null : capture.raw.length;
+  const logMethod = stage === "invalid_json" ? console.warn : console.info;
 
-  console.warn(
-    "Pageview invalid_json debug snapshot",
+  logMethod(
+    "Pageview ingest body-capture debug snapshot",
     JSON.stringify({
       ingest_version: PAGEVIEW_INGEST_VERSION,
-      request_id: metadata.requestId,
-      content_type: contentType,
+      stage,
+      request_method: context.method,
+      origin: context.origin,
+      request_id: context.requestId,
+      content_type: context.contentType,
+      body_capture_stage_reached: capture.body_capture_stage_reached,
       raw_body_length: rawBodyLength,
       raw_body_preview: rawBodyPreview,
-      transport_hint: inferPageviewTransportHint(request),
-      sec_fetch_mode: request.headers.get("Sec-Fetch-Mode"),
-      sec_fetch_dest: request.headers.get("Sec-Fetch-Dest"),
-      keepalive: (request as Request & { keepalive?: boolean }).keepalive === true,
+      capture_error: capture.capture_error,
+      transport_hint: context.transportHint,
+      sec_fetch_mode: context.secFetchMode,
+      sec_fetch_dest: context.secFetchDest,
+      keepalive: context.keepalive,
     })
   );
 }
@@ -677,11 +739,16 @@ function readAndParsePageviewBody(raw: string | null):
   }
 }
 
-async function readRawBodyText(request: Request): Promise<string | null> {
+async function readRawBodyCapture(request: Request): Promise<PageviewBodyCapture> {
   try {
-    return await request.text();
-  } catch {
-    return null;
+    const raw = await request.text();
+    return { raw, body_capture_stage_reached: true, capture_error: null };
+  } catch (error) {
+    return {
+      raw: null,
+      body_capture_stage_reached: false,
+      capture_error: errorToMessage(error),
+    };
   }
 }
 
@@ -705,29 +772,33 @@ async function persistDroppedInvalidPageview(
   });
 }
 
-async function processPageviewIngest(request: Request, rawBodyText: string | null, env: Env): Promise<void> {
+async function processPageviewIngest(
+  capture: PageviewBodyCapture,
+  requestContext: PageviewRequestContext,
+  env: Env
+): Promise<void> {
   const receivedAt = new Date();
   const receivedAtIso = receivedAt.toISOString();
   const receivedDay = utcDay(receivedAt);
-  const clientIp = getClientIp(request);
-  const userAgent = nullIfBlank(request.headers.get("User-Agent"));
   const [ipHash, userAgentHash] = await Promise.all([
-    clientIp ? sha256Hex(clientIp) : Promise.resolve(null),
-    userAgent ? sha256Hex(userAgent) : Promise.resolve(null),
+    requestContext.clientIp ? sha256Hex(requestContext.clientIp) : Promise.resolve(null),
+    requestContext.userAgent ? sha256Hex(requestContext.userAgent) : Promise.resolve(null),
   ]);
 
   const metadata = {
     receivedAt: receivedAtIso,
     receivedDay,
-    country: getCountry(request),
+    country: requestContext.country,
     ipHash,
     userAgentHash,
-    requestId: getRequestId(request),
+    requestId: requestContext.requestId,
   };
 
-  const parsedBody = readAndParsePageviewBody(rawBodyText);
+  const parsedBody = readAndParsePageviewBody(capture.raw);
   if (!parsedBody.ok) {
-    logInvalidJsonDebug(request, metadata, parsedBody.raw);
+    const rawBodyPreview =
+      parsedBody.raw === null ? null : parsedBody.raw.slice(0, PAGEVIEW_INVALID_JSON_DEBUG_PREVIEW_CHARS);
+    logPageviewBodyCaptureDebug("invalid_json", requestContext, capture, rawBodyPreview);
     await persistDroppedInvalidPageview(env.DB, metadata);
     return;
   }
@@ -739,6 +810,8 @@ async function processPageviewIngest(request: Request, rawBodyText: string | nul
     await persistDroppedInvalidPageview(env.DB, metadata);
     return;
   }
+
+  logPageviewBodyCaptureDebug("accepted", requestContext, capture, null);
 
   let accepted = 1;
   let dropReason: string | null = null;
@@ -971,10 +1044,10 @@ export default {
     }
 
     if (url.pathname === PAGEVIEW_METRICS_PATH && request.method === "POST") {
-      const rawBodyPromise = readRawBodyText(request);
+      const requestContext = buildPageviewRequestContext(request);
+      const capture = await readRawBodyCapture(request);
       ctx.waitUntil(
-        rawBodyPromise
-          .then((rawBodyText) => processPageviewIngest(request, rawBodyText, env))
+        processPageviewIngest(capture, requestContext, env)
           .catch((error) => {
             console.warn("Pageview ingest failed after 204 response.", error);
           })
