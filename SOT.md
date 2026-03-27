@@ -106,15 +106,17 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - Reads request body exactly once as raw text and then JSON-decodes from that same raw string, without requiring strict request `Content-Type` matching for valid JSON bodies.
   - For `POST /metrics/pageview`, raw body capture is completed on the request path before returning `204`, and ingest persistence/parsing work continues in `ctx.waitUntil(...)`.
   - Validates the canonical emitter shape: `type = "pageview"`, required string fields `client_ts`, `path`, `url`, `referrer`, `device`, `viewport`, `lang`, `tz`, and required object field `utm` (which may be `{}`).
-  - Optional fields `src` and `utm.{source,medium,campaign,content}` may be omitted and are stored as `NULL` when missing.
+  - Optional fields `src`, `utm.{source,medium,campaign,content}`, `anon_user_id`, `session_id`, and `is_new_user` may be omitted and are stored as nullable/default values when missing.
   - Empty-string values are accepted for `referrer`, `lang`, and `tz` and are stored as empty strings.
+  - `anon_user_id` and `session_id` are nullable anonymous UUID-like continuity fields; malformed values are nulled and ingestion continues.
+  - `is_new_user` is coerced from boolean-like inputs into integer `0/1` and defaults to `0` when absent or malformed.
   - If the body is unreadable, empty, invalid JSON, or contract-invalid on required fields, Lighthouse still returns `204` and records the submission as dropped-invalid when persistence is available.
   - Temporary ingest debugging aid (version-scoped) logs body-capture snapshots for accepted and invalid-json ingest paths, including `body_capture_stage_reached`, `raw_body_length`, and `capture_error`.
   - The same temporary debug aid includes invalid-json raw body preview logging (first about 500 characters) plus request `Content-Type` and inferred beacon/fetch transport hint from request metadata.
   - Performs server-side enrichment with canonical `received_at`, canonical `received_day`, parsed `referrer_domain`, Cloudflare `country` when available, `request_id` from `CF-Ray` when available, and fixed `ingest_version`.
   - Canonical ordering and aggregation are always based on `received_at` / `received_day`, never `client_ts`.
   - Accepted submissions are marked `js_fired = true`.
-  - Lighthouse accepts the deployed site emitter contract as authoritative and does not add auth, retries, session tracking, identity, unload analytics, or client/server reconciliation logic.
+  - Lighthouse accepts the deployed site emitter contract as authoritative and does not add auth, retries, synthetic identity reconstruction, unload analytics, or client/server reconciliation logic.
 
 ### Pageview Noise Control
 
@@ -165,7 +167,8 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `requests` is sourced from daily request `count` on `httpRequestsAdaptiveGroups`.
 - `visits` is sourced from `sum.visits` on `httpRequestsAdaptiveGroups` when present, and remains nullable.
 - `pageview_events_raw` stores append-only first-party pageview submissions for about 30 UTC days with only narrow event fields required for inspectability, debugging, and source/path attribution.
-- `pageview_events_raw` stores `ip_hash` and `user_agent_hash` as SHA-256 hashes when those source values are present; Lighthouse does not store raw IPs, identity, or session state.
+- `pageview_events_raw` stores `ip_hash` and `user_agent_hash` as SHA-256 hashes when those source values are present; Lighthouse does not store raw IPs.
+- `pageview_events_raw` also stores optional anonymous continuity fields `anon_user_id`, `session_id`, and `is_new_user` from first-party payloads.
 - `pageview_events_raw.accepted = 1` means the submission counted toward accepted pageview aggregates.
 - `pageview_events_raw.drop_reason` is currently limited to `invalid_json` and `rate_limited` when populated.
 - `pageview_daily` stores one row per `received_day` with accepted pageview totals, drop counters, and the latest observed `received_at` for that day.
@@ -201,7 +204,7 @@ No new bindings or secrets are introduced by pageview ingestion.
 ### Report Contract Stability
 
 - `GET /report` is an operator-facing contract, not an ad-hoc analytics surface.
-- Current shipped response shape includes: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`.
+- Current shipped response shape includes: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`, `identity`.
 - Current shipped `trends` fields include: `downloads_change_percent`, `update_checks_change_percent`, `weekly_downloads_change_percent`, `weekly_update_checks_change_percent`, `conversion_ratio`.
 - `conversion_ratio` is defined as today downloads divided by today update checks (with safe zero-denominator handling).
 - `traffic.latest_day` contains the most recent completed UTC day stored in `buscore_traffic_daily` with fields `day`, `visits`, `requests`, `captured_at`.
@@ -214,6 +217,11 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `human_traffic.last_7_days.top_referrers` entries use `{ referrer_domain, pageviews }`.
 - `human_traffic.last_7_days.top_sources` entries use `{ source, pageviews }` with deterministic precedence `src -> utm.source -> (direct)`.
 - `human_traffic.observability` is cumulative across stored pageview aggregate rows and contains `accepted`, `dropped_rate_limited`, `dropped_invalid`, and `last_received_at`.
+- `identity` is additive only and summarizes anonymous continuity from accepted rows with non-null identity/session fields when present.
+- `identity.today` contains `new_users`, `returning_users`, and `sessions` for the current UTC day.
+- `identity.last_7_days` contains `new_users`, `returning_users`, `sessions`, and `return_rate` across the current UTC day plus previous six UTC days.
+- `identity.top_sources_by_returning_users` contains ranked `{ source, users }` using precedence `src -> utm.source -> (direct)`.
+- `identity.last_7_days.return_rate` is defined as `returning_users / distinct_users` where `distinct_users` means distinct non-null `anon_user_id` values in the same 7-day window; zero denominator returns `0`.
 - Existing non-traffic `/report` fields remain intact and semantically unchanged.
 - If a requested traffic window has no stored traffic rows, its traffic fields return `NULL` rather than synthetic zeroes.
 - `avg_daily_visits` and `avg_daily_requests` are computed using `days_with_data` (stored rows in the 7-day window) as the divisor; Lighthouse does not divide by seven unless seven rows exist.
@@ -224,8 +232,10 @@ No new bindings or secrets are introduced by pageview ingestion.
 ## 7. Privacy and Security
 
 - Aggregate-first storage in D1 with narrow raw pageview retention for about 30 UTC days.
-- No user identifiers, identity model, cookies, or session tracking are introduced by Lighthouse.
+- Lighthouse does not introduce account-linked identity, cookies, browser fingerprinting, or cross-device identity reconstruction.
 - First-party pageview ingestion stores hashed IP and hashed user-agent values only when present and does not store raw IPs.
+- Anonymous continuity values are first-party random UUID-like values and remain independent from `ip_hash` and `user_agent_hash`.
+- Lighthouse must not combine `anon_user_id` with `ip_hash` or `user_agent_hash` into synthetic identity.
 - Traffic capture uses Cloudflare aggregate analytics only; no raw request logging is introduced outside the documented narrow pageview ingestion path.
 - `/report` is protected by `X-Admin-Token` exact match to `env.ADMIN_TOKEN`.
 
@@ -236,4 +246,4 @@ No new bindings or secrets are introduced by pageview ingestion.
 - No Discord webhook integration.
 - No automatic push reporting.
 - No broad analytics warehousing.
-- No retries, unload-trigger analytics, session tracking, or identity semantics for pageview ingestion.
+- No retries, unload-trigger analytics, account identity semantics, or fingerprinting behavior for pageview ingestion.

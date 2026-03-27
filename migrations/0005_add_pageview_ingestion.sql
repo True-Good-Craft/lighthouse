@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS pageview_events_raw (
   viewport        TEXT    NULL,
   lang            TEXT    NULL,
   tz              TEXT    NULL,
+  anon_user_id    TEXT    NULL,
+  session_id      TEXT    NULL,
+  is_new_user     INTEGER NOT NULL DEFAULT 0,
   country         TEXT    NULL,
   js_fired        INTEGER NOT NULL DEFAULT 1,
   ip_hash         TEXT    NULL,
@@ -28,6 +31,15 @@ CREATE TABLE IF NOT EXISTS pageview_events_raw (
 
 CREATE INDEX IF NOT EXISTS idx_pageview_events_raw_received_day
   ON pageview_events_raw(received_day);
+
+CREATE INDEX IF NOT EXISTS idx_pageview_events_raw_day_anon_user
+  ON pageview_events_raw(received_day, anon_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_pageview_events_raw_day_session
+  ON pageview_events_raw(received_day, session_id);
+
+CREATE INDEX IF NOT EXISTS idx_pageview_events_raw_anon_user
+  ON pageview_events_raw(anon_user_id);
 
 CREATE TABLE IF NOT EXISTS pageview_daily (
   day                  TEXT    PRIMARY KEY,

@@ -25,6 +25,9 @@ type PageviewInput = {
   viewport: string | null;
   lang: string | null;
   tz: string | null;
+  anon_user_id: string | null;
+  session_id: string | null;
+  is_new_user: number;
 };
 type PageviewRawEvent = PageviewInput & {
   id: string;
@@ -49,6 +52,25 @@ type PageviewSummaryRow = {
   days_with_data?: number | null;
 };
 type TopPageviewDimRow = { value: string; pageviews: number };
+type IdentityEventRow = {
+  received_day: string;
+  anon_user_id: string | null;
+  session_id: string | null;
+  is_new_user: number;
+  src: string | null;
+  utm_source: string | null;
+};
+type IdentityFirstSeenRow = { anon_user_id: string; first_seen_day: string };
+type IdentityWindowMetrics = {
+  new_users: number;
+  returning_users: number;
+  sessions: number;
+};
+type IdentitySummary = {
+  today: IdentityWindowMetrics;
+  last_7_days: IdentityWindowMetrics & { return_rate: number };
+  top_sources_by_returning_users: Array<{ source: string; users: number }>;
+};
 type PageviewBodyCapture = {
   raw: string | null;
   body_capture_stage_reached: boolean;
@@ -91,7 +113,7 @@ const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 const BUSCORE_HOST = "buscore.ca";
 const PAGEVIEW_ALLOWED_ORIGINS = new Set(["https://buscore.ca", "https://www.buscore.ca"]);
-const PAGEVIEW_INGEST_VERSION = "1.8.7";
+const PAGEVIEW_INGEST_VERSION = "1.9.0";
 const PAGEVIEW_INVALID_JSON_DEBUG_ENABLED = true;
 const PAGEVIEW_INVALID_JSON_DEBUG_PREVIEW_CHARS = 500;
 const PAGEVIEW_RATE_LIMIT_PER_MINUTE = 50;
@@ -99,6 +121,7 @@ const PAGEVIEW_RAW_RETENTION_DAYS = 30;
 const PAGEVIEW_RATE_LIMIT_RETENTION_DAYS = 2;
 const TOP_PAGEVIEW_DIMENSION_LIMIT = 5;
 const DIRECT_SOURCE_LABEL = "(direct)";
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGEVIEW_ALLOWED_DEVICES = new Set(["desktop", "mobile", "tablet"]);
 const PAGEVIEW_VIEWPORT_PATTERN = /^\d+x\d+$/;
 const BUSCORE_TRAFFIC_QUERY = `query DailyBuscoreTraffic($zoneTag: string, $start: Time!, $end: Time!, $host: string!) {
@@ -191,7 +214,53 @@ function emptyPageviewInput(): PageviewInput {
     viewport: null,
     lang: null,
     tz: null,
+    anon_user_id: null,
+    session_id: null,
+    is_new_user: 0,
   };
+}
+
+export function normalizeOptionalAnonymousId(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 128) {
+    return null;
+  }
+
+  // Keep ingest permissive for backward compatibility while filtering obvious garbage.
+  if (!UUID_V4_PATTERN.test(normalized)) {
+    return null;
+  }
+
+  return normalized.toLowerCase();
+}
+
+export function coerceBooleanLikeToInt(value: unknown): number {
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    return value === 1 ? 1 : 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+      return 1;
+    }
+    if (["0", "false", "no", "n", "off", ""].includes(normalized)) {
+      return 0;
+    }
+  }
+
+  return 0;
 }
 
 function readRequiredString(root: Record<string, unknown>, key: string, allowEmpty: boolean = false): string | null {
@@ -221,7 +290,7 @@ function isValidAbsoluteUrl(value: string): boolean {
   }
 }
 
-function parseCanonicalPageviewPayload(payload: unknown): PageviewInput | null {
+export function parseCanonicalPageviewPayload(payload: unknown): PageviewInput | null {
   const root = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
   if (root.type !== "pageview") {
     return null;
@@ -289,6 +358,9 @@ function parseCanonicalPageviewPayload(payload: unknown): PageviewInput | null {
     viewport,
     lang,
     tz,
+    anon_user_id: normalizeOptionalAnonymousId(root.anon_user_id),
+    session_id: normalizeOptionalAnonymousId(root.session_id),
+    is_new_user: coerceBooleanLikeToInt(root.is_new_user),
   };
 }
 
@@ -491,10 +563,167 @@ async function queryTopPageviewSources(
   return rows.results ?? [];
 }
 
+function resolveSourceLabel(src: string | null, utmSource: string | null): string {
+  if (src && src.trim()) {
+    return src.trim();
+  }
+
+  if (utmSource && utmSource.trim()) {
+    return utmSource.trim();
+  }
+
+  return DIRECT_SOURCE_LABEL;
+}
+
+export function summarizeIdentity(
+  events: IdentityEventRow[],
+  firstSeenByUser: Map<string, string>,
+  todayDay: string,
+  last7StartDay: string,
+  topLimit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): IdentitySummary {
+  const todayNewUsers = new Set<string>();
+  const todaySessions = new Set<string>();
+  const todayUsers = new Set<string>();
+
+  const usersInWindow = new Set<string>();
+  const userVisitDaysInWindow = new Map<string, Set<string>>();
+  const sessionsInWindow = new Set<string>();
+  const eventSourcesByUser = new Map<string, Set<string>>();
+
+  for (const event of events) {
+    if (event.received_day === todayDay) {
+      if (event.session_id) {
+        todaySessions.add(event.session_id);
+      }
+
+      if (event.anon_user_id) {
+        todayUsers.add(event.anon_user_id);
+        if (event.is_new_user === 1) {
+          todayNewUsers.add(event.anon_user_id);
+        }
+      }
+    }
+
+    if (event.session_id) {
+      sessionsInWindow.add(event.session_id);
+    }
+
+    if (!event.anon_user_id) {
+      continue;
+    }
+
+    const anonUserId = event.anon_user_id;
+    usersInWindow.add(anonUserId);
+
+    if (!userVisitDaysInWindow.has(anonUserId)) {
+      userVisitDaysInWindow.set(anonUserId, new Set<string>());
+    }
+    userVisitDaysInWindow.get(anonUserId)?.add(event.received_day);
+
+    if (!eventSourcesByUser.has(anonUserId)) {
+      eventSourcesByUser.set(anonUserId, new Set<string>());
+    }
+    eventSourcesByUser.get(anonUserId)?.add(resolveSourceLabel(event.src, event.utm_source));
+  }
+
+  const todayReturningUsers = new Set<string>();
+  for (const anonUserId of todayUsers) {
+    const firstSeen = firstSeenByUser.get(anonUserId);
+    if (firstSeen && firstSeen < todayDay) {
+      todayReturningUsers.add(anonUserId);
+    }
+  }
+
+  const windowNewUsers = new Set<string>();
+  const windowReturningUsers = new Set<string>();
+  for (const anonUserId of usersInWindow) {
+    const firstSeen = firstSeenByUser.get(anonUserId);
+    if (firstSeen && firstSeen >= last7StartDay && firstSeen <= todayDay) {
+      windowNewUsers.add(anonUserId);
+    }
+
+    const daysSeenInWindow = userVisitDaysInWindow.get(anonUserId)?.size ?? 0;
+    if ((firstSeen && firstSeen < last7StartDay) || daysSeenInWindow > 1) {
+      windowReturningUsers.add(anonUserId);
+    }
+  }
+
+  const usersBySource = new Map<string, Set<string>>();
+  for (const anonUserId of windowReturningUsers) {
+    const sources = eventSourcesByUser.get(anonUserId);
+    if (!sources) {
+      continue;
+    }
+
+    for (const source of sources) {
+      if (!usersBySource.has(source)) {
+        usersBySource.set(source, new Set<string>());
+      }
+      usersBySource.get(source)?.add(anonUserId);
+    }
+  }
+
+  const topSourcesByReturningUsers = Array.from(usersBySource.entries())
+    .map(([source, users]) => ({ source, users: users.size }))
+    .sort((a, b) => (b.users - a.users) || a.source.localeCompare(b.source))
+    .slice(0, topLimit);
+
+  const distinctUsersInWindow = usersInWindow.size;
+  const returnRate = distinctUsersInWindow === 0 ? 0 : windowReturningUsers.size / distinctUsersInWindow;
+
+  return {
+    today: {
+      new_users: todayNewUsers.size,
+      returning_users: todayReturningUsers.size,
+      sessions: todaySessions.size,
+    },
+    last_7_days: {
+      new_users: windowNewUsers.size,
+      returning_users: windowReturningUsers.size,
+      sessions: sessionsInWindow.size,
+      return_rate: returnRate,
+    },
+    top_sources_by_returning_users: topSourcesByReturningUsers,
+  };
+}
+
+async function queryAcceptedIdentityEventsInRange(
+  db: D1Database,
+  startDay: string,
+  endDay: string
+): Promise<IdentityEventRow[]> {
+  const rows = await db
+    .prepare(
+      "SELECT received_day, anon_user_id, session_id, is_new_user, src, utm_source FROM pageview_events_raw WHERE accepted = 1 AND received_day >= ? AND received_day <= ?"
+    )
+    .bind(startDay, endDay)
+    .all<IdentityEventRow>();
+
+  return rows.results ?? [];
+}
+
+async function queryIdentityFirstSeen(db: D1Database): Promise<Map<string, string>> {
+  const rows = await db
+    .prepare(
+      "SELECT anon_user_id, MIN(received_day) AS first_seen_day FROM pageview_events_raw WHERE accepted = 1 AND anon_user_id IS NOT NULL GROUP BY anon_user_id"
+    )
+    .all<IdentityFirstSeenRow>();
+
+  const mapping = new Map<string, string>();
+  for (const row of rows.results ?? []) {
+    if (row.anon_user_id && row.first_seen_day) {
+      mapping.set(row.anon_user_id, row.first_seen_day);
+    }
+  }
+
+  return mapping;
+}
+
 async function insertPageviewRawEvent(db: D1Database, event: PageviewRawEvent): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO pageview_events_raw(id, received_at, received_day, client_ts, path, url, referrer, referrer_domain, src, utm_source, utm_medium, utm_campaign, utm_content, device, viewport, lang, tz, country, js_fired, ip_hash, user_agent_hash, accepted, drop_reason, request_id, ingest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO pageview_events_raw(id, received_at, received_day, client_ts, path, url, referrer, referrer_domain, src, utm_source, utm_medium, utm_campaign, utm_content, device, viewport, lang, tz, anon_user_id, session_id, is_new_user, country, js_fired, ip_hash, user_agent_hash, accepted, drop_reason, request_id, ingest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(
       event.id,
@@ -514,6 +743,9 @@ async function insertPageviewRawEvent(db: D1Database, event: PageviewRawEvent): 
       event.viewport,
       event.lang,
       event.tz,
+      event.anon_user_id,
+      event.session_id,
+      event.is_new_user,
       event.country,
       event.js_fired,
       event.ip_hash,
@@ -624,6 +856,9 @@ function buildPageviewRawEvent(
     viewport: input.viewport,
     lang: input.lang,
     tz: input.tz,
+    anon_user_id: input.anon_user_id,
+    session_id: input.session_id,
+    is_new_user: input.is_new_user,
     country: metadata.country,
     js_fired: 1,
     ip_hash: metadata.ipHash,
@@ -1212,6 +1447,8 @@ export default {
           topPaths,
           topReferrers,
           topSources,
+          identityEvents,
+          firstSeenByIdentity,
         ] = await Promise.all([
           queryTotalsInRange(env.DB, todayDay, todayDay),
           queryTotalsInRange(env.DB, yesterdayDay, yesterdayDay),
@@ -1226,7 +1463,11 @@ export default {
           queryTopPageviewDimensions(env.DB, last7StartDay, todayDay, "path"),
           queryTopPageviewDimensions(env.DB, last7StartDay, todayDay, "referrer_domain"),
           queryTopPageviewSources(env.DB, last7StartDay, todayDay),
+          queryAcceptedIdentityEventsInRange(env.DB, last7StartDay, todayDay),
+          queryIdentityFirstSeen(env.DB),
         ]);
+
+        const identity = summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, last7StartDay);
 
         return withCors(
           request,
@@ -1261,6 +1502,7 @@ export default {
                 },
                 observability: humanObservability,
               },
+              identity,
             },
             { status: 200 }
           )

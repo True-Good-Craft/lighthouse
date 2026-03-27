@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.9.0] - 2026-03-26
+
+### Added
+- Extend `POST /metrics/pageview` ingest contract to accept optional anonymous continuity fields: `anon_user_id`, `session_id`, and `is_new_user` without breaking older clients.
+- Add D1 migration `0006_add_anonymous_continuity.sql` adding raw pageview continuity columns and targeted indexes for identity/session retention queries.
+- Extend `GET /report` with additive top-level `identity` block containing:
+	- `today.{new_users,returning_users,sessions}`
+	- `last_7_days.{new_users,returning_users,sessions,return_rate}`
+	- `top_sources_by_returning_users`
+
+### Changed
+- Increase pageview ingest runtime marker to `1.9.0`.
+- Keep identity processing aggregate-first and anonymous by using first-party continuity fields only; no synthetic identity reconstruction from IP or user-agent hashes.
+
+### Fixed
+- Ensure malformed continuity fields are sanitized (`anon_user_id`/`session_id` nulled, `is_new_user` coerced to `0`) instead of causing brittle event rejection when the base pageview payload remains valid.
+
 ## [1.8.7] - 2026-03-25
 
 ### Fixed

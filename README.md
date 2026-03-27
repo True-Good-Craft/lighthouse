@@ -50,7 +50,7 @@ Notes:
 - `/update/check` does not require `X-BUS-Update-Source: core` for counting.
 - If `IGNORED_IP` is configured and matches `CF-Connecting-IP`, counting is suppressed while normal responses are still returned.
 - `POST /metrics/pageview` is unauthenticated by design, parses raw request text then JSON, and still returns `204` for malformed, invalid, or rate-limited submissions.
-- Valid accepted payloads follow the deployed BUS Core site emitter contract: `type = "pageview"`; required fields `client_ts`, `path`, `url`, `referrer`, `utm` object, `device`, `viewport`, `lang`, and `tz`; optional omitted fields `src` and `utm.{source,medium,campaign,content}`.
+- Valid accepted payloads follow the deployed BUS Core site emitter contract: `type = "pageview"`; required fields `client_ts`, `path`, `url`, `referrer`, `utm` object, `device`, `viewport`, `lang`, and `tz`; optional omitted fields `src`, `utm.{source,medium,campaign,content}`, `anon_user_id`, `session_id`, and `is_new_user`.
 - Empty-string values for `referrer`, `lang`, and `tz` are accepted and preserved as empty strings in raw storage.
 - `POST /metrics/pageview` and its `OPTIONS` preflight only grant browser CORS access to `https://buscore.ca` and `https://www.buscore.ca`; Lighthouse does not use wildcard allow-origin on that route.
 - The deployed site emitter contract is accepted as-is: page-load-only, beacon-first, `fetch(..., { keepalive: true })` fallback, no retries, and no session logic.
@@ -105,6 +105,20 @@ Notes:
       "dropped_invalid": 0,
       "last_received_at": null
     }
+  },
+  "identity": {
+    "today": {
+      "new_users": 0,
+      "returning_users": 0,
+      "sessions": 0
+    },
+    "last_7_days": {
+      "new_users": 0,
+      "returning_users": 0,
+      "sessions": 0,
+      "return_rate": 0
+    },
+    "top_sources_by_returning_users": []
   }
 }
 ```
@@ -125,6 +139,8 @@ Contract note:
 - `human_traffic.last_7_days.top_referrers` entries use `{ referrer_domain, pageviews }`.
 - `human_traffic.last_7_days.top_sources` entries use `{ source, pageviews }` with precedence `src -> utm.source -> (direct)`.
 - `human_traffic.observability` is cumulative across stored pageview aggregate rows and reports accepted, dropped-rate-limited, dropped-invalid, and the latest observed `received_at`.
+- Additive top-level `identity` summarizes anonymous continuity using accepted pageviews only.
+- `identity.last_7_days.return_rate` is `returning_users / distinct_users` over non-null `anon_user_id` values in the same 7-day window.
 - If a traffic window has no stored data, its traffic fields return `null` instead of synthetic zeroes.
 - Average daily traffic values divide by `days_with_data` (rows that exist), not blindly by 7.
 - `requests` come from daily request `count` on Cloudflare `httpRequestsAdaptiveGroups`.
@@ -165,6 +181,9 @@ CREATE TABLE IF NOT EXISTS pageview_events_raw (
   viewport        TEXT    NULL,
   lang            TEXT    NULL,
   tz              TEXT    NULL,
+  anon_user_id    TEXT    NULL,
+  session_id      TEXT    NULL,
+  is_new_user     INTEGER NOT NULL DEFAULT 0,
   country         TEXT    NULL,
   js_fired        INTEGER NOT NULL DEFAULT 1,
   ip_hash         TEXT    NULL,
@@ -202,7 +221,8 @@ CREATE TABLE IF NOT EXISTS pageview_rate_limit (
 
 Pageview ingestion notes:
 - `pageview_events_raw` is retained for about 30 UTC days for inspectability and validation.
-- IP and user-agent values are stored as SHA-256 hashes when present; Lighthouse does not store raw IPs, identity, or session state.
+- IP and user-agent values are stored as SHA-256 hashes when present; Lighthouse does not store raw IPs.
+- Anonymous continuity fields (`anon_user_id`, `session_id`, `is_new_user`) are accepted from first-party payloads only and used for aggregate retention reporting.
 - `pageview_daily_dim` only tracks accepted dimensions for `path`, `referrer_domain`, `src`, and `utm_source`.
 - `pageview_rate_limit` enforces approximate per-IP minute buckets and stale buckets are pruned during the existing daily scheduled run.
 
