@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.9.1] - 2026-03-31
+
+### Fixed
+- Resolve migration chain drift in `0005_add_pageview_ingestion.sql`: the continuity columns `anon_user_id`, `session_id`, `is_new_user` and their associated indexes were retroactively added to migration 0005 after it had already shipped, duplicating the `ALTER TABLE` operations in `0006_add_anonymous_continuity.sql`. This caused fresh-install failures on D1 when both migrations were applied in sequence. Migration 0005 has been restored to its original form (base table and base indexes only, no continuity columns). Migration 0006 remains the correct and sole source for adding continuity fields.
+- Add operator risk note to `0006_add_anonymous_continuity.sql`: environments that applied a modified 0005 (with continuity columns already present) must verify column existence and mark the migration applied without re-running the `ALTER TABLE` statements.
+
+### Notes
+- No runtime behavior change. No schema change to already-deployed environments that applied both migrations correctly in sequence. The deployed schema is identical before and after this fix.
+
 ## [1.9.0] - 2026-03-26
 
 ### Added
