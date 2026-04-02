@@ -89,6 +89,69 @@ type PageviewRequestContext = {
   keepalive: boolean;
   transportHint: string;
 };
+type SiteEventInput = {
+  site_key: string;
+  event_name: string;
+  client_ts: string | null;
+  path: string | null;
+  url: string | null;
+  referrer: string | null;
+  src: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
+  device: string | null;
+  viewport: string | null;
+  lang: string | null;
+  tz: string | null;
+  anon_user_id: string | null;
+  session_id: string | null;
+  is_new_user: number;
+  event_value: string | null;
+  test_mode: number;
+};
+type SiteEventRawRecord = SiteEventInput & {
+  id: string;
+  received_at: string;
+  received_day: string;
+  referrer_domain: string | null;
+  country: string | null;
+  ip_hash: string | null;
+  user_agent_hash: string | null;
+  accepted: number;
+  drop_reason: string | null;
+  request_id: string | null;
+  ingest_version: string;
+};
+type SiteEventFilter = {
+  siteKey: string;
+  excludeTestMode: boolean;
+  productionOnly: boolean;
+};
+type SiteEventSummary = {
+  scope: {
+    site_key: string;
+    exclude_test_mode: boolean;
+    production_only: boolean;
+  };
+  totals: {
+    accepted_events: number;
+    unique_paths: number;
+  };
+  by_event_name: Array<{ event_name: string; events: number }>;
+  top_sources: Array<{ source: string; events: number }>;
+  top_campaigns: Array<{ utm_campaign: string; events: number }>;
+  top_referrers: Array<{ referrer_domain: string; events: number }>;
+  observability: {
+    included_events: number;
+    excluded_test_mode: number;
+    excluded_non_production_host: number;
+    dropped_rate_limited: number;
+    dropped_invalid: number;
+    last_received_at: string | null;
+  };
+};
 type CloudflareGraphQLResponse = {
   data?: {
     viewer?: {
@@ -105,20 +168,66 @@ type CloudflareGraphQLResponse = {
   errors?: Array<{ message?: string }> | null;
 };
 
+type SiteStatus = "active" | "staging" | "planned";
+
+type TrackedSite = {
+  readonly site_key: string;
+  readonly label: string;
+  readonly status: SiteStatus;
+  readonly production_hosts: readonly string[];
+  readonly allowed_origins: readonly string[];
+  readonly staging_hosts: readonly string[];
+  readonly cloudflare_traffic_enabled: boolean;
+  readonly cloudflare_host: string | null;
+  readonly production_only_default: boolean;
+};
+
+const TRACKED_SITES: readonly TrackedSite[] = [
+  {
+    site_key: "buscore",
+    label: "BUS Core",
+    status: "active",
+    production_hosts: ["buscore.ca", "www.buscore.ca"],
+    allowed_origins: ["https://buscore.ca", "https://www.buscore.ca"],
+    staging_hosts: [],
+    cloudflare_traffic_enabled: true,
+    cloudflare_host: "buscore.ca",
+    production_only_default: false,
+  },
+  {
+    site_key: "star_map_generator",
+    label: "Star Map Generator",
+    status: "planned",
+    production_hosts: [],
+    allowed_origins: [],
+    staging_hosts: [],
+    cloudflare_traffic_enabled: false,
+    cloudflare_host: null,
+    production_only_default: true,
+  },
+];
+
 const MANIFEST_PATH = "/manifest/core/stable.json";
 const MANIFEST_KEY = "manifest/core/stable.json";
 const PAGEVIEW_METRICS_PATH = "/metrics/pageview";
+const SITE_EVENT_METRICS_PATH = "/metrics/event";
 const RELEASE_PATH = /^\/releases\/([^/]+)$/;
 const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
-const BUSCORE_HOST = "buscore.ca";
-const PAGEVIEW_ALLOWED_ORIGINS = new Set(["https://buscore.ca", "https://www.buscore.ca"]);
+const BUSCORE_HOST: string =
+  TRACKED_SITES.find((s) => s.site_key === "buscore")?.cloudflare_host ?? "buscore.ca";
+const PAGEVIEW_ALLOWED_ORIGINS: Set<string> = new Set(
+  TRACKED_SITES.find((s) => s.site_key === "buscore")?.allowed_origins ?? []
+);
 const PAGEVIEW_INGEST_VERSION = "1.9.0";
+const SITE_EVENT_INGEST_VERSION = "1.11.0";
 const PAGEVIEW_INVALID_JSON_DEBUG_ENABLED = true;
 const PAGEVIEW_INVALID_JSON_DEBUG_PREVIEW_CHARS = 500;
 const PAGEVIEW_RATE_LIMIT_PER_MINUTE = 50;
 const PAGEVIEW_RAW_RETENTION_DAYS = 30;
 const PAGEVIEW_RATE_LIMIT_RETENTION_DAYS = 2;
+const SITE_EVENT_RATE_LIMIT_PER_MINUTE = 50;
+const SITE_EVENT_RATE_LIMIT_RETENTION_DAYS = 2;
 const TOP_PAGEVIEW_DIMENSION_LIMIT = 5;
 const DIRECT_SOURCE_LABEL = "(direct)";
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -197,6 +306,22 @@ function nullIfBlank(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function getSiteByKey(siteKey: string): TrackedSite | undefined {
+  return TRACKED_SITES.find((s) => s.site_key === siteKey);
+}
+
+function getAllActiveAllowedOrigins(): Set<string> {
+  const origins = new Set<string>();
+  for (const site of TRACKED_SITES) {
+    if (site.status === "active") {
+      for (const origin of site.allowed_origins) {
+        origins.add(origin);
+      }
+    }
+  }
+  return origins;
 }
 
 function emptyPageviewInput(): PageviewInput {
@@ -361,6 +486,88 @@ export function parseCanonicalPageviewPayload(payload: unknown): PageviewInput |
     anon_user_id: normalizeOptionalAnonymousId(root.anon_user_id),
     session_id: normalizeOptionalAnonymousId(root.session_id),
     is_new_user: coerceBooleanLikeToInt(root.is_new_user),
+  };
+}
+
+export function parseCanonicalEventPayload(payload: unknown): SiteEventInput | null {
+  const root = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+  const siteKey = readRequiredString(root, "site_key");
+  const eventName = readRequiredString(root, "event_name");
+  const clientTs = readRequiredString(root, "client_ts");
+  const path = readRequiredString(root, "path");
+  const url = readRequiredString(root, "url");
+  const referrer = readRequiredString(root, "referrer", true);
+  const device = readRequiredString(root, "device");
+  const viewport = readRequiredString(root, "viewport");
+  const lang = readRequiredString(root, "lang", true);
+  const tz = readRequiredString(root, "tz", true);
+  const utmRaw = root.utm;
+
+  if (
+    !siteKey ||
+    !eventName ||
+    !clientTs ||
+    !path ||
+    !url ||
+    referrer === null ||
+    !device ||
+    !viewport ||
+    lang === null ||
+    tz === null ||
+    typeof utmRaw !== "object" ||
+    utmRaw === null ||
+    Array.isArray(utmRaw)
+  ) {
+    return null;
+  }
+
+  if (!Number.isFinite(Date.parse(clientTs))) {
+    return null;
+  }
+
+  if (!path.startsWith("/")) {
+    return null;
+  }
+
+  if (!isValidAbsoluteUrl(url)) {
+    return null;
+  }
+
+  if (!PAGEVIEW_ALLOWED_DEVICES.has(device)) {
+    return null;
+  }
+
+  if (!PAGEVIEW_VIEWPORT_PATTERN.test(viewport)) {
+    return null;
+  }
+
+  if (!getSiteByKey(siteKey)) {
+    return null;
+  }
+
+  const utm = utmRaw as Record<string, unknown>;
+
+  return {
+    site_key: siteKey,
+    event_name: eventName,
+    client_ts: clientTs,
+    path,
+    url,
+    referrer,
+    src: readOptionalString(root.src),
+    utm_source: readOptionalString(utm.source),
+    utm_medium: readOptionalString(utm.medium),
+    utm_campaign: readOptionalString(utm.campaign),
+    utm_content: readOptionalString(utm.content),
+    device,
+    viewport,
+    lang,
+    tz,
+    anon_user_id: normalizeOptionalAnonymousId(root.anon_user_id),
+    session_id: normalizeOptionalAnonymousId(root.session_id),
+    is_new_user: coerceBooleanLikeToInt(root.is_new_user),
+    event_value: readOptionalString(root.event_value),
+    test_mode: coerceBooleanLikeToInt(root.test_mode),
   };
 }
 
@@ -563,6 +770,325 @@ async function queryTopPageviewSources(
   return rows.results ?? [];
 }
 
+function buildSiteEventFilterWhereClause(
+  filter: SiteEventFilter,
+  options?: { includeAccepted?: boolean }
+): { whereSql: string; bindings: Array<string | number> } {
+  const where: string[] = ["site_key = ?", "received_day >= ?", "received_day <= ?"];
+  const bindings: Array<string | number> = [filter.siteKey];
+
+  if (options?.includeAccepted !== false) {
+    where.push("accepted = 1");
+  }
+
+  if (filter.excludeTestMode) {
+    where.push("test_mode = 0");
+  }
+
+  return {
+    whereSql: where.join(" AND "),
+    bindings,
+  };
+}
+
+function buildProductionHostClause(site: TrackedSite): { sql: string; bindings: string[] } {
+  if (site.production_hosts.length === 0) {
+    return { sql: "1 = 0", bindings: [] };
+  }
+
+  const hostSql: string[] = [];
+  const bindings: string[] = [];
+  for (const host of site.production_hosts) {
+    hostSql.push("LOWER(url) LIKE ?", "LOWER(url) LIKE ?");
+    bindings.push(`https://${host.toLowerCase()}/%`, `http://${host.toLowerCase()}/%`);
+  }
+
+  return {
+    sql: `(${hostSql.join(" OR ")})`,
+    bindings,
+  };
+}
+
+async function querySiteEventOverview(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string
+): Promise<{ accepted_events: number; unique_paths: number; last_received_at: string | null }> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return { accepted_events: 0, unique_paths: 0, last_received_at: null };
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS accepted_events, COUNT(DISTINCT NULLIF(path, '')) AS unique_paths, MAX(received_at) AS last_received_at FROM site_events_raw WHERE ${where.join(" AND ")}`
+    )
+    .bind(...bindings)
+    .first<{ accepted_events: number; unique_paths: number; last_received_at: string | null }>();
+
+  return {
+    accepted_events: row?.accepted_events ?? 0,
+    unique_paths: row?.unique_paths ?? 0,
+    last_received_at: row?.last_received_at ?? null,
+  };
+}
+
+async function querySiteEventsByEventName(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Promise<Array<{ event_name: string; events: number }>> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return [];
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT event_name, COUNT(*) AS events FROM site_events_raw WHERE ${where.join(" AND ")} GROUP BY event_name ORDER BY events DESC, event_name ASC LIMIT ?`
+    )
+    .bind(...bindings, limit)
+    .all<{ event_name: string; events: number }>();
+
+  return rows.results ?? [];
+}
+
+async function querySiteEventTopCampaigns(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Promise<Array<{ utm_campaign: string; events: number }>> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return [];
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql, "NULLIF(utm_campaign, '') IS NOT NULL"];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT utm_campaign, COUNT(*) AS events FROM site_events_raw WHERE ${where.join(" AND ")} GROUP BY utm_campaign ORDER BY events DESC, utm_campaign ASC LIMIT ?`
+    )
+    .bind(...bindings, limit)
+    .all<{ utm_campaign: string; events: number }>();
+
+  return rows.results ?? [];
+}
+
+async function querySiteEventTopReferrers(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Promise<Array<{ referrer_domain: string; events: number }>> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return [];
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql, "NULLIF(referrer_domain, '') IS NOT NULL"];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT referrer_domain, COUNT(*) AS events FROM site_events_raw WHERE ${where.join(" AND ")} GROUP BY referrer_domain ORDER BY events DESC, referrer_domain ASC LIMIT ?`
+    )
+    .bind(...bindings, limit)
+    .all<{ referrer_domain: string; events: number }>();
+
+  return rows.results ?? [];
+}
+
+async function querySiteEventSourceRows(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string
+): Promise<Array<{ src: string | null; utm_source: string | null; referrer_domain: string | null }>> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return [];
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT src, utm_source, referrer_domain FROM site_events_raw WHERE ${where.join(" AND ")}`
+    )
+    .bind(...bindings)
+    .all<{ src: string | null; utm_source: string | null; referrer_domain: string | null }>();
+
+  return rows.results ?? [];
+}
+
+async function querySiteEventObservability(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string
+): Promise<{
+  included_events: number;
+  excluded_test_mode: number;
+  excluded_non_production_host: number;
+  dropped_rate_limited: number;
+  dropped_invalid: number;
+}> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return {
+      included_events: 0,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 0,
+      dropped_rate_limited: 0,
+      dropped_invalid: 0,
+    };
+  }
+
+  const production = buildProductionHostClause(site);
+  const row = await db
+    .prepare(
+      `SELECT
+        COALESCE(SUM(CASE WHEN accepted = 1 ${filter.excludeTestMode ? "AND test_mode = 0" : ""} ${
+          filter.productionOnly ? `AND (${production.sql})` : ""
+        } THEN 1 ELSE 0 END), 0) AS included_events,
+        COALESCE(SUM(CASE WHEN accepted = 1 AND test_mode = 1 THEN 1 ELSE 0 END), 0) AS excluded_test_mode,
+        COALESCE(SUM(CASE WHEN accepted = 1 AND NOT (${production.sql}) THEN 1 ELSE 0 END), 0) AS excluded_non_production_host,
+        COALESCE(SUM(CASE WHEN accepted = 0 AND drop_reason = 'rate_limited' THEN 1 ELSE 0 END), 0) AS dropped_rate_limited,
+        COALESCE(SUM(CASE WHEN accepted = 0 AND drop_reason = 'invalid_json' THEN 1 ELSE 0 END), 0) AS dropped_invalid
+      FROM site_events_raw
+      WHERE site_key = ? AND received_day >= ? AND received_day <= ?`
+    )
+    .bind(
+      filter.siteKey,
+      startDay,
+      endDay,
+      ...(filter.productionOnly ? production.bindings : []),
+      ...production.bindings
+    )
+    .first<{
+      included_events: number;
+      excluded_test_mode: number;
+      excluded_non_production_host: number;
+      dropped_rate_limited: number;
+      dropped_invalid: number;
+    }>();
+
+  return {
+    included_events: row?.included_events ?? 0,
+    excluded_test_mode: row?.excluded_test_mode ?? 0,
+    excluded_non_production_host: row?.excluded_non_production_host ?? 0,
+    dropped_rate_limited: row?.dropped_rate_limited ?? 0,
+    dropped_invalid: row?.dropped_invalid ?? 0,
+  };
+}
+
+function summarizeSiteEventTopSources(
+  rows: Array<{ src: string | null; utm_source: string | null; referrer_domain: string | null }>,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Array<{ source: string; events: number }> {
+  const counts = new Map<string, number>();
+
+  for (const row of rows) {
+    const source = resolveEventSourceLabel(row.src, row.utm_source, row.referrer_domain);
+    counts.set(source, (counts.get(source) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([source, events]) => ({ source, events }))
+    .sort((a, b) => (b.events - a.events) || a.source.localeCompare(b.source))
+    .slice(0, limit);
+}
+
+async function buildSiteEventSummary(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string
+): Promise<SiteEventSummary> {
+  const [overview, byEventName, topCampaigns, topReferrers, sourceRows, observability] = await Promise.all([
+    querySiteEventOverview(db, filter, startDay, endDay),
+    querySiteEventsByEventName(db, filter, startDay, endDay),
+    querySiteEventTopCampaigns(db, filter, startDay, endDay),
+    querySiteEventTopReferrers(db, filter, startDay, endDay),
+    querySiteEventSourceRows(db, filter, startDay, endDay),
+    querySiteEventObservability(db, filter, startDay, endDay),
+  ]);
+
+  return {
+    scope: {
+      site_key: filter.siteKey,
+      exclude_test_mode: filter.excludeTestMode,
+      production_only: filter.productionOnly,
+    },
+    totals: {
+      accepted_events: overview.accepted_events,
+      unique_paths: overview.unique_paths,
+    },
+    by_event_name: byEventName,
+    top_sources: summarizeSiteEventTopSources(sourceRows),
+    top_campaigns: topCampaigns,
+    top_referrers: topReferrers,
+    observability: {
+      included_events: observability.included_events,
+      excluded_test_mode: observability.excluded_test_mode,
+      excluded_non_production_host: observability.excluded_non_production_host,
+      dropped_rate_limited: observability.dropped_rate_limited,
+      dropped_invalid: observability.dropped_invalid,
+      last_received_at: overview.last_received_at,
+    },
+  };
+}
+
 function resolveSourceLabel(src: string | null, utmSource: string | null): string {
   if (src && src.trim()) {
     return src.trim();
@@ -573,6 +1099,98 @@ function resolveSourceLabel(src: string | null, utmSource: string | null): strin
   }
 
   return DIRECT_SOURCE_LABEL;
+}
+
+function classifyReferrerSource(referrerDomain: string | null): string | null {
+  if (!referrerDomain) {
+    return null;
+  }
+
+  const domain = referrerDomain.trim().toLowerCase();
+  if (!domain) {
+    return null;
+  }
+
+  if (
+    domain.includes("google.") ||
+    domain.includes("bing.") ||
+    domain.includes("duckduckgo.") ||
+    domain.includes("yahoo.") ||
+    domain.includes("yandex.")
+  ) {
+    return "search";
+  }
+
+  if (
+    domain.includes("facebook.") ||
+    domain.includes("instagram.") ||
+    domain.includes("twitter.") ||
+    domain.includes("x.com") ||
+    domain.includes("linkedin.") ||
+    domain.includes("reddit.") ||
+    domain.includes("tiktok.")
+  ) {
+    return "social";
+  }
+
+  return "referral";
+}
+
+function resolveEventSourceLabel(src: string | null, utmSource: string | null, referrerDomain: string | null): string {
+  if (src && src.trim()) {
+    return src.trim();
+  }
+
+  if (utmSource && utmSource.trim()) {
+    return utmSource.trim();
+  }
+
+  const referrerClass = classifyReferrerSource(referrerDomain);
+  if (referrerClass) {
+    return referrerClass;
+  }
+
+  return DIRECT_SOURCE_LABEL;
+}
+
+function parseBooleanQueryFlag(value: string | null, defaultValue: boolean): boolean {
+  if (value === null) {
+    return defaultValue;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return defaultValue;
+}
+
+function normalizeSiteEventFilter(url: URL): SiteEventFilter | null {
+  const siteKey = nullIfBlank(url.searchParams.get("site_key"));
+  if (!siteKey) {
+    return null;
+  }
+
+  const site = getSiteByKey(siteKey);
+  if (!site) {
+    return null;
+  }
+
+  const excludeTestMode = parseBooleanQueryFlag(url.searchParams.get("exclude_test_mode"), true);
+  const productionOnly = parseBooleanQueryFlag(
+    url.searchParams.get("production_only"),
+    site.production_only_default
+  );
+
+  return {
+    siteKey,
+    excludeTestMode,
+    productionOnly,
+  };
 }
 
 export function summarizeIdentity(
@@ -813,15 +1431,40 @@ async function incrementRateLimitBucket(db: D1Database, minuteBucket: string, ip
   return row?.count ?? 0;
 }
 
+async function incrementSiteEventRateLimitBucket(db: D1Database, minuteBucket: string, ipHash: string): Promise<number> {
+  await db
+    .prepare(
+      "INSERT INTO site_event_rate_limit(minute_bucket, ip_hash, count) VALUES (?, ?, 0) ON CONFLICT(minute_bucket, ip_hash) DO NOTHING"
+    )
+    .bind(minuteBucket, ipHash)
+    .run();
+
+  await db
+    .prepare("UPDATE site_event_rate_limit SET count = count + 1 WHERE minute_bucket = ? AND ip_hash = ?")
+    .bind(minuteBucket, ipHash)
+    .run();
+
+  const row = await db
+    .prepare("SELECT count FROM site_event_rate_limit WHERE minute_bucket = ? AND ip_hash = ?")
+    .bind(minuteBucket, ipHash)
+    .first<{ count: number }>();
+
+  return row?.count ?? 0;
+}
+
 async function prunePageviewData(db: D1Database, now: Date = new Date()): Promise<void> {
   const rawCutoffDay = utcDay(addUtcDays(now, -PAGEVIEW_RAW_RETENTION_DAYS));
   const rateLimitCutoffMinute = utcMinuteBucket(
     new Date(now.getTime() - PAGEVIEW_RATE_LIMIT_RETENTION_DAYS * 24 * 60 * 60 * 1000)
   );
+  const siteEventRateLimitCutoffMinute = utcMinuteBucket(
+    new Date(now.getTime() - SITE_EVENT_RATE_LIMIT_RETENTION_DAYS * 24 * 60 * 60 * 1000)
+  );
 
   await Promise.all([
     db.prepare("DELETE FROM pageview_events_raw WHERE received_day < ?").bind(rawCutoffDay).run(),
     db.prepare("DELETE FROM pageview_rate_limit WHERE minute_bucket < ?").bind(rateLimitCutoffMinute).run(),
+    db.prepare("DELETE FROM site_event_rate_limit WHERE minute_bucket < ?").bind(siteEventRateLimitCutoffMinute).run(),
   ]);
 }
 
@@ -1087,6 +1730,99 @@ async function processPageviewIngest(
   });
 }
 
+async function insertSiteEventRaw(db: D1Database, record: SiteEventRawRecord): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO site_events_raw(id, site_key, event_name, received_at, received_day, client_ts, path, url, referrer, referrer_domain, src, utm_source, utm_medium, utm_campaign, utm_content, device, viewport, lang, tz, anon_user_id, session_id, is_new_user, event_value, test_mode, country, ip_hash, user_agent_hash, accepted, drop_reason, request_id, ingest_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(
+      record.id,
+      record.site_key,
+      record.event_name,
+      record.received_at,
+      record.received_day,
+      record.client_ts,
+      record.path,
+      record.url,
+      record.referrer,
+      record.referrer_domain,
+      record.src,
+      record.utm_source,
+      record.utm_medium,
+      record.utm_campaign,
+      record.utm_content,
+      record.device,
+      record.viewport,
+      record.lang,
+      record.tz,
+      record.anon_user_id,
+      record.session_id,
+      record.is_new_user,
+      record.event_value,
+      record.test_mode,
+      record.country,
+      record.ip_hash,
+      record.user_agent_hash,
+      record.accepted,
+      record.drop_reason,
+      record.request_id,
+      record.ingest_version
+    )
+    .run();
+}
+
+async function processSiteEventIngest(
+  capture: PageviewBodyCapture,
+  requestContext: PageviewRequestContext,
+  env: Env
+): Promise<void> {
+  const receivedAt = new Date();
+  const receivedAtIso = receivedAt.toISOString();
+  const receivedDay = utcDay(receivedAt);
+  const [ipHash, userAgentHash] = await Promise.all([
+    requestContext.clientIp ? sha256Hex(requestContext.clientIp) : Promise.resolve(null),
+    requestContext.userAgent ? sha256Hex(requestContext.userAgent) : Promise.resolve(null),
+  ]);
+
+  const parsedBody = readAndParsePageviewBody(capture.raw);
+  if (!parsedBody.ok) {
+    return;
+  }
+
+  const normalized = parseCanonicalEventPayload(parsedBody.payload);
+  if (!normalized) {
+    return;
+  }
+
+  let accepted = 1;
+  let dropReason: string | null = null;
+
+  if (ipHash) {
+    const rateLimitCount = await incrementSiteEventRateLimitBucket(env.DB, utcMinuteBucket(receivedAt), ipHash);
+    if (rateLimitCount > SITE_EVENT_RATE_LIMIT_PER_MINUTE) {
+      accepted = 0;
+      dropReason = "rate_limited";
+    }
+  }
+
+  const record: SiteEventRawRecord = {
+    id: crypto.randomUUID(),
+    ...normalized,
+    received_at: receivedAtIso,
+    received_day: receivedDay,
+    referrer_domain: parseReferrerDomain(normalized.referrer),
+    country: requestContext.country,
+    ip_hash: ipHash,
+    user_agent_hash: userAgentHash,
+    accepted,
+    drop_reason: dropReason,
+    request_id: requestContext.requestId,
+    ingest_version: SITE_EVENT_INGEST_VERSION,
+  };
+
+  await insertSiteEventRaw(env.DB, record);
+}
+
 function trafficWindowFromTotals(totals: TrafficTotals): {
   visits: number | null;
   requests: number | null;
@@ -1227,9 +1963,25 @@ function safeRatio(numerator: number, denominator: number): number {
 function withCors(request: Request, response: Response, allowMethods: string = "GET, OPTIONS"): Response {
   const headers = new Headers(response.headers);
 
-  if (new URL(request.url).pathname === PAGEVIEW_METRICS_PATH) {
+  const pathname = new URL(request.url).pathname;
+
+  if (pathname === PAGEVIEW_METRICS_PATH) {
     const origin = request.headers.get("Origin");
     if (origin && PAGEVIEW_ALLOWED_ORIGINS.has(origin)) {
+      headers.set("Access-Control-Allow-Origin", origin);
+      headers.set("Access-Control-Allow-Credentials", "true");
+      headers.set("Access-Control-Allow-Headers", "Content-Type");
+      headers.set("Vary", "Origin");
+    } else {
+      headers.delete("Access-Control-Allow-Origin");
+      headers.delete("Access-Control-Allow-Headers");
+      headers.delete("Access-Control-Allow-Credentials");
+      headers.delete("Vary");
+    }
+  } else if (pathname === SITE_EVENT_METRICS_PATH) {
+    const origin = request.headers.get("Origin");
+    const activeOrigins = getAllActiveAllowedOrigins();
+    if (origin && activeOrigins.has(origin)) {
       headers.set("Access-Control-Allow-Origin", origin);
       headers.set("Access-Control-Allow-Credentials", "true");
       headers.set("Access-Control-Allow-Headers", "Content-Type");
@@ -1274,7 +2026,10 @@ export default {
     const day = utcDay();
 
     if (request.method === "OPTIONS") {
-      const allowMethods = url.pathname === PAGEVIEW_METRICS_PATH ? "POST, OPTIONS" : "GET, OPTIONS";
+      const allowMethods =
+        url.pathname === PAGEVIEW_METRICS_PATH || url.pathname === SITE_EVENT_METRICS_PATH
+          ? "POST, OPTIONS"
+          : "GET, OPTIONS";
       return withCors(request, new Response(null, { status: 200 }), allowMethods);
     }
 
@@ -1285,6 +2040,18 @@ export default {
         processPageviewIngest(capture, requestContext, env)
           .catch((error) => {
             console.warn("Pageview ingest failed after 204 response.", error);
+          })
+      );
+      return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
+    }
+
+    if (url.pathname === SITE_EVENT_METRICS_PATH && request.method === "POST") {
+      const requestContext = buildPageviewRequestContext(request);
+      const capture = await readRawBodyCapture(request);
+      ctx.waitUntil(
+        processSiteEventIngest(capture, requestContext, env)
+          .catch((error) => {
+            console.warn("Site event ingest failed after 204 response.", error);
           })
       );
       return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
@@ -1414,6 +2181,12 @@ export default {
         return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
       }
 
+      const hasSiteKeyParam = url.searchParams.has("site_key");
+      const siteEventFilter = normalizeSiteEventFilter(url);
+      if (hasSiteKeyParam && !siteEventFilter) {
+        return withCors(request, Response.json({ ok: false, error: "invalid_site_key" }, { status: 400 }));
+      }
+
       try {
         const now = new Date();
         const previousCompletedDay = utcDay(addUtcDays(now, -1));
@@ -1432,6 +2205,9 @@ export default {
         const previous7StartDay = utcDay(addUtcDays(now, -13));
         const previous7EndDay = utcDay(addUtcDays(now, -7));
         const monthStartDay = utcMonthStart(now);
+        const siteEventSummaryPromise = siteEventFilter
+          ? buildSiteEventSummary(env.DB, siteEventFilter, last7StartDay, todayDay)
+          : Promise.resolve<SiteEventSummary | null>(null);
 
         const [
           today,
@@ -1449,6 +2225,7 @@ export default {
           topSources,
           identityEvents,
           firstSeenByIdentity,
+          siteEvents,
         ] = await Promise.all([
           queryTotalsInRange(env.DB, todayDay, todayDay),
           queryTotalsInRange(env.DB, yesterdayDay, yesterdayDay),
@@ -1465,6 +2242,7 @@ export default {
           queryTopPageviewSources(env.DB, last7StartDay, todayDay),
           queryAcceptedIdentityEventsInRange(env.DB, last7StartDay, todayDay),
           queryIdentityFirstSeen(env.DB),
+          siteEventSummaryPromise,
         ]);
 
         const identity = summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, last7StartDay);
@@ -1503,6 +2281,7 @@ export default {
                 observability: humanObservability,
               },
               identity,
+              site_events: siteEvents,
             },
             { status: 200 }
           )

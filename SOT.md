@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-- Lighthouse is a single Cloudflare Worker that acts as a minimal, privacy-first, aggregate-first stats source with one narrow first-party pageview ingestion path.
+  - Lighthouse is a single Cloudflare Worker that acts as a minimal, privacy-first, aggregate-first stats source with a multi-site event ingestion spine and a legacy BUS Core pageview ingestion path.
 - Lighthouse is a generic, deterministic metrics primitive; BUS Core is a current observed client/use-case, not a runtime dependency.
 - It serves/proxies manifest data from R2, records daily aggregate counters in D1, records daily Buscore traffic snapshots in D1, accepts first-party pageview events into D1, and exposes an admin-protected `GET /report` endpoint.
 - It does not post reports to Discord.
@@ -32,7 +32,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Core operation must not depend on BUS Core or any external service.
 - Reporting is on-demand.
 - Scheduled behavior is limited to one approved daily Buscore traffic capture and retention run defined in this SOT.
-- One unauthenticated first-party pageview ingestion endpoint is approved and documented in this SOT.
+  - Two unauthenticated first-party event ingestion endpoints are approved and documented in this SOT: `POST /metrics/pageview` (BUS Core legacy) and `POST /metrics/event` (multi-site standard).
 - No outbound posting or outbound integrations unless explicitly approved in this SOT.
 - The current fixed metric model (`update_checks`, `downloads`, `errors`) is shipped behavior unless this SOT explicitly changes it.
 - Buscore traffic telemetry is an additive extension for operator visibility and system understanding; it must not break or reinterpret the shipped core metric model.
@@ -94,7 +94,35 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 
 ### First-Party Pageview Ingestion
 
-- `POST /metrics/pageview`
+### Tracked-Site Registry
+
+  - Lighthouse maintains a code-level tracked-site registry (`TRACKED_SITES`) defining every site/property for which it may receive events or capture traffic.
+  - Each registry entry carries: `site_key`, `label`, `status` (`active` | `staging` | `planned`), `production_hosts`, `allowed_origins`, `staging_hosts`, `cloudflare_traffic_enabled`, `cloudflare_host`, and `production_only_default`.
+  - BUS Core is registered as `site_key: "buscore"` with `status: "active"`. Its CORS allow-list (`https://buscore.ca`, `https://www.buscore.ca`) and Cloudflare traffic capture host (`buscore.ca`) are derived from its registry entry.
+  - Star Map Generator is registered as `site_key: "star_map_generator"` with `status: "planned"`. Production hosts and allowed origins are empty pending production URL assignment.
+  - CORS origin policy for `POST /metrics/pageview` is scoped exclusively to the `buscore` registry entry.
+  - CORS origin policy for `POST /metrics/event` is derived from the union of all `active` tracked-site `allowed_origins` entries.
+  - Adding a new tracked site requires only a registry entry update. No structural changes to Lighthouse endpoints are needed.
+
+### Standard Multi-Site Event Ingestion
+
+  - `POST /metrics/event`
+    - Unauthenticated by design.
+    - Accepts JSON payloads from any registered tracked site.
+    - Always returns `204 No Content` with no response body.
+    - CORS is limited to `allowed_origins` of active tracked sites; wildcard `Access-Control-Allow-Origin` is never used on this route.
+    - Validates the standard event contract: required fields `site_key`, `event_name`, `client_ts`, `path`, `url`, `referrer`, `device`, `viewport`, `lang`, `tz`, and required object `utm` (which may be `{}`). Optional fields: `src`, `utm.{source,medium,campaign,content}`, `anon_user_id`, `session_id`, `is_new_user`, `event_value`, `test_mode`.
+    - Validates that `site_key` is present in the tracked-site registry.
+    - Contract validation follows the same shape rules as `POST /metrics/pageview`; malformed or invalid submissions are silently dropped and still return `204`.
+    - Accepted events are persisted to `site_events_raw` in D1 with standard server-side enrichment: `received_at`, `received_day`, `referrer_domain`, `country`, `request_id`, `ingest_version`.
+    - Hashes IP and user-agent for privacy; raw values are never stored.
+    - Uses `ctx.waitUntil(...)` so response completion stays fast.
+    - Applies the same D1 minute-bucket SHA-256 IP-hash rate-limit model as pageview ingest (approximately 50 events per IP hash per UTC minute).
+    - Rate-limited submissions still return `204`, are persisted with `accepted = 0` and `drop_reason = "rate_limited"`, and are excluded from accepted aggregations.
+
+### First-Party Pageview Ingestion
+
+  - `POST /metrics/pageview`
   - Unauthenticated by design.
   - Accepts JSON request bodies from the already-deployed BUS Core site emitter contract.
   - Always returns `204 No Content` with no response body.
@@ -132,7 +160,10 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
     - `const token = request.headers.get("X-Admin-Token")`
     - `if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) { ...401 unauthorized... }`
   - On auth failure: returns `401` JSON `{ "ok": false, "error": "unauthorized" }`.
-  - On success: returns aggregate stats JSON with `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, additive top-level `traffic`, and additive top-level `human_traffic`.
+  - On success: returns aggregate stats JSON with `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, additive top-level `traffic`, additive top-level `human_traffic`, additive top-level `identity`, and additive top-level `site_events`.
+  - Site-scoped standardized-event reporting is enabled via query parameter `site_key` with optional flags `exclude_test_mode` (default `true`) and `production_only` (default from tracked-site `production_only_default`).
+  - If `site_key` is omitted, `site_events` is `null` to avoid silently blending multiple tracked sites.
+  - If `site_key` is provided and unknown, `/report` returns `400` JSON `{ "ok": false, "error": "invalid_site_key" }`.
   - Before assembling the response, Lighthouse always performs one best-effort refresh capture for the previous completed UTC day using the same traffic capture logic as the scheduled path.
   - The refresh remains idempotent via per-day upsert semantics and keeps one stored row per completed UTC day.
   - If this best-effort refresh attempt fails, `/report` still returns successfully using only currently stored traffic data.
@@ -143,8 +174,9 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `OPTIONS` returns `200`.
 - `OPTIONS /metrics/pageview` advertises `POST, OPTIONS` for the ingestion route.
 - `OPTIONS /metrics/pageview` returns first-party CORS allow headers only for `Origin` values `https://buscore.ca` and `https://www.buscore.ca`, and never returns wildcard `Access-Control-Allow-Origin` on that route.
-- `POST /metrics/pageview` is the one approved non-`GET` route.
-- Other non-`GET` methods return `405` JSON `{ "ok": false, "error": "method_not_allowed" }`.
+  - `POST /metrics/pageview` and `POST /metrics/event` are the two approved non-`GET` routes.
+  - `OPTIONS /metrics/event` advertises `POST, OPTIONS` and returns CORS allow headers for the origin if it matches an active tracked-site entry; never returns wildcard on that route.
+  - Other non-`GET` methods return `405` JSON `{ "ok": false, "error": "method_not_allowed" }`.
 - Unmatched routes return `404` JSON `{ "ok": false, "error": "not_found" }`.
 
 ## 4. Persistence
@@ -156,6 +188,8 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Table: `pageview_daily`
 - Table: `pageview_daily_dim`
 - Table: `pageview_rate_limit`
+- Table: `site_events_raw`
+- Table: `site_event_rate_limit`
 - Aggregate counters: `update_checks`, `downloads`, `errors`
 - Day key format: UTC `YYYY-MM-DD`
 - `buscore_traffic_daily` schema:
@@ -175,6 +209,8 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `pageview_daily.pageviews` and `pageview_daily.accepted` increment together for accepted submissions.
 - `pageview_daily_dim` stores accepted dimension counts for exactly four dimension types: `path`, `referrer_domain`, `src`, and `utm_source`.
 - `pageview_rate_limit` stores approximate per-minute IP-hash counters only for ingestion noise control and has no reporting role.
+- `site_event_rate_limit` stores approximate per-minute IP-hash counters only for standardized event ingestion noise control and has no reporting role.
+- `site_events_raw` stores append-only multi-site event submissions with standard enrichment fields. `site_key` is the per-site discriminator for report isolation. `event_name` identifies the event type within a site. `accepted = 1` means the event was accepted and persisted. `drop_reason` currently uses `rate_limited` for standardized ingest drops. `ip_hash` and `user_agent_hash` are SHA-256 hashes when source values are present; raw values are never stored.
 
 ## 5. Configuration
 
@@ -204,7 +240,7 @@ No new bindings or secrets are introduced by pageview ingestion.
 ### Report Contract Stability
 
 - `GET /report` is an operator-facing contract, not an ad-hoc analytics surface.
-- Current shipped response shape includes: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`, `identity`.
+- Current shipped response shape includes: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`, `identity`, and additive `site_events` (nullable unless `site_key` is provided).
 - Current shipped `trends` fields include: `downloads_change_percent`, `update_checks_change_percent`, `weekly_downloads_change_percent`, `weekly_update_checks_change_percent`, `conversion_ratio`.
 - `conversion_ratio` is defined as today downloads divided by today update checks (with safe zero-denominator handling).
 - `traffic.latest_day` contains the most recent completed UTC day stored in `buscore_traffic_daily` with fields `day`, `visits`, `requests`, `captured_at`.
@@ -222,6 +258,15 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `identity.last_7_days` contains `new_users`, `returning_users`, `sessions`, and `return_rate` across the current UTC day plus previous six UTC days.
 - `identity.top_sources_by_returning_users` contains ranked `{ source, users }` using precedence `src -> utm.source -> (direct)`.
 - `identity.last_7_days.return_rate` is defined as `returning_users / distinct_users` where `distinct_users` means distinct non-null `anon_user_id` values in the same 7-day window; zero denominator returns `0`.
+- `site_events` is populated only when `site_key` is supplied on `GET /report`.
+- `site_events.scope` echoes `site_key`, `exclude_test_mode`, and `production_only` used for the standardized-event summary.
+- `site_events.totals` contains `accepted_events` and `unique_paths` for the selected site over the current UTC day plus previous six UTC days.
+- `site_events.by_event_name` contains ranked `{ event_name, events }` for accepted events.
+- `site_events.top_sources` contains ranked `{ source, events }` using deterministic precedence `src -> utm.source -> referrer classification -> (direct)`.
+- `site_events.top_campaigns` contains ranked `{ utm_campaign, events }` for non-empty `utm_campaign` values.
+- `site_events.top_referrers` contains ranked `{ referrer_domain, events }` for non-empty referrer domains.
+- `site_events.observability` exposes `included_events`, `excluded_test_mode`, `excluded_non_production_host`, `dropped_rate_limited`, `dropped_invalid`, and `last_received_at`.
+- `site_events.production_only` filtering is host-based against the selected tracked site `production_hosts` and is operator-controllable through the `production_only` query flag.
 - Existing non-traffic `/report` fields remain intact and semantically unchanged.
 - If a requested traffic window has no stored traffic rows, its traffic fields return `NULL` rather than synthetic zeroes.
 - `avg_daily_visits` and `avg_daily_requests` are computed using `days_with_data` (stored rows in the 7-day window) as the divisor; Lighthouse does not divide by seven unless seven rows exist.
@@ -242,6 +287,7 @@ No new bindings or secrets are introduced by pageview ingestion.
 ## 8. Explicit Non-Features
 
 - No `/health` route in current code.
+- Star Map Generator production URL is not yet defined and must remain configurable via the tracked-site registry.
 - No scheduled outbound reporting.
 - No Discord webhook integration.
 - No automatic push reporting.

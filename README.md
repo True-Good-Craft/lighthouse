@@ -24,13 +24,14 @@ Release authority:
 
 ## Current System
 
-Lighthouse currently does five things:
+Lighthouse currently does six things:
 
 1. Serves the BUS Core manifest from R2.
 2. Increments fixed daily aggregate counters in D1.
 3. Accepts first-party site-emitted pageview events on `POST /metrics/pageview`.
-4. Exposes protected, on-demand aggregate reporting.
-5. Pulls one daily Buscore traffic snapshot from the Cloudflare GraphQL Analytics API into D1 on a scheduled cron.
+4. Accepts standardized multi-site events on `POST /metrics/event`.
+5. Exposes protected, on-demand aggregate reporting.
+6. Pulls one daily Buscore traffic snapshot from the Cloudflare GraphQL Analytics API into D1 on a scheduled cron.
 
 It does not implement retries, identity, session tracking, unload analytics, or a broad analytics warehouse.
 
@@ -43,6 +44,7 @@ It does not implement retries, identity, session tracking, unload analytics, or 
 | GET | `/download/latest` | Increment `downloads` unless request IP matches `IGNORED_IP`, then `302` redirect to latest release URL from manifest |
 | GET | `/releases/:filename` | Serve release artifact from R2 key `releases/:filename` (no counting) |
 | POST | `/metrics/pageview` | Accept first-party JS-fired pageview JSON, always return `204`, and persist/aggregate best-effort in D1 |
+| POST | `/metrics/event` | Accept standardized multi-site event JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | GET | `/report` | Return protected aggregate report (requires `X-Admin-Token`) |
 
 Notes:
@@ -54,6 +56,7 @@ Notes:
 - Empty-string values for `referrer`, `lang`, and `tz` are accepted and preserved as empty strings in raw storage.
 - `POST /metrics/pageview` and its `OPTIONS` preflight only grant browser CORS access to `https://buscore.ca` and `https://www.buscore.ca`; Lighthouse does not use wildcard allow-origin on that route.
 - The deployed site emitter contract is accepted as-is: page-load-only, beacon-first, `fetch(..., { keepalive: true })` fallback, no retries, and no session logic.
+- `POST /metrics/event` is site-aware through the tracked-site registry in `src/index.ts`: each site entry defines `site_key`, `production_hosts`, `allowed_origins`, `staging_hosts`, and `production_only_default`.
 
 ## Report Response
 
@@ -140,11 +143,33 @@ Contract note:
 - `human_traffic.last_7_days.top_sources` entries use `{ source, pageviews }` with precedence `src -> utm.source -> (direct)`.
 - `human_traffic.observability` is cumulative across stored pageview aggregate rows and reports accepted, dropped-rate-limited, dropped-invalid, and the latest observed `received_at`.
 - Additive top-level `identity` summarizes anonymous continuity using accepted pageviews only.
+- Additive top-level `site_events` is populated only when `site_key` is provided on `/report`.
+- `/report` supports standardized-event scope flags: `site_key` (required for site events), `exclude_test_mode` (default `true`), and `production_only` (default from tracked-site `production_only_default`).
+- Unknown `site_key` on `/report` returns `400` with `{"ok":false,"error":"invalid_site_key"}`.
 - `identity.last_7_days.return_rate` is `returning_users / distinct_users` over non-null `anon_user_id` values in the same 7-day window.
 - If a traffic window has no stored data, its traffic fields return `null` instead of synthetic zeroes.
 - Average daily traffic values divide by `days_with_data` (rows that exist), not blindly by 7.
 - `requests` come from daily request `count` on Cloudflare `httpRequestsAdaptiveGroups`.
 - `visits` come from `sum.visits` on the same single-query path when provided, and remain nullable when absent.
+
+## Star Map Go-Live Inputs
+
+When the final Star Map production domain is known, update the `star_map_generator` entry in `src/index.ts` `TRACKED_SITES`:
+
+- `production_hosts`: canonical production host(s) used in event `url` values.
+- `allowed_origins`: browser origin(s) allowed for CORS on `POST /metrics/event`.
+- `staging_hosts`: non-production hosts used for launch testing.
+- `production_only_default`: keep `true` for production-clean operator reporting by default.
+
+Operator launch-readiness report calls:
+
+- `/report?site_key=star_map_generator`
+- `/report?site_key=star_map_generator&exclude_test_mode=true&production_only=true`
+
+Expected Star Map event names:
+
+- Lighthouse accepts any non-empty `event_name` and does not enforce a fixed taxonomy.
+- Before go-live, the Star Map owner must provide and freeze the launch event-name list so `/report` top event-name and source/campaign readouts can be interpreted consistently.
 
 ## D1 Schema
 

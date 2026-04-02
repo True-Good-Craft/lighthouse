@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.11.0] - 2026-03-31
+
+### Added
+- Add site-scoped standardized-event reporting on `GET /report` using `site_key` query parameter with optional filter flags `exclude_test_mode` and `production_only`.
+- Add additive `site_events` report block (returned when `site_key` is provided) with: `scope`, `totals`, `by_event_name`, `top_sources`, `top_campaigns`, `top_referrers`, and `observability`.
+- Add D1 migration `0008_add_site_event_rate_limit.sql` creating `site_event_rate_limit` minute-bucket table for `/metrics/event` ingestion noise control.
+
+### Changed
+- Harden `POST /metrics/event` with D1-backed per-IP-hash minute rate limiting (approximately 50/minute), matching the pageview ingestion model.
+- Rate-limited standardized events are now persisted with `accepted = 0` and `drop_reason = "rate_limited"` for operator observability.
+- Standardized-event source attribution in `site_events.top_sources` follows precedence `src -> utm_source -> referrer classification -> (direct)`.
+- `/report` now rejects unknown `site_key` values with `400 {"ok":false,"error":"invalid_site_key"}`.
+
+### Notes
+- Legacy BUS Core report blocks (`today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`, `identity`) remain intact and semantically unchanged.
+- `site_events` is intentionally `null` when `site_key` is not supplied to avoid silent multi-site blending.
+
+## [1.10.0] - 2026-03-31
+
+### Added
+- Add a code-level tracked-site registry (`TRACKED_SITES`) as the first-class property model for Lighthouse. Each entry carries `site_key`, `label`, `status` (`active` | `staging` | `planned`), `production_hosts`, `allowed_origins`, `staging_hosts`, `cloudflare_traffic_enabled`, `cloudflare_host`, and `production_only_default`.
+- Register `buscore` as an active tracked site with BUS Core production hosts, CORS origins, and Cloudflare traffic capture host derived from its registry entry.
+- Register `star_map_generator` as a planned tracked site with empty host and origin fields, awaiting production URL assignment.
+- Add `POST /metrics/event` — standard multi-site event ingestion endpoint. Accepts `site_key`, `event_name`, and all standard attribution fields (`client_ts`, `path`, `url`, `referrer`, `device`, `viewport`, `lang`, `tz`, `utm`, optional `src`, `utm.*`, `anon_user_id`, `session_id`, `is_new_user`, `event_value`, `test_mode`). Unauthenticated; always returns `204 No Content`. CORS gated to allowed origins of active tracked sites.
+- Add D1 migration `0007_add_site_events.sql` creating `site_events_raw` table with `site_key` and `event_name` discriminators for multi-site event storage, including standard enrichment and privacy columns.
+
+### Changed
+- `BUSCORE_HOST` and `PAGEVIEW_ALLOWED_ORIGINS` are now derived from the tracked-site registry rather than hardcoded constants. Runtime behavior for BUS Core is unchanged.
+- `OPTIONS /metrics/event` advertises `POST, OPTIONS`; CORS policy returns per-origin allow headers for active tracked sites, never wildcard.
+- Extended `withCors` to apply per-site CORS policy for `/metrics/event` using the union of active tracked-site allowed origins.
+
+### Notes
+- `POST /metrics/pageview` (BUS Core legacy) continues to function without modification. BUS Core pageview ingest, report output, and traffic capture are unaffected.
+- `star_map_generator` is registered but inert: its `allowed_origins` is empty, so no browser preflight will succeed for that site until a production URL is added to its registry entry.
+- Per-site report isolation (`GET /report` scoped by `site_key`) is reserved for a future pass.
+- Rate limiting is not applied to `POST /metrics/event` in this pass.
+
 ## [1.9.1] - 2026-03-31
 
 ### Fixed
