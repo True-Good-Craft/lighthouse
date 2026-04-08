@@ -152,6 +152,96 @@ type SiteEventSummary = {
     last_received_at: string | null;
   };
 };
+type ReportView = "legacy" | "fleet" | "site" | "source_health";
+type ReportWindow = {
+  start_day: string;
+  end_day: string;
+  timezone: "UTC";
+  semantics: "current_utc_day_plus_previous_6_days";
+};
+type PageviewRangeSummary = {
+  pageviews: number;
+  accepted: number;
+  dropped_rate_limited: number;
+  dropped_invalid: number;
+  last_received_at: string | null;
+  days_with_data: number;
+};
+type FleetSiteEntry = {
+  site_key: string;
+  label: string;
+  status: SiteStatus;
+  backend_source: string;
+  cloudflare_traffic_enabled: boolean;
+  production_hosts: string[];
+  last_received_at: string | null;
+  accepted_events_7d: number;
+  pageviews_7d: number | null;
+  traffic_requests_7d: number | null;
+  traffic_visits_7d: number | null;
+  has_recent_signal: boolean;
+};
+type SiteReportPayload = {
+  view: "site";
+  generated_at: string;
+  scope: {
+    site_key: string;
+    label: string;
+    status: SiteStatus;
+    backend_source: string;
+    window: ReportWindow;
+    exclude_test_mode: boolean;
+    production_only: boolean;
+  };
+  summary: {
+    accepted_events_7d: number;
+    pageviews_7d: number | null;
+    traffic_requests_7d: number | null;
+    traffic_visits_7d: number | null;
+    last_received_at: string | null;
+    has_recent_signal: boolean;
+  };
+  traffic: {
+    cloudflare_traffic_enabled: boolean;
+    latest_day: ReturnType<typeof latestTrafficWindow>;
+    last_7_days: ReturnType<typeof trafficWindowFromTotals>;
+  };
+  events: {
+    accepted_events: number;
+    unique_paths: number;
+    by_event_name: Array<{ event_name: string; events: number }>;
+    top_sources: Array<{ source: string; events: number }>;
+    top_campaigns: Array<{ utm_campaign: string; events: number }>;
+    top_referrers: Array<{ referrer_domain: string; events: number }>;
+  };
+  health: {
+    last_received_at: string | null;
+    included_events: number;
+    excluded_test_mode: number;
+    excluded_non_production_host: number;
+    dropped_rate_limited: number;
+    dropped_invalid: number | null;
+    cloudflare_traffic_enabled: boolean;
+    production_only_default: boolean;
+  };
+};
+type SourceHealthSiteEntry = {
+  site_key: string;
+  label: string;
+  backend_source: string;
+  cloudflare_traffic_enabled: boolean;
+  production_only_default: boolean;
+  last_received_at: string | null;
+  accepted_signal_7d: number;
+  dropped_invalid: number | null;
+  dropped_rate_limited: number;
+};
+type ReportRequestResolution =
+  | { ok: true; view: "legacy"; siteEventFilter: SiteEventFilter | null }
+  | { ok: true; view: "fleet" }
+  | { ok: true; view: "site"; siteEventFilter: SiteEventFilter }
+  | { ok: true; view: "source_health" }
+  | { ok: false; error: "invalid_view" | "missing_site_key" | "invalid_site_key" };
 type CloudflareGraphQLResponse = {
   data?: {
     viewer?: {
@@ -244,6 +334,7 @@ const SITE_EVENT_RATE_LIMIT_PER_MINUTE = 50;
 const SITE_EVENT_RATE_LIMIT_RETENTION_DAYS = 2;
 const TOP_PAGEVIEW_DIMENSION_LIMIT = 5;
 const DIRECT_SOURCE_LABEL = "(direct)";
+const EARLIEST_REPORT_DAY = "0000-01-01";
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGEVIEW_ALLOWED_DEVICES = new Set(["desktop", "mobile", "tablet"]);
 const PAGEVIEW_VIEWPORT_PATTERN = /^\d+x\d+$/;
@@ -324,6 +415,111 @@ function nullIfBlank(value: unknown): string | null {
 
 function getSiteByKey(siteKey: string): TrackedSite | undefined {
   return TRACKED_SITES.find((s) => s.site_key === siteKey);
+}
+
+function siteSupportsLegacyPageviews(site: TrackedSite): boolean {
+  return site.site_key === "buscore";
+}
+
+function defaultSiteEventFilter(site: TrackedSite): SiteEventFilter {
+  return {
+    siteKey: site.site_key,
+    excludeTestMode: true,
+    productionOnly: site.production_only_default,
+  };
+}
+
+function backendSourceForSite(site: TrackedSite): string {
+  const sources: string[] = ["site_events_raw"];
+
+  if (siteSupportsLegacyPageviews(site)) {
+    sources.unshift("pageview_daily");
+  }
+
+  if (site.cloudflare_traffic_enabled) {
+    sources.push("buscore_traffic_daily");
+  }
+
+  return sources.join("+");
+}
+
+function maxIsoTimestamp(...values: Array<string | null>): string | null {
+  let current: string | null = null;
+
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+
+    if (!current || value > current) {
+      current = value;
+    }
+  }
+
+  return current;
+}
+
+function reportWindow(startDay: string, endDay: string): ReportWindow {
+  return {
+    start_day: startDay,
+    end_day: endDay,
+    timezone: "UTC",
+    semantics: "current_utc_day_plus_previous_6_days",
+  };
+}
+
+function emptyTrafficTotals(): TrafficTotals {
+  return {
+    row_count: 0,
+    visits: null,
+    requests: null,
+  };
+}
+
+export function normalizeReportView(value: string | null): ReportView | null {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return "legacy";
+  }
+
+  if (normalized === "fleet" || normalized === "site" || normalized === "source_health") {
+    return normalized;
+  }
+
+  return null;
+}
+
+export function resolveReportRequest(url: URL): ReportRequestResolution {
+  const view = normalizeReportView(url.searchParams.get("view"));
+  if (!view) {
+    return { ok: false, error: "invalid_view" };
+  }
+
+  if (view === "legacy") {
+    const hasSiteKeyParam = url.searchParams.has("site_key");
+    const siteEventFilter = normalizeSiteEventFilter(url);
+    if (hasSiteKeyParam && !siteEventFilter) {
+      return { ok: false, error: "invalid_site_key" };
+    }
+
+    return { ok: true, view, siteEventFilter };
+  }
+
+  if (view === "site") {
+    const siteKey = nullIfBlank(url.searchParams.get("site_key"));
+    if (!siteKey) {
+      return { ok: false, error: "missing_site_key" };
+    }
+
+    const siteEventFilter = normalizeSiteEventFilter(url);
+    if (!siteEventFilter) {
+      return { ok: false, error: "invalid_site_key" };
+    }
+
+    return { ok: true, view, siteEventFilter };
+  }
+
+  return { ok: true, view };
 }
 
 function getAllActiveAllowedOrigins(): Set<string> {
@@ -718,6 +914,28 @@ async function queryPageviewTotalsForDay(
     .first<{ pageviews: number; last_received_at: string | null }>();
 
   return row ?? { pageviews: 0, last_received_at: null };
+}
+
+async function queryPageviewRangeSummary(
+  db: D1Database,
+  startDay: string,
+  endDay: string
+): Promise<PageviewRangeSummary> {
+  const row = await db
+    .prepare(
+      "SELECT COALESCE(SUM(pageviews),0) AS pageviews, COALESCE(SUM(accepted),0) AS accepted, COALESCE(SUM(dropped_rate_limited),0) AS dropped_rate_limited, COALESCE(SUM(dropped_invalid),0) AS dropped_invalid, MAX(last_received_at) AS last_received_at, COALESCE(SUM(CASE WHEN pageviews > 0 THEN 1 ELSE 0 END),0) AS days_with_data FROM pageview_daily WHERE day >= ? AND day <= ?"
+    )
+    .bind(startDay, endDay)
+    .first<PageviewRangeSummary>();
+
+  return {
+    pageviews: row?.pageviews ?? 0,
+    accepted: row?.accepted ?? 0,
+    dropped_rate_limited: row?.dropped_rate_limited ?? 0,
+    dropped_invalid: row?.dropped_invalid ?? 0,
+    last_received_at: row?.last_received_at ?? null,
+    days_with_data: row?.days_with_data ?? 0,
+  };
 }
 
 async function queryPageviewLast7Summary(db: D1Database, startDay: string, endDay: string): Promise<{ pageviews: number; days_with_data: number }> {
@@ -1890,6 +2108,353 @@ function latestTrafficWindow(row: TrafficRow | null): {
   };
 }
 
+export function assembleLegacyReport(input: {
+  today: MetricTotals;
+  yesterday: MetricTotals;
+  last7Days: MetricTotals;
+  previous7Days: MetricTotals;
+  monthToDate: MetricTotals;
+  latestTraffic: TrafficRow | null;
+  last7Traffic: TrafficTotals;
+  humanToday: { pageviews: number; last_received_at: string | null };
+  humanLast7: { pageviews: number; days_with_data: number };
+  humanObservability: {
+    accepted: number;
+    dropped_rate_limited: number;
+    dropped_invalid: number;
+    last_received_at: string | null;
+  };
+  topPaths: TopPageviewDimRow[];
+  topReferrers: TopPageviewDimRow[];
+  topSources: Array<{ source: string; pageviews: number }>;
+  identity: IdentitySummary;
+  siteEvents: SiteEventSummary | null;
+}) {
+  return {
+    today: input.today,
+    yesterday: input.yesterday,
+    last_7_days: input.last7Days,
+    month_to_date: input.monthToDate,
+    trends: {
+      downloads_change_percent: percentChange(input.today.downloads, input.yesterday.downloads),
+      update_checks_change_percent: percentChange(input.today.update_checks, input.yesterday.update_checks),
+      weekly_downloads_change_percent: percentChange(input.last7Days.downloads, input.previous7Days.downloads),
+      weekly_update_checks_change_percent: percentChange(input.last7Days.update_checks, input.previous7Days.update_checks),
+      conversion_ratio: safeRatio(input.today.downloads, input.today.update_checks),
+    },
+    traffic: {
+      latest_day: latestTrafficWindow(input.latestTraffic),
+      last_7_days: trafficWindowFromTotals(input.last7Traffic),
+    },
+    human_traffic: {
+      today: {
+        pageviews: input.humanToday.pageviews,
+        last_received_at: input.humanToday.last_received_at,
+      },
+      last_7_days: {
+        pageviews: input.humanLast7.pageviews,
+        days_with_data: input.humanLast7.days_with_data,
+        top_paths: input.topPaths.map((row) => ({ path: row.value, pageviews: row.pageviews })),
+        top_referrers: input.topReferrers.map((row) => ({ referrer_domain: row.value, pageviews: row.pageviews })),
+        top_sources: input.topSources,
+      },
+      observability: input.humanObservability,
+    },
+    identity: input.identity,
+    site_events: input.siteEvents,
+  };
+}
+
+export function assembleFleetReport(input: { generated_at: string; sites: FleetSiteEntry[] }) {
+  return {
+    view: "fleet" as const,
+    generated_at: input.generated_at,
+    sites: input.sites,
+  };
+}
+
+export function assembleSiteReport(input: Omit<SiteReportPayload, "view">): SiteReportPayload {
+  return {
+    view: "site",
+    ...input,
+  };
+}
+
+export function assembleSourceHealthReport(input: {
+  generated_at: string;
+  sites: SourceHealthSiteEntry[];
+}) {
+  return {
+    view: "source_health" as const,
+    generated_at: input.generated_at,
+    sites: input.sites,
+  };
+}
+
+function reportDayBounds(now: Date): {
+  todayDay: string;
+  yesterdayDay: string;
+  last7StartDay: string;
+  previous7StartDay: string;
+  previous7EndDay: string;
+  monthStartDay: string;
+} {
+  return {
+    todayDay: utcDay(now),
+    yesterdayDay: utcDay(addUtcDays(now, -1)),
+    last7StartDay: utcDay(addUtcDays(now, -6)),
+    previous7StartDay: utcDay(addUtcDays(now, -13)),
+    previous7EndDay: utcDay(addUtcDays(now, -7)),
+    monthStartDay: utcMonthStart(now),
+  };
+}
+
+async function refreshPreviousCompletedTrafficBestEffort(env: Env, now: Date): Promise<void> {
+  const previousCompletedDay = utcDay(addUtcDays(now, -1));
+  try {
+    await captureTrafficForDay(env, previousCompletedDay);
+  } catch (error) {
+    console.warn(
+      "Best-effort previous-day Buscore traffic refresh during /report failed; returning report with stored traffic only.",
+      error
+    );
+  }
+}
+
+async function buildSiteSignalSnapshot(
+  db: D1Database,
+  site: TrackedSite,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string
+): Promise<{
+  siteEventSummary: SiteEventSummary;
+  siteEventLastReceivedAt: string | null;
+  pageviewRange: PageviewRangeSummary | null;
+  pageviewLastReceivedAt: string | null;
+  trafficTotals: TrafficTotals | null;
+  latestTraffic: TrafficRow | null;
+  lastReceivedAt: string | null;
+  acceptedSignal7d: number;
+  droppedRateLimited: number;
+  droppedInvalid: number | null;
+  hasRecentSignal: boolean;
+}> {
+  const supportsPageviews = siteSupportsLegacyPageviews(site);
+
+  const [siteEventSummary, siteEventAllTimeOverview, pageviewRange, pageviewAllTime, trafficTotals, latestTraffic] = await Promise.all([
+    buildSiteEventSummary(db, filter, startDay, endDay),
+    querySiteEventOverview(db, filter, EARLIEST_REPORT_DAY, endDay),
+    supportsPageviews ? queryPageviewRangeSummary(db, startDay, endDay) : Promise.resolve<PageviewRangeSummary | null>(null),
+    supportsPageviews
+      ? queryPageviewRangeSummary(db, EARLIEST_REPORT_DAY, endDay)
+      : Promise.resolve<PageviewRangeSummary | null>(null),
+    site.cloudflare_traffic_enabled ? queryTrafficTotalsInRange(db, startDay, endDay) : Promise.resolve<TrafficTotals | null>(null),
+    site.cloudflare_traffic_enabled ? queryLatestTrafficRow(db) : Promise.resolve<TrafficRow | null>(null),
+  ]);
+
+  const acceptedSignal7d = (pageviewRange?.pageviews ?? 0) + siteEventSummary.totals.accepted_events;
+  const lastReceivedAt = maxIsoTimestamp(pageviewAllTime?.last_received_at ?? null, siteEventAllTimeOverview.last_received_at);
+
+  return {
+    siteEventSummary,
+    siteEventLastReceivedAt: siteEventAllTimeOverview.last_received_at,
+    pageviewRange,
+    pageviewLastReceivedAt: pageviewAllTime?.last_received_at ?? null,
+    trafficTotals,
+    latestTraffic,
+    lastReceivedAt,
+    acceptedSignal7d,
+    droppedRateLimited: (pageviewRange?.dropped_rate_limited ?? 0) + siteEventSummary.observability.dropped_rate_limited,
+    droppedInvalid: supportsPageviews ? (pageviewRange?.dropped_invalid ?? 0) : null,
+    hasRecentSignal: acceptedSignal7d > 0,
+  };
+}
+
+async function buildLegacyReport(
+  db: D1Database,
+  now: Date,
+  siteEventFilter: SiteEventFilter | null
+): Promise<ReturnType<typeof assembleLegacyReport>> {
+  const { todayDay, yesterdayDay, last7StartDay, previous7StartDay, previous7EndDay, monthStartDay } = reportDayBounds(now);
+  const siteEventSummaryPromise = siteEventFilter
+    ? buildSiteEventSummary(db, siteEventFilter, last7StartDay, todayDay)
+    : Promise.resolve<SiteEventSummary | null>(null);
+
+  const [
+    today,
+    yesterday,
+    last7Days,
+    previous7Days,
+    monthToDate,
+    latestTraffic,
+    last7Traffic,
+    humanToday,
+    humanLast7,
+    humanObservability,
+    topPaths,
+    topReferrers,
+    topSources,
+    identityEvents,
+    firstSeenByIdentity,
+    siteEvents,
+  ] = await Promise.all([
+    queryTotalsInRange(db, todayDay, todayDay),
+    queryTotalsInRange(db, yesterdayDay, yesterdayDay),
+    queryTotalsInRange(db, last7StartDay, todayDay),
+    queryTotalsInRange(db, previous7StartDay, previous7EndDay),
+    queryTotalsInRange(db, monthStartDay, todayDay),
+    queryLatestTrafficRow(db),
+    queryTrafficTotalsInRange(db, last7StartDay, todayDay),
+    queryPageviewTotalsForDay(db, todayDay),
+    queryPageviewLast7Summary(db, last7StartDay, todayDay),
+    queryPageviewObservability(db),
+    queryTopPageviewDimensions(db, last7StartDay, todayDay, "path"),
+    queryTopPageviewDimensions(db, last7StartDay, todayDay, "referrer_domain"),
+    queryTopPageviewSources(db, last7StartDay, todayDay),
+    queryAcceptedIdentityEventsInRange(db, last7StartDay, todayDay),
+    queryIdentityFirstSeen(db),
+    siteEventSummaryPromise,
+  ]);
+
+  const identity = summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, last7StartDay);
+
+  return assembleLegacyReport({
+    today,
+    yesterday,
+    last7Days,
+    previous7Days,
+    monthToDate,
+    latestTraffic,
+    last7Traffic,
+    humanToday,
+    humanLast7,
+    humanObservability,
+    topPaths,
+    topReferrers,
+    topSources,
+    identity,
+    siteEvents,
+  });
+}
+
+async function buildFleetReport(db: D1Database, now: Date): Promise<ReturnType<typeof assembleFleetReport>> {
+  const { todayDay, last7StartDay } = reportDayBounds(now);
+  const sites = await Promise.all(
+    TRACKED_SITES.map(async (site): Promise<FleetSiteEntry> => {
+      const snapshot = await buildSiteSignalSnapshot(db, site, defaultSiteEventFilter(site), last7StartDay, todayDay);
+
+      return {
+        site_key: site.site_key,
+        label: site.label,
+        status: site.status,
+        backend_source: backendSourceForSite(site),
+        cloudflare_traffic_enabled: site.cloudflare_traffic_enabled,
+        production_hosts: [...site.production_hosts],
+        last_received_at: snapshot.lastReceivedAt,
+        accepted_events_7d: snapshot.siteEventSummary.totals.accepted_events,
+        pageviews_7d: siteSupportsLegacyPageviews(site) ? (snapshot.pageviewRange?.pageviews ?? 0) : null,
+        traffic_requests_7d: snapshot.trafficTotals?.requests ?? null,
+        traffic_visits_7d: snapshot.trafficTotals?.visits ?? null,
+        has_recent_signal: snapshot.hasRecentSignal,
+      };
+    })
+  );
+
+  return assembleFleetReport({
+    generated_at: now.toISOString(),
+    sites,
+  });
+}
+
+async function buildSiteReport(
+  db: D1Database,
+  now: Date,
+  filter: SiteEventFilter
+): Promise<SiteReportPayload> {
+  const { todayDay, last7StartDay } = reportDayBounds(now);
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    throw new Error("invalid_site_key");
+  }
+
+  const snapshot = await buildSiteSignalSnapshot(db, site, filter, last7StartDay, todayDay);
+  const traffic = {
+    cloudflare_traffic_enabled: site.cloudflare_traffic_enabled,
+    latest_day: latestTrafficWindow(snapshot.latestTraffic),
+    last_7_days: trafficWindowFromTotals(snapshot.trafficTotals ?? emptyTrafficTotals()),
+  };
+
+  return assembleSiteReport({
+    generated_at: now.toISOString(),
+    scope: {
+      site_key: site.site_key,
+      label: site.label,
+      status: site.status,
+      backend_source: backendSourceForSite(site),
+      window: reportWindow(last7StartDay, todayDay),
+      exclude_test_mode: filter.excludeTestMode,
+      production_only: filter.productionOnly,
+    },
+    summary: {
+      accepted_events_7d: snapshot.siteEventSummary.totals.accepted_events,
+      pageviews_7d: siteSupportsLegacyPageviews(site) ? (snapshot.pageviewRange?.pageviews ?? 0) : null,
+      traffic_requests_7d: snapshot.trafficTotals?.requests ?? null,
+      traffic_visits_7d: snapshot.trafficTotals?.visits ?? null,
+      last_received_at: snapshot.lastReceivedAt,
+      has_recent_signal: snapshot.hasRecentSignal,
+    },
+    traffic,
+    events: {
+      accepted_events: snapshot.siteEventSummary.totals.accepted_events,
+      unique_paths: snapshot.siteEventSummary.totals.unique_paths,
+      by_event_name: snapshot.siteEventSummary.by_event_name,
+      top_sources: snapshot.siteEventSummary.top_sources,
+      top_campaigns: snapshot.siteEventSummary.top_campaigns,
+      top_referrers: snapshot.siteEventSummary.top_referrers,
+    },
+    health: {
+      last_received_at: snapshot.lastReceivedAt,
+      included_events: snapshot.siteEventSummary.observability.included_events,
+      excluded_test_mode: snapshot.siteEventSummary.observability.excluded_test_mode,
+      excluded_non_production_host: snapshot.siteEventSummary.observability.excluded_non_production_host,
+      dropped_rate_limited: snapshot.droppedRateLimited,
+      dropped_invalid: snapshot.droppedInvalid,
+      cloudflare_traffic_enabled: site.cloudflare_traffic_enabled,
+      production_only_default: site.production_only_default,
+    },
+  });
+}
+
+async function buildSourceHealthReport(
+  db: D1Database,
+  now: Date
+): Promise<ReturnType<typeof assembleSourceHealthReport>> {
+  const { todayDay, last7StartDay } = reportDayBounds(now);
+  const sites = await Promise.all(
+    TRACKED_SITES.map(async (site): Promise<SourceHealthSiteEntry> => {
+      const snapshot = await buildSiteSignalSnapshot(db, site, defaultSiteEventFilter(site), last7StartDay, todayDay);
+
+      return {
+        site_key: site.site_key,
+        label: site.label,
+        backend_source: backendSourceForSite(site),
+        cloudflare_traffic_enabled: site.cloudflare_traffic_enabled,
+        production_only_default: site.production_only_default,
+        last_received_at: snapshot.lastReceivedAt,
+        accepted_signal_7d: snapshot.acceptedSignal7d,
+        dropped_invalid: snapshot.droppedInvalid,
+        dropped_rate_limited: snapshot.droppedRateLimited,
+      };
+    })
+  );
+
+  return assembleSourceHealthReport({
+    generated_at: now.toISOString(),
+    sites,
+  });
+}
+
 async function fetchPreviousCompletedBuscoreTraffic(env: Env, day: string): Promise<{ visits: number | null; requests: number }> {
   const response = await fetch(CLOUDFLARE_GRAPHQL_ENDPOINT, {
     method: "POST",
@@ -2195,110 +2760,29 @@ export default {
         return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
       }
 
-      const hasSiteKeyParam = url.searchParams.has("site_key");
-      const siteEventFilter = normalizeSiteEventFilter(url);
-      if (hasSiteKeyParam && !siteEventFilter) {
-        return withCors(request, Response.json({ ok: false, error: "invalid_site_key" }, { status: 400 }));
+      const reportRequest = resolveReportRequest(url);
+      if (!reportRequest.ok) {
+        return withCors(request, Response.json({ ok: false, error: reportRequest.error }, { status: 400 }));
       }
 
       try {
         const now = new Date();
-        const previousCompletedDay = utcDay(addUtcDays(now, -1));
-        try {
-          await captureTrafficForDay(env, previousCompletedDay);
-        } catch (error) {
-          console.warn(
-            "Best-effort previous-day Buscore traffic refresh during /report failed; returning report with stored traffic only.",
-            error
-          );
+        if (reportRequest.view !== "source_health") {
+          await refreshPreviousCompletedTrafficBestEffort(env, now);
         }
 
-        const todayDay = utcDay(now);
-        const yesterdayDay = utcDay(addUtcDays(now, -1));
-        const last7StartDay = utcDay(addUtcDays(now, -6));
-        const previous7StartDay = utcDay(addUtcDays(now, -13));
-        const previous7EndDay = utcDay(addUtcDays(now, -7));
-        const monthStartDay = utcMonthStart(now);
-        const siteEventSummaryPromise = siteEventFilter
-          ? buildSiteEventSummary(env.DB, siteEventFilter, last7StartDay, todayDay)
-          : Promise.resolve<SiteEventSummary | null>(null);
-
-        const [
-          today,
-          yesterday,
-          last7Days,
-          previous7Days,
-          monthToDate,
-          latestTraffic,
-          last7Traffic,
-          humanToday,
-          humanLast7,
-          humanObservability,
-          topPaths,
-          topReferrers,
-          topSources,
-          identityEvents,
-          firstSeenByIdentity,
-          siteEvents,
-        ] = await Promise.all([
-          queryTotalsInRange(env.DB, todayDay, todayDay),
-          queryTotalsInRange(env.DB, yesterdayDay, yesterdayDay),
-          queryTotalsInRange(env.DB, last7StartDay, todayDay),
-          queryTotalsInRange(env.DB, previous7StartDay, previous7EndDay),
-          queryTotalsInRange(env.DB, monthStartDay, todayDay),
-          queryLatestTrafficRow(env.DB),
-          queryTrafficTotalsInRange(env.DB, last7StartDay, todayDay),
-          queryPageviewTotalsForDay(env.DB, todayDay),
-          queryPageviewLast7Summary(env.DB, last7StartDay, todayDay),
-          queryPageviewObservability(env.DB),
-          queryTopPageviewDimensions(env.DB, last7StartDay, todayDay, "path"),
-          queryTopPageviewDimensions(env.DB, last7StartDay, todayDay, "referrer_domain"),
-          queryTopPageviewSources(env.DB, last7StartDay, todayDay),
-          queryAcceptedIdentityEventsInRange(env.DB, last7StartDay, todayDay),
-          queryIdentityFirstSeen(env.DB),
-          siteEventSummaryPromise,
-        ]);
-
-        const identity = summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, last7StartDay);
+        const payload =
+          reportRequest.view === "legacy"
+            ? await buildLegacyReport(env.DB, now, reportRequest.siteEventFilter)
+            : reportRequest.view === "fleet"
+              ? await buildFleetReport(env.DB, now)
+              : reportRequest.view === "site"
+                ? await buildSiteReport(env.DB, now, reportRequest.siteEventFilter)
+                : await buildSourceHealthReport(env.DB, now);
 
         return withCors(
           request,
-          Response.json(
-            {
-              today,
-              yesterday,
-              last_7_days: last7Days,
-              month_to_date: monthToDate,
-              trends: {
-                downloads_change_percent: percentChange(today.downloads, yesterday.downloads),
-                update_checks_change_percent: percentChange(today.update_checks, yesterday.update_checks),
-                weekly_downloads_change_percent: percentChange(last7Days.downloads, previous7Days.downloads),
-                weekly_update_checks_change_percent: percentChange(last7Days.update_checks, previous7Days.update_checks),
-                conversion_ratio: safeRatio(today.downloads, today.update_checks),
-              },
-              traffic: {
-                latest_day: latestTrafficWindow(latestTraffic),
-                last_7_days: trafficWindowFromTotals(last7Traffic),
-              },
-              human_traffic: {
-                today: {
-                  pageviews: humanToday.pageviews,
-                  last_received_at: humanToday.last_received_at,
-                },
-                last_7_days: {
-                  pageviews: humanLast7.pageviews,
-                  days_with_data: humanLast7.days_with_data,
-                  top_paths: topPaths.map((row) => ({ path: row.value, pageviews: row.pageviews })),
-                  top_referrers: topReferrers.map((row) => ({ referrer_domain: row.value, pageviews: row.pageviews })),
-                  top_sources: topSources,
-                },
-                observability: humanObservability,
-              },
-              identity,
-              site_events: siteEvents,
-            },
-            { status: 200 }
-          )
+          Response.json(payload, { status: 200 })
         );
       } catch {
         await incrementErrorCounterBestEffort(env.DB, day);

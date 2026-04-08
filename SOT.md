@@ -4,7 +4,7 @@
 
   - Lighthouse is a single Cloudflare Worker that acts as a minimal, privacy-first, aggregate-first stats source with a multi-site event ingestion spine and a legacy BUS Core pageview ingestion path.
 - Lighthouse is a generic, deterministic metrics primitive; BUS Core is a current observed client/use-case, not a runtime dependency.
-- It serves/proxies manifest data from R2, records daily aggregate counters in D1, records daily Buscore traffic snapshots in D1, accepts first-party pageview events into D1, and exposes an admin-protected `GET /report` endpoint.
+- It serves/proxies manifest data from R2, records daily aggregate counters in D1, records daily Buscore traffic snapshots in D1, accepts first-party pageview events into D1, and exposes an admin-protected multi-view `GET /report` endpoint.
 - It does not post reports to Discord.
 - Runtime surface: Worker `fetch` handler plus one scheduled daily traffic capture and retention handler.
 
@@ -172,13 +172,19 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
     - `const token = request.headers.get("X-Admin-Token")`
     - `if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) { ...401 unauthorized... }`
   - On auth failure: returns `401` JSON `{ "ok": false, "error": "unauthorized" }`.
-  - On success: returns aggregate stats JSON with `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, additive top-level `traffic`, additive top-level `human_traffic`, additive top-level `identity`, and additive top-level `site_events`.
-  - Site-scoped standardized-event reporting is enabled via query parameter `site_key` with optional flags `exclude_test_mode` (default `true`) and `production_only` (default from tracked-site `production_only_default`).
-  - If `site_key` is omitted, `site_events` is `null` to avoid silently blending multiple tracked sites.
-  - If `site_key` is provided and unknown, `/report` returns `400` JSON `{ "ok": false, "error": "invalid_site_key" }`.
-  - Before assembling the response, Lighthouse always performs one best-effort refresh capture for the previous completed UTC day using the same traffic capture logic as the scheduled path.
-  - The refresh remains idempotent via per-day upsert semantics and keeps one stored row per completed UTC day.
-  - If this best-effort refresh attempt fails, `/report` still returns successfully using only currently stored traffic data.
+  - If `view` is omitted, blank, or absent, `/report` preserves the legacy response shape with `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, additive top-level `traffic`, additive top-level `human_traffic`, additive top-level `identity`, and additive top-level `site_events`.
+  - Bare legacy `/report` continues to support `site_key` with optional flags `exclude_test_mode` (default `true`) and `production_only` (default from tracked-site `production_only_default`) for the additive `site_events` block only.
+  - If legacy `/report` omits `site_key`, `site_events` is `null` to avoid silently blending multiple tracked sites.
+  - `GET /report?view=fleet` returns `{ view, generated_at, sites }` for all tracked properties.
+  - `GET /report?view=site&site_key=<site_key>` returns `{ view, generated_at, scope, summary, traffic, events, health }` for exactly one tracked property and accepts the same `exclude_test_mode` and `production_only` flags as the legacy `site_events` scope.
+  - `GET /report?view=source_health` returns `{ view, generated_at, sites }` as a telemetry-integrity view.
+  - Invalid `view` returns `400` JSON `{ "ok": false, "error": "invalid_view" }`.
+  - `view=site` without `site_key` returns `400` JSON `{ "ok": false, "error": "missing_site_key" }`.
+  - Unknown `site_key` on legacy `/report` or `view=site` returns `400` JSON `{ "ok": false, "error": "invalid_site_key" }`.
+  - Before assembling legacy `/report`, `view=fleet`, or `view=site`, Lighthouse performs one best-effort refresh capture for the previous completed UTC day using the same traffic capture logic as the scheduled path.
+  - `view=source_health` intentionally skips that best-effort traffic refresh because it is a telemetry-integrity view over already persisted ingestion/state data rather than a Cloudflare traffic KPI view.
+  - When the best-effort refresh runs, it remains idempotent via per-day upsert semantics and keeps one stored row per completed UTC day.
+  - If a best-effort refresh attempt fails, `/report` still returns successfully using only currently stored traffic data.
   - This behavior is additive and does not replace the scheduled daily capture job.
 
 ### Fallback Behavior
@@ -246,13 +252,15 @@ No new bindings or secrets are introduced by pageview ingestion.
 - Reporting is on-demand only via authenticated `GET /report`.
 - No outbound report delivery.
 - Scheduled traffic capture is separate from report delivery and only writes one daily Buscore traffic snapshot into D1.
-- `GET /report` includes one best-effort refresh capture for the previous completed UTC day before assembling the response.
-- This refresh reuses the same per-day capture logic as scheduled capture, remains idempotent via per-day upsert, and does not block successful report responses on capture failure.
+- Legacy `/report`, `view=fleet`, and `view=site` each include one best-effort refresh capture for the previous completed UTC day before assembling the response.
+- `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
+- When used, the refresh reuses the same per-day capture logic as scheduled capture, remains idempotent via per-day upsert, and does not block successful report responses on capture failure.
 
 ### Report Contract Stability
 
 - `GET /report` is an operator-facing contract, not an ad-hoc analytics surface.
-- Current shipped response shape includes: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`, `identity`, and additive `site_events` (nullable unless `site_key` is provided).
+- Bare `/report` preserves the shipped legacy response shape: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`, `identity`, and additive `site_events` (nullable unless `site_key` is provided).
+- Additional shipped view modes are `view=fleet`, `view=site`, and `view=source_health`.
 - Current shipped `trends` fields include: `downloads_change_percent`, `update_checks_change_percent`, `weekly_downloads_change_percent`, `weekly_update_checks_change_percent`, `conversion_ratio`.
 - `conversion_ratio` is defined as today downloads divided by today update checks (with safe zero-denominator handling).
 - `traffic.latest_day` contains the most recent completed UTC day stored in `buscore_traffic_daily` with fields `day`, `visits`, `requests`, `captured_at`.
@@ -279,8 +287,23 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `site_events.top_referrers` contains ranked `{ referrer_domain, events }` for non-empty referrer domains.
 - `site_events.observability` exposes `included_events`, `excluded_test_mode`, `excluded_non_production_host`, `dropped_rate_limited`, `dropped_invalid`, and `last_received_at`.
 - `site_events.production_only` filtering is host-based against the selected tracked site `production_hosts` and is operator-controllable through the `production_only` query flag.
+- `view=fleet` returns one entry per tracked site with fields `site_key`, `label`, `status`, `backend_source`, `cloudflare_traffic_enabled`, `production_hosts`, `last_received_at`, `accepted_events_7d`, `pageviews_7d`, `traffic_requests_7d`, `traffic_visits_7d`, and `has_recent_signal`.
+- `view=site` returns top-level sections `scope`, `summary`, `traffic`, `events`, and `health` for the selected site.
+- `view=source_health` returns one entry per tracked site with fields `site_key`, `label`, `backend_source`, `cloudflare_traffic_enabled`, `production_only_default`, `last_received_at`, `accepted_signal_7d`, `dropped_invalid`, and `dropped_rate_limited`.
+- `backend_source` is deterministic and reflects the current persisted reporting surfaces actually used by Lighthouse for that site, joined with `+` from this set: `pageview_daily`, `site_events_raw`, `buscore_traffic_daily`.
+- All `*_7d` metrics use the current UTC day plus the previous six UTC days.
+- In `view=fleet`, `view=site`, and `view=source_health`, `last_received_at` means the latest accepted telemetry `received_at` currently included for that site across the reporting surfaces used by that view. BUS Core considers both legacy pageview telemetry and standardized site events; other sites consider standardized site events only.
+- `has_recent_signal` is `true` when the selected site has at least one accepted supported signal in the current 7-day UTC window. BUS Core supported signals are accepted legacy pageviews plus accepted standardized site events. Other sites use accepted standardized site events only.
+- `accepted_signal_7d` in `view=source_health` is the same supported-signal count used for `has_recent_signal`, but returned as a numeric total.
+- `pageviews_7d` is supported only for BUS Core legacy pageview telemetry and returns `null` for other tracked sites.
+- Site-scoped traffic metrics (`traffic_requests_7d`, `traffic_visits_7d`, `traffic.latest_day`, `traffic.last_7_days`) are supported only for sites whose tracked-site registry entry has `cloudflare_traffic_enabled = true`; otherwise Lighthouse returns the availability flag with `null` traffic metrics.
+- `health.last_received_at` in `view=site` follows the same cross-source meaning as `summary.last_received_at`.
+- `health.included_events`, `health.excluded_test_mode`, and `health.excluded_non_production_host` in `view=site` are derived from the standardized-event filter scope for that site.
+- `dropped_rate_limited` in `view=site` and `view=source_health` sums persisted rate-limited drops from all supported reporting surfaces for that site.
+- `dropped_invalid` in `view=site` and `view=source_health` is supported only where Lighthouse persists invalid-drop counters. Today that means BUS Core legacy pageview telemetry only. Standardized-event invalid submissions are not persisted, so non-BUS Core sites return `null` for `dropped_invalid`.
 - Existing non-traffic `/report` fields remain intact and semantically unchanged.
 - If a requested traffic window has no stored traffic rows, its traffic fields return `NULL` rather than synthetic zeroes.
+- If a requested field is unsupported for a site or reporting surface, Lighthouse returns `null` rather than a synthetic zero.
 - `avg_daily_visits` and `avg_daily_requests` are computed using `days_with_data` (stored rows in the 7-day window) as the divisor; Lighthouse does not divide by seven unless seven rows exist.
 - `traffic.requests` comes from daily request `count` on `httpRequestsAdaptiveGroups` in the Cloudflare GraphQL Analytics API.
 - `traffic.visits` is populated from `sum.visits` when provided by the same single-query path and remains nullable when absent.

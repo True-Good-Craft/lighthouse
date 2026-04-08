@@ -70,7 +70,7 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 | GET | `/releases/:filename` | Serve release artifact from R2 key `releases/:filename` (no counting) |
 | POST | `/metrics/pageview` | Accept first-party JS-fired pageview JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | POST | `/metrics/event` | Accept standardized multi-site event JSON, always return `204`, and persist/aggregate best-effort in D1 |
-| GET | `/report` | Return protected aggregate report (requires `X-Admin-Token`) |
+| GET | `/report` | Return protected aggregate report; supports legacy bare mode plus `view=fleet`, `view=site`, and `view=source_health` |
 
 Notes:
 - `/manifest/core/stable.json` and `/releases/:filename` never increment counters.
@@ -85,7 +85,7 @@ Notes:
 
 ## Report Response
 
-`GET /report` returns:
+Bare `GET /report` preserves the legacy operator contract and returns:
 
 ```json
 {
@@ -157,9 +157,10 @@ Contract note:
 - Existing top-level fields `today`, `yesterday`, `last_7_days`, `month_to_date`, and `trends` remain intact and semantically unchanged.
 - Existing top-level `traffic` remains the Cloudflare-derived traffic summary and is not renamed or reinterpreted by pageview ingestion.
 - Additive top-level `human_traffic` is JS-fired first-party pageview telemetry, not verified-human analytics.
-- On each authenticated `/report` request, Lighthouse performs one best-effort refresh capture for the previous completed UTC day before assembling the report.
-- This refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.
-- If this refresh fails, `/report` still returns successfully with traffic fields based only on currently stored data.
+- Bare `/report`, `view=fleet`, and `view=site` each perform one best-effort refresh capture for the previous completed UTC day before assembly.
+- `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
+- The refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.
+- If a refresh fails, `/report` still returns successfully with traffic fields based only on currently stored data.
 - `traffic.latest_day` is the most recent completed UTC day snapshot stored in D1 and includes `captured_at`.
 - `traffic.last_7_days` aggregates stored traffic rows within the last seven UTC days and includes `days_with_data`, `avg_daily_visits`, and `avg_daily_requests`.
 - `human_traffic.today` reports accepted JS-fired pageviews for the current UTC day and the latest observed `received_at` value for that day.
@@ -173,9 +174,131 @@ Contract note:
 - Unknown `site_key` on `/report` returns `400` with `{"ok":false,"error":"invalid_site_key"}`.
 - `identity.last_7_days.return_rate` is `returning_users / distinct_users` over non-null `anon_user_id` values in the same 7-day window.
 - If a traffic window has no stored data, its traffic fields return `null` instead of synthetic zeroes.
+- If a requested field is unsupported for the selected site or reporting surface, Lighthouse returns `null` instead of a synthetic zero.
 - Average daily traffic values divide by `days_with_data` (rows that exist), not blindly by 7.
 - `requests` come from daily request `count` on Cloudflare `httpRequestsAdaptiveGroups`.
 - `visits` come from `sum.visits` on the same single-query path when provided, and remain nullable when absent.
+
+Additional authenticated view modes:
+
+- `GET /report?view=fleet`
+
+```json
+{
+  "view": "fleet",
+  "generated_at": "2026-04-08T12:00:00.000Z",
+  "sites": [
+    {
+      "site_key": "buscore",
+      "label": "BUS Core",
+      "status": "active",
+      "backend_source": "pageview_daily+site_events_raw+buscore_traffic_daily",
+      "cloudflare_traffic_enabled": true,
+      "production_hosts": ["buscore.ca", "www.buscore.ca"],
+      "last_received_at": "2026-04-08T11:00:00.000Z",
+      "accepted_events_7d": 12,
+      "pageviews_7d": 34,
+      "traffic_requests_7d": 5678,
+      "traffic_visits_7d": 1234,
+      "has_recent_signal": true
+    }
+  ]
+}
+```
+
+- `GET /report?view=site&site_key=<site_key>`
+
+```json
+{
+  "view": "site",
+  "generated_at": "2026-04-08T12:00:00.000Z",
+  "scope": {
+    "site_key": "star_map_generator",
+    "label": "Star Map Generator",
+    "status": "active",
+    "backend_source": "site_events_raw",
+    "window": {
+      "start_day": "2026-04-02",
+      "end_day": "2026-04-08",
+      "timezone": "UTC",
+      "semantics": "current_utc_day_plus_previous_6_days"
+    },
+    "exclude_test_mode": true,
+    "production_only": true
+  },
+  "summary": {
+    "accepted_events_7d": 8,
+    "pageviews_7d": null,
+    "traffic_requests_7d": null,
+    "traffic_visits_7d": null,
+    "last_received_at": "2026-04-08T10:00:00.000Z",
+    "has_recent_signal": true
+  },
+  "traffic": {
+    "cloudflare_traffic_enabled": false,
+    "latest_day": {
+      "day": null,
+      "visits": null,
+      "requests": null,
+      "captured_at": null
+    },
+    "last_7_days": {
+      "visits": null,
+      "requests": null,
+      "avg_daily_visits": null,
+      "avg_daily_requests": null,
+      "days_with_data": 0
+    }
+  },
+  "events": {
+    "accepted_events": 8,
+    "unique_paths": 3,
+    "by_event_name": [],
+    "top_sources": [],
+    "top_campaigns": [],
+    "top_referrers": []
+  },
+  "health": {
+    "last_received_at": "2026-04-08T10:00:00.000Z",
+    "included_events": 8,
+    "excluded_test_mode": 1,
+    "excluded_non_production_host": 0,
+    "dropped_rate_limited": 0,
+    "dropped_invalid": null,
+    "cloudflare_traffic_enabled": false,
+    "production_only_default": true
+  }
+}
+```
+
+- `GET /report?view=source_health`
+
+```json
+{
+  "view": "source_health",
+  "generated_at": "2026-04-08T12:00:00.000Z",
+  "sites": [
+    {
+      "site_key": "tgc_site",
+      "label": "True Good Craft",
+      "backend_source": "site_events_raw",
+      "cloudflare_traffic_enabled": false,
+      "production_only_default": true,
+      "last_received_at": null,
+      "accepted_signal_7d": 0,
+      "dropped_invalid": null,
+      "dropped_rate_limited": 0
+    }
+  ]
+}
+```
+
+View notes:
+- `backend_source` is deterministic and reflects the current stored reporting surfaces used for that site: `pageview_daily`, `site_events_raw`, and/or `buscore_traffic_daily`, joined with `+`.
+- All `*_7d` metrics use the current UTC day plus the previous six UTC days.
+- In fleet, site, and source-health views, `last_received_at` is the latest accepted telemetry `received_at` included for that site. BUS Core considers both legacy pageviews and standardized site events; other sites consider standardized site events only.
+- `has_recent_signal` is `true` when the selected site has at least one accepted supported signal in the current 7-day UTC window.
+- `dropped_invalid` is currently supported only for BUS Core legacy pageview telemetry. Standardized-event invalid submissions are not persisted, so other sites return `null`.
 
 ## Star Map Go-Live Inputs
 

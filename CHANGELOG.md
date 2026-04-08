@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.12.0] - 2026-04-08
+
+### Added
+- Expand authenticated `GET /report` with explicit query modes: legacy bare `/report`, `/report?view=fleet`, `/report?view=site&site_key=<site_key>`, and `/report?view=source_health`.
+- Add fleet-wide operator reporting summarizing each tracked site with deterministic `backend_source`, signal freshness, site-scoped accepted-event totals, BUS Core pageview totals where supported, and Buscore Cloudflare traffic totals where supported.
+- Add site-scoped detailed reporting with `scope`, `summary`, `traffic`, `events`, and `health` sections for one tracked property.
+- Add source-health reporting focused on telemetry integrity with per-site `accepted_signal_7d`, `last_received_at`, and persisted drop counters where supported.
+
+### Changed
+- Preserve the existing bare `/report` top-level operator contract unchanged while moving legacy assembly behind a dedicated builder.
+- `/report` now rejects invalid `view` with `400 {"ok":false,"error":"invalid_view"}` and rejects `view=site` without `site_key` with `400 {"ok":false,"error":"missing_site_key"}`.
+- Legacy `/report` and `view=site` continue to reject unknown `site_key` with `400 {"ok":false,"error":"invalid_site_key"}`.
+- Legacy `/report`, `view=fleet`, and `view=site` keep the best-effort previous-completed-day Buscore traffic refresh before assembly; `view=source_health` intentionally skips the refresh and reads persisted data only.
+- Unsupported per-site reporting fields now return `null` instead of synthetic zeroes, including non-BUS Core `pageviews_7d`, non-traffic-enabled site traffic metrics, and `dropped_invalid` where standardized-event invalid drops are not persisted.
+
+### Notes
+- No migration was added. The new views are composed from existing tracked-site registry data plus current D1 reporting surfaces (`pageview_daily`, `site_events_raw`, `buscore_traffic_daily`).
+
 ## [1.11.3] - 2026-04-08
 
 ### Changed
