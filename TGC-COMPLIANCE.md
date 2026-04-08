@@ -10,13 +10,14 @@
 - Local authority docs:
   - SOT.md
   - README.md
+  - CHANGELOG.md
 
 ## 3. Compliance status
 - Status: PARTIAL
 - Source audit report: `tgc-ops/indexes/daily-estate-compliance-report.md`
-- Source audit UTC: 2026-03-23T23:32:27.1579301Z
+- Source audit UTC: 2026-04-08T20:53:59.7472678Z
 - Last projected by: Codex Local Automation
-- Projection date UTC: 2026-04-05T18:33:27.7702857Z
+- Projection date UTC: 2026-04-08T21:48:13.1419913Z
 
 ## 4. Baseline checks
 - README: YES
