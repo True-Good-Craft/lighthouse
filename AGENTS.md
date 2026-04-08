@@ -216,6 +216,19 @@ Hard constraints:
 
 ---
 
+## 13. Cross-Site Dev Analytics Suppression Rule
+
+Repository-wide integration rule for Lighthouse-tracked public sites:
+
+- Do not invent site-specific developer/operator analytics suppression cookie names.
+- Reuse `dev_mode` as the canonical suppression cookie name.
+- Treat `dev_mode` as presence-based; value is not semantically relevant.
+- Keep developer/operator suppression separate from user privacy opt-out controls (for example `localStorage.noAnalytics === "1"`).
+- During telemetry integration review, verify shared site loaders check `dev_mode` before Cloudflare Web Analytics injection and before Lighthouse pageview/event emission.
+- For multi-domain site families, keep the cookie name stable (`dev_mode`) and scope by highest-valid shared domain instead of renaming the cookie.
+
+---
+
 ## Summary
 
 **Before making changes:**

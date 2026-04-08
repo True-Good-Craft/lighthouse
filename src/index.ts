@@ -218,6 +218,9 @@ const TRACKED_SITES: readonly TrackedSite[] = [
   },
 ];
 
+// Developer/operator analytics suppression (`dev_mode`) is enforced by site loaders before emission.
+// Lighthouse ingest routes intentionally remain cookie-agnostic on the server side.
+
 const MANIFEST_PATH = "/manifest/core/stable.json";
 const MANIFEST_KEY = "manifest/core/stable.json";
 const PAGEVIEW_METRICS_PATH = "/metrics/pageview";

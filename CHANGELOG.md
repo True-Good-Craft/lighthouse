@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.3] - 2026-04-08
+
+### Changed
+- Clarify one cross-site developer/operator analytics suppression integration standard for all Lighthouse-tracked public sites: use `dev_mode` as the canonical cookie name with presence-based semantics.
+- Document that when `dev_mode` is present, site-side shared telemetry loaders must suppress Cloudflare Web Analytics injection, Lighthouse pageview emission, and Lighthouse standardized event emission for that page load.
+- Clarify domain-scoping expectations for separate registrable domains: `.buscore.ca` for BUS Core properties and `.truegoodcraft.ca` for True Good Craft properties/subdomains (including `starmap.truegoodcraft.ca`), while keeping one logical cookie contract.
+
+### Notes
+- Documentation and integration-contract clarification only; no Lighthouse runtime ingestion behavior change.
+
 ## [1.11.2] - 2026-04-03
 
 ### Changed

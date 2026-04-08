@@ -105,6 +105,17 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - CORS origin policy for `POST /metrics/event` is derived from the union of all `active` tracked-site `allowed_origins` entries.
   - Adding a new tracked site requires only a registry entry update. No structural changes to Lighthouse endpoints are needed.
 
+### Cross-Site Developer/Operator Analytics Exclusion Standard
+
+  - Lighthouse relies on site-side telemetry loaders to gate telemetry emission before requests are sent.
+  - The canonical developer/operator analytics suppression cookie for Lighthouse-integrated public sites is `dev_mode`.
+  - `dev_mode` is presence-based: if the cookie is present for the current page load, telemetry emission is suppressed regardless of cookie value.
+  - This suppression contract applies to both BUS Core legacy pageview telemetry (`POST /metrics/pageview`) and standardized multi-site event telemetry (`POST /metrics/event`).
+  - Under active suppression, site-side loaders are expected to suppress all analytics work for that page load, including Cloudflare Web Analytics injection and Lighthouse telemetry emission.
+  - This is an integration-contract expectation for tracked public sites; Lighthouse ingestion routes do not enforce cookie checks server-side.
+  - This developer/operator suppression standard is separate from public privacy opt-out controls (for example `localStorage.noAnalytics === "1"`).
+  - Because tracked sites can span separate registrable domains, the standard is shared by cookie name and semantics (`dev_mode`), not by one universal cookie instance.
+
 ### Standard Multi-Site Event Ingestion
 
   - `POST /metrics/event`

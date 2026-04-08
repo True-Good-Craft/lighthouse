@@ -35,6 +35,31 @@ Lighthouse currently does six things:
 
 It does not implement retries, identity, session tracking, unload analytics, or a broad analytics warehouse.
 
+## Cross-Site Analytics Suppression Standard
+
+All Lighthouse-integrated public sites must use one shared developer/operator analytics exclusion standard:
+
+- The canonical suppression cookie name is `dev_mode`.
+- Detection is presence-based, not value-based: if a `dev_mode` cookie is present, suppression is active for that page load.
+- Suppression is site-side loader behavior. Lighthouse server routes do not perform cookie checks.
+- When suppression is active, shared site telemetry loaders must suppress all analytics work for that page load:
+  - Do not inject Cloudflare Web Analytics.
+  - Do not emit Lighthouse pageview telemetry (`POST /metrics/pageview`).
+  - Do not emit Lighthouse standardized site-event telemetry (`POST /metrics/event`).
+- This developer/operator suppression standard is separate from user privacy opt-out controls (for example `localStorage.noAnalytics === "1"`).
+- Because cookies do not cross registrable domains, this standard is one logical cookie contract with multiple domain-scoped cookie instances.
+- Domain scoping guidance:
+  - Use the highest valid shared domain for each site family.
+  - Use `.buscore.ca` for BUS Core properties.
+  - Use `.truegoodcraft.ca` for True Good Craft properties and subdomains, including `starmap.truegoodcraft.ca`.
+
+Practical cookie examples:
+
+```text
+dev_mode=1; Domain=.truegoodcraft.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
+dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
+```
+
 ## Routes
 
 | Method | Path | Behavior |
