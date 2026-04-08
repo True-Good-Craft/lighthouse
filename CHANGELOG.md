@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.13.1] - 2026-04-08
+
+### Changed
+- Normalize Lighthouse telemetry documentation terminology around canonical support classes (`legacy_hybrid`, `event_only`, `event_plus_cf_traffic`, `not_yet_normalized`) and canonical capability layers (Layer 1 Registry, Layer 2 Event, Layer 3 Traffic, Layer 4 Identity, Layer 5 Extension).
+- Add an explicit current site capability matrix for BUS Core, Star Map Generator, and True Good Craft using support-class and layer language.
+- Add explicit operator-facing request phrasing guidance (for example: "Add a traffic layer to TGC", "Keep Star Map event_only") and deprecate vague parity phrasing (for example: "make it like Buscore").
+- Clarify shared taxonomy handling in docs: `page_view`, `outbound_click`, `contact_click`, and `service_interest` are cross-site comparable; other event names are either legitimate extension-layer events or drift to clean up.
+- Clarify in docs that normalization does not mean equal telemetry richness, and unsupported sections/layers remain `null` or omitted by rule.
+
+### Notes
+- Documentation and terminology normalization pass only; no runtime behavior changes.
+
 ## [1.13.0] - 2026-04-08
 
 ### Added

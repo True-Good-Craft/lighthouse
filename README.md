@@ -41,6 +41,7 @@ Normalization intent:
 - Preserve classic BUS Core operational discipline.
 - Use tracked-site event ingestion as the fleet standard.
 - Keep BUS Core legacy pageview ingestion supported, but legacy-only.
+- Normalization does not mean equal telemetry richness across all sites.
 
 Canonical rules:
 1. `TRACKED_SITES` is the canonical tracked-property registry.
@@ -52,16 +53,82 @@ Canonical rules:
 7. Normalization must not manufacture parity.
 8. Unsupported sections/metrics must remain `null` or omitted by documented rule.
 
-Current support classes (descriptive current reality):
-- `buscore`: `legacy_hybrid`
-- `star_map_generator`: `event_only`
-- `tgc_site`: `event_only`
+### Support Classes (Canonical)
 
-Support class definitions:
-- `legacy_hybrid`: standardized events plus legacy pageviews.
-- `event_only`: standardized events only, no Cloudflare site traffic in report.
-- `event_plus_cf_traffic`: standardized events plus Cloudflare traffic support.
-- `not_yet_normalized`: tracked but not yet normalization-ready.
+Support class means the structural type of telemetry a site has.
+
+Use these exact support classes:
+- `legacy_hybrid`
+- `event_only`
+- `event_plus_cf_traffic`
+- `not_yet_normalized`
+
+Definitions:
+- `legacy_hybrid`:
+  legacy plus richer telemetry/reporting surfaces; may expose traffic, events, and identity-style sections where supported.
+- `event_only`:
+  first-party event telemetry only; no fake traffic richness; identity remains `null` unless a real supported layer is added.
+- `event_plus_cf_traffic`:
+  first-party event telemetry plus Cloudflare traffic layer.
+- `not_yet_normalized`:
+  registered or partially tracked, but not yet brought onto the standard.
+
+Current site mapping:
+- BUS Core (`buscore`): `legacy_hybrid`
+- Star Map Generator (`star_map_generator`): `event_only`
+- True Good Craft (`tgc_site`): `event_only`
+
+### Capability Layers (Canonical)
+
+Capability layers are the practical operator language for what a site actually has.
+
+Use these exact layers:
+- Layer 1 - Registry layer:
+  site_key, hosts, allowed origins, reporting registration.
+- Layer 2 - Event layer:
+  first-party Lighthouse events such as `page_view`, `outbound_click`, `contact_click`, `service_interest`.
+- Layer 3 - Traffic layer:
+  Cloudflare-style traffic/request/visit surfaces.
+- Layer 4 - Identity layer:
+  session/user identity-style reporting where actually supported.
+- Layer 5 - Extension layer:
+  site-specific events beyond the shared taxonomy.
+
+Current site capability matrix:
+
+| Site | support_class | Layer 1 Registry | Layer 2 Event | Layer 3 Traffic | Layer 4 Identity | Layer 5 Extension | Notes |
+|---|---|---|---|---|---|---|---|
+| BUS Core (`buscore`) | `legacy_hybrid` | Yes | Yes | Yes | Yes | Not active by default | Intentionally richer; do not force false parity. |
+| Star Map Generator (`star_map_generator`) | `event_only` | Yes | Yes | No | No | Yes | No traffic layer and no identity layer by current design. |
+| True Good Craft (`tgc_site`) | `event_only` | Yes | Yes | No | No | No (currently) | No active extension layer right now. |
+
+Operator request language standard:
+- Future telemetry requests should be expressed with support classes and layers.
+- Preferred examples:
+  - "Add a traffic layer to TGC"
+  - "Add an extension layer to Star Map"
+  - "Keep Star Map event_only"
+  - "Add shared outbound_click coverage to Buscore"
+  - "Do not add identity to this site"
+- Avoid vague requests:
+  - "make it like Buscore"
+  - "make telemetry richer"
+  - "make all site reports the same"
+
+Propagation note:
+- This terminology is now canonical for Lighthouse telemetry docs and should be propagated in future telemetry documentation and handoffs.
+
+### Shared Taxonomy Rule
+
+Fleet shared event taxonomy remains:
+- `page_view`
+- `outbound_click`
+- `contact_click`
+- `service_interest`
+
+Rule:
+- Shared taxonomy is for comparable cross-site actions.
+- Other event names are either legitimate site-specific extension-layer events or drift that should be cleaned up.
 
 ## Cross-Site Analytics Suppression Standard
 

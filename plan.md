@@ -3,11 +3,30 @@
 Date: 2026-04-08
 Scope: `buscore`, `star_map_generator`, `tgc_site`
 
+## Canonical Vocabulary (This Plan Uses These Terms)
+
+Support classes:
+- `legacy_hybrid`
+- `event_only`
+- `event_plus_cf_traffic`
+- `not_yet_normalized`
+
+Capability layers:
+- Layer 1 - Registry layer
+- Layer 2 - Event layer
+- Layer 3 - Traffic layer
+- Layer 4 - Identity layer
+- Layer 5 - Extension layer
+
+Operator language standard:
+- Requests should be phrased in layers/support classes (for example: "Add a traffic layer to TGC", "Keep Star Map event_only").
+- Avoid vague parity language (for example: "make it like Buscore" or "make all site reports the same").
+
 ## Mission Alignment
 
 Normalization target:
 - Preserve classic BUS Core operational discipline (contract stability, additive reporting, explicit unsupported handling).
-- Do not preserve BUS Core legacy pageview ingestion as fleet standard.
+- Do not treat BUS Core legacy pageview ingestion as the fleet standard.
 - Fleet standard is tracked-site driven and event-driven.
 
 Canonical architecture rules:
@@ -41,6 +60,14 @@ Primary drift found:
 | BUS Core | `buscore` | `buscore.ca`, `www.buscore.ca` | `https://buscore.ca`, `https://www.buscore.ca` | none | true | true | `/metrics/pageview` + `/metrics/event` | `legacy_hybrid` | Summary, Today, Traffic, Human Traffic / Events, Observability, Identity, Read | Legacy + standardized dual-ingest remains intentional; requires explicit non-parity handling vs event-only sites |
 | Star Map Generator | `star_map_generator` | `starmap.truegoodcraft.ca` | `https://starmap.truegoodcraft.ca` | none | false | true | `/metrics/event` | `event_only` | Summary, Today, Human Traffic / Events, Observability, Read | No Cloudflare traffic section support; identity section not yet exposed in site report |
 | True Good Craft | `tgc_site` | `truegoodcraft.ca`, `www.truegoodcraft.ca` | `https://truegoodcraft.ca`, `https://www.truegoodcraft.ca` | none | false | true | `/metrics/event` | `event_only` | Summary, Today, Human Traffic / Events, Observability, Read | Event naming catalog not yet frozen; cloudflare section intentionally unsupported |
+
+## Site Capability Matrix (Canonical Layer View)
+
+| Site | support_class | Layer 1 Registry | Layer 2 Event | Layer 3 Traffic | Layer 4 Identity | Layer 5 Extension | Notes |
+|---|---|---|---|---|---|---|---|
+| BUS Core (`buscore`) | `legacy_hybrid` | Yes | Yes | Yes | Yes | Not active by default | Intentionally richer; do not force false parity onto other sites. |
+| Star Map Generator (`star_map_generator`) | `event_only` | Yes | Yes | No | No | Yes | Keep event-only posture unless explicitly requested otherwise. |
+| True Good Craft (`tgc_site`) | `event_only` | Yes | Yes | No | No | No (currently) | No active extension layer right now. |
 
 Support-class rule:
 - `legacy_hybrid`: site uses standardized events plus legacy pageviews.

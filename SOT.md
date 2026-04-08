@@ -322,7 +322,7 @@ No new bindings or secrets are introduced by pageview ingestion.
 - Normalization must not manufacture parity: unsupported sections/metrics stay `null` or are omitted by documented rule.
 - Cloudflare traffic, standardized first-party events, and BUS Core legacy pageviews remain distinct telemetry layers and must not be treated as equivalent sources.
 
-### Current Support Class Taxonomy (Descriptive, Not Aspirational)
+### Support Class Taxonomy (Canonical Operator Vocabulary)
 
 Each tracked site is classified as exactly one of:
 - `legacy_hybrid`
@@ -330,10 +330,52 @@ Each tracked site is classified as exactly one of:
 - `event_plus_cf_traffic`
 - `not_yet_normalized`
 
+Support class definitions:
+- `legacy_hybrid`:
+  legacy plus richer telemetry/reporting surfaces; may expose traffic, events, and identity-style sections where supported.
+- `event_only`:
+  first-party event telemetry only; no fake traffic richness; identity remains `null` unless a real supported layer is added.
+- `event_plus_cf_traffic`:
+  first-party event telemetry plus Cloudflare traffic layer.
+- `not_yet_normalized`:
+  registered or partially tracked, but not yet brought onto the standard.
+
 Current classification:
 - `buscore`: `legacy_hybrid`
 - `star_map_generator`: `event_only`
 - `tgc_site`: `event_only`
+
+### Capability Layers (Canonical Operator Vocabulary)
+
+Capability layers are the operator language for what a site actually has:
+- Layer 1 - Registry layer:
+  site_key, hosts, allowed origins, reporting registration.
+- Layer 2 - Event layer:
+  first-party Lighthouse events such as `page_view`, `outbound_click`, `contact_click`, `service_interest`.
+- Layer 3 - Traffic layer:
+  Cloudflare-style traffic/request/visit surfaces.
+- Layer 4 - Identity layer:
+  session/user identity-style reporting where actually supported.
+- Layer 5 - Extension layer:
+  site-specific events beyond the shared taxonomy.
+
+Current site capability matrix:
+
+| Site | support_class | Layer 1 Registry | Layer 2 Event | Layer 3 Traffic | Layer 4 Identity | Layer 5 Extension | Notes |
+|---|---|---|---|---|---|---|---|
+| BUS Core (`buscore`) | `legacy_hybrid` | Yes | Yes | Yes | Yes | Not active by default | Intentionally richer; do not force false parity onto other sites. |
+| Star Map Generator (`star_map_generator`) | `event_only` | Yes | Yes | No | No | Yes | Keep event-only posture unless an explicit supported layer change is requested. |
+| True Good Craft (`tgc_site`) | `event_only` | Yes | Yes | No | No | No (currently) | No active extension layer right now. |
+
+Operator language rule:
+- Future telemetry requests and handoffs must be written using support classes and capability layers.
+- Replace vague phrasing like "make it like Buscore", "make telemetry richer", or "make all site reports the same".
+- Use explicit requests such as:
+  - "Add a traffic layer to TGC"
+  - "Add an extension layer to Star Map"
+  - "Keep Star Map event_only"
+  - "Add shared outbound_click coverage to Buscore"
+  - "Do not add identity to this site"
 
 ### Canonical Normalized Per-Site Report Contract
 
@@ -369,7 +411,9 @@ Rules:
 - Runtime keeps permissive ingest compatibility and accepts any non-empty `event_name` on `POST /metrics/event`.
 - Fleet shared comparable event names are frozen to: `page_view`, `outbound_click`, `contact_click`, `service_interest`.
 - Report normalization aliases equivalent shared names to the canonical shared names (for example `pageview -> page_view`, `link_click -> outbound_click`) so shared-action reporting semantics stay stable without breaking live ingest compatibility.
-- Site-specific event names remain allowed as extensions and are treated as site-scoped/non-comparable unless explicitly mapped into the shared catalog.
+- Shared taxonomy is for comparable cross-site actions.
+- Site-specific event names remain allowed as legitimate extension-layer events and are treated as site-scoped/non-comparable unless explicitly mapped into the shared catalog.
+- Event names outside the shared taxonomy are either legitimate site-specific extensions or drift that should be cleaned up.
 
 ## 7. Privacy and Security
 
