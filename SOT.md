@@ -176,7 +176,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - Bare legacy `/report` continues to support `site_key` with optional flags `exclude_test_mode` (default `true`) and `production_only` (default from tracked-site `production_only_default`) for the additive `site_events` block only.
   - If legacy `/report` omits `site_key`, `site_events` is `null` to avoid silently blending multiple tracked sites.
   - `GET /report?view=fleet` returns `{ view, generated_at, sites }` for all tracked properties.
-  - `GET /report?view=site&site_key=<site_key>` returns `{ view, generated_at, scope, summary, traffic, events, health }` for exactly one tracked property and accepts the same `exclude_test_mode` and `production_only` flags as the legacy `site_events` scope.
+  - `GET /report?view=site&site_key=<site_key>` returns `{ view, generated_at, scope, summary, traffic, events, identity, health }` for exactly one tracked property and accepts the same `exclude_test_mode` and `production_only` flags as the legacy `site_events` scope.
   - `GET /report?view=source_health` returns `{ view, generated_at, sites }` as a telemetry-integrity view.
   - Invalid `view` returns `400` JSON `{ "ok": false, "error": "invalid_view" }`.
   - `view=site` without `site_key` returns `400` JSON `{ "ok": false, "error": "missing_site_key" }`.
@@ -281,14 +281,17 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `site_events` is populated only when `site_key` is supplied on `GET /report`.
 - `site_events.scope` echoes `site_key`, `exclude_test_mode`, and `production_only` used for the standardized-event summary.
 - `site_events.totals` contains `accepted_events` and `unique_paths` for the selected site over the current UTC day plus previous six UTC days.
-- `site_events.by_event_name` contains ranked `{ event_name, events }` for accepted events.
+- `site_events.by_event_name` contains ranked `{ event_name, events }` for accepted events, with shared-name alias normalization in report assembly so equivalent shared actions are not split across multiple names.
 - `site_events.top_sources` contains ranked `{ source, events }` using deterministic precedence `src -> utm.source -> referrer classification -> (direct)`.
 - `site_events.top_campaigns` contains ranked `{ utm_campaign, events }` for non-empty `utm_campaign` values.
 - `site_events.top_referrers` contains ranked `{ referrer_domain, events }` for non-empty referrer domains.
 - `site_events.observability` exposes `included_events`, `excluded_test_mode`, `excluded_non_production_host`, `dropped_rate_limited`, `dropped_invalid`, and `last_received_at`.
 - `site_events.production_only` filtering is host-based against the selected tracked site `production_hosts` and is operator-controllable through the `production_only` query flag.
 - `view=fleet` returns one entry per tracked site with fields `site_key`, `label`, `status`, `backend_source`, `cloudflare_traffic_enabled`, `production_hosts`, `last_received_at`, `accepted_events_7d`, `pageviews_7d`, `traffic_requests_7d`, `traffic_visits_7d`, and `has_recent_signal`.
-- `view=site` returns top-level sections `scope`, `summary`, `traffic`, `events`, and `health` for the selected site.
+- `view=site` returns top-level sections `scope`, `summary`, `traffic`, `events`, `identity`, and `health` for the selected site.
+- `view=site.scope.support_class` exposes the deterministic normalization support class for the selected site.
+- `view=site.scope.section_availability` exposes deterministic section support flags by support class.
+- `view=site.identity` is populated only for support classes with identity support (currently `legacy_hybrid` via BUS Core pageview continuity) and returns `null` for event-only support classes.
 - `view=source_health` returns one entry per tracked site with fields `site_key`, `label`, `backend_source`, `cloudflare_traffic_enabled`, `production_only_default`, `last_received_at`, `accepted_signal_7d`, `dropped_invalid`, and `dropped_rate_limited`.
 - `backend_source` is deterministic and reflects the current persisted reporting surfaces actually used by Lighthouse for that site, joined with `+` from this set: `pageview_daily`, `site_events_raw`, `buscore_traffic_daily`.
 - All `*_7d` metrics use the current UTC day plus the previous six UTC days.
@@ -308,6 +311,65 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `traffic.requests` comes from daily request `count` on `httpRequestsAdaptiveGroups` in the Cloudflare GraphQL Analytics API.
 - `traffic.visits` is populated from `sum.visits` when provided by the same single-query path and remains nullable when absent.
 - Changes to `/report` response fields or semantics require explicit SOT update and changelog entry in the same change set.
+
+### Fleet Normalization Standard
+
+- `TRACKED_SITES` is the canonical property registry for tracked public properties.
+- `POST /metrics/event` is the canonical fleet telemetry path.
+- `POST /metrics/pageview` remains supported only as a documented BUS Core legacy path.
+- `dev_mode` is the canonical cross-site developer/operator telemetry suppression contract.
+- Shared report field names and shared payload field names must keep one documented meaning across views where applicable.
+- Normalization must not manufacture parity: unsupported sections/metrics stay `null` or are omitted by documented rule.
+- Cloudflare traffic, standardized first-party events, and BUS Core legacy pageviews remain distinct telemetry layers and must not be treated as equivalent sources.
+
+### Current Support Class Taxonomy (Descriptive, Not Aspirational)
+
+Each tracked site is classified as exactly one of:
+- `legacy_hybrid`
+- `event_only`
+- `event_plus_cf_traffic`
+- `not_yet_normalized`
+
+Current classification:
+- `buscore`: `legacy_hybrid`
+- `star_map_generator`: `event_only`
+- `tgc_site`: `event_only`
+
+### Canonical Normalized Per-Site Report Contract
+
+Per-site normalized reporting logically targets these sections where supported:
+- Summary
+- Today
+- Traffic
+- Human Traffic / Events
+- Observability
+- Identity
+- Read
+
+Rules:
+- Unsupported sections must remain `null` or omitted by documented rule.
+- Section meanings must not drift by site.
+- Fleet summaries must remain comparable without pretending unsupported metrics exist.
+
+### Shared Field Meaning Freeze
+
+Shared field semantics:
+- `accepted_signal_7d`: accepted supported telemetry signal count for current UTC day plus previous six days.
+- `accepted_events_7d`: accepted standardized events only (never includes legacy pageviews).
+- `has_recent_signal`: boolean equivalent of `accepted_signal_7d > 0`.
+- `last_received_at`: latest accepted telemetry `received_at` included for the site in that view.
+- `cloudflare_traffic_enabled`: tracked-site capability flag, not a count metric.
+
+Rules:
+- If a field is only valid in one view or section, that scope must be explicitly documented.
+- Meanings must not drift between fleet/site/source-health outputs.
+
+### Shared Event Naming Rule
+
+- Runtime keeps permissive ingest compatibility and accepts any non-empty `event_name` on `POST /metrics/event`.
+- Fleet shared comparable event names are frozen to: `page_view`, `outbound_click`, `contact_click`, `service_interest`.
+- Report normalization aliases equivalent shared names to the canonical shared names (for example `pageview -> page_view`, `link_click -> outbound_click`) so shared-action reporting semantics stay stable without breaking live ingest compatibility.
+- Site-specific event names remain allowed as extensions and are treated as site-scoped/non-comparable unless explicitly mapped into the shared catalog.
 
 ## 7. Privacy and Security
 

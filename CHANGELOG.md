@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.13.0] - 2026-04-08
+
+### Added
+- Freeze canonical shared cross-site comparable event names to `page_view`, `outbound_click`, `contact_click`, and `service_interest`.
+- Add deterministic support-class and section-availability metadata on `GET /report?view=site` scope (`support_class`, `section_availability`).
+- Add explicit `identity` section to `GET /report?view=site` payload, populated only for support classes with identity support and `null` for event-only sites.
+- Add normalization tests covering taxonomy helpers, support-class mapping, shared signal semantics, and site-view identity availability.
+
+### Changed
+- Normalize shared event-name aliases in report assembly for standardized-event `by_event_name` output so equivalent shared actions are grouped under canonical names without breaking permissive ingest compatibility.
+- Centralize supported-signal semantics through helper logic used by fleet/site/source-health report assembly (`accepted_signal_7d` and `has_recent_signal`).
+
+### Notes
+- Runtime ingest validation remains permissive for compatibility: non-empty site-specific event names continue to be accepted as extensions.
+
+## [1.12.1] - 2026-04-08
+
+### Changed
+- Perform a normalization audit and planning pass for tracked public properties (`buscore`, `star_map_generator`, `tgc_site`) and record execution-ready inventory in `plan.md`.
+- Make fleet normalization rules explicit in docs: `TRACKED_SITES` canonical registry, `/metrics/event` canonical fleet telemetry path, and `/metrics/pageview` documented as BUS Core legacy-only support.
+- Freeze shared report-field semantics in docs for `accepted_signal_7d`, `accepted_events_7d`, `has_recent_signal`, `last_received_at`, and `cloudflare_traffic_enabled`.
+- Add explicit support-class taxonomy (`legacy_hybrid`, `event_only`, `event_plus_cf_traffic`, `not_yet_normalized`) and classify current tracked sites by observed current reality.
+
+### Notes
+- Documentation and planning normalization pass only; no runtime behavior changes to ingestion or report outputs.
+
 ## [1.12.0] - 2026-04-08
 
 ### Added

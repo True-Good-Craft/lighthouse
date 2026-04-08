@@ -6,7 +6,17 @@ import {
   resolveReportRequest,
   assembleLegacyReport,
   assembleFleetReport,
+  assembleSiteReport,
   assembleSourceHealthReport,
+  CANONICAL_SHARED_EVENT_TAXONOMY,
+  normalizeEventNameToCanonicalShared,
+  classifyEventNameAgainstTaxonomy,
+  normalizeEventNameForReporting,
+  supportClassForSite,
+  sectionAvailabilityForSupportClass,
+  computeAcceptedSignal7d,
+  hasRecentSignalFromAcceptedSignal7d,
+  supportsIdentityForSite,
 } from "../dist/index.js";
 
 test("normalizeReportView keeps bare /report on the legacy contract", () => {
@@ -153,4 +163,138 @@ test("assembleSourceHealthReport returns the source health shape", () => {
     "dropped_invalid",
     "dropped_rate_limited",
   ]);
+});
+
+test("canonical shared event taxonomy is frozen", () => {
+  assert.deepEqual(CANONICAL_SHARED_EVENT_TAXONOMY, [
+    "page_view",
+    "outbound_click",
+    "contact_click",
+    "service_interest",
+  ]);
+});
+
+test("event taxonomy helper normalizes aliases while preserving extension names", () => {
+  assert.equal(normalizeEventNameToCanonicalShared("page_view"), "page_view");
+  assert.equal(normalizeEventNameToCanonicalShared("pageview"), "page_view");
+  assert.equal(normalizeEventNameToCanonicalShared("link_click"), "outbound_click");
+  assert.equal(classifyEventNameAgainstTaxonomy("service_interest"), "shared");
+  assert.equal(classifyEventNameAgainstTaxonomy("generator_complete"), "extension");
+  assert.equal(classifyEventNameAgainstTaxonomy("  "), "invalid");
+  assert.equal(normalizeEventNameForReporting("  generator_complete "), "generator_complete");
+});
+
+test("support class and section availability remain deterministic", () => {
+  const legacyClass = supportClassForSite({
+    status: "active",
+    cloudflare_traffic_enabled: true,
+    site_key: "buscore",
+  });
+  assert.equal(legacyClass, "legacy_hybrid");
+  assert.equal(sectionAvailabilityForSupportClass(legacyClass).identity, true);
+
+  const eventOnlyClass = supportClassForSite({
+    status: "active",
+    cloudflare_traffic_enabled: false,
+    site_key: "star_map_generator",
+  });
+  assert.equal(eventOnlyClass, "event_only");
+  assert.equal(sectionAvailabilityForSupportClass(eventOnlyClass).traffic, false);
+  assert.equal(sectionAvailabilityForSupportClass(eventOnlyClass).identity, false);
+
+  assert.equal(
+    supportClassForSite({ status: "staging", cloudflare_traffic_enabled: false, site_key: "new_site" }),
+    "not_yet_normalized"
+  );
+});
+
+test("shared signal semantics helpers stay aligned", () => {
+  assert.equal(computeAcceptedSignal7d({ acceptedEvents7d: 3, pageviews7d: null }), 3);
+  assert.equal(computeAcceptedSignal7d({ acceptedEvents7d: 3, pageviews7d: 7 }), 10);
+  assert.equal(hasRecentSignalFromAcceptedSignal7d(0), false);
+  assert.equal(hasRecentSignalFromAcceptedSignal7d(1), true);
+});
+
+test("site support helper keeps identity BUS Core-only", () => {
+  assert.equal(
+    supportsIdentityForSite({ status: "active", cloudflare_traffic_enabled: true, site_key: "buscore" }),
+    true
+  );
+  assert.equal(
+    supportsIdentityForSite({ status: "active", cloudflare_traffic_enabled: false, site_key: "tgc_site" }),
+    false
+  );
+});
+
+test("assembleSiteReport includes support metadata and explicit null identity for event-only sites", () => {
+  const payload = assembleSiteReport({
+    generated_at: "2026-04-08T12:00:00.000Z",
+    scope: {
+      site_key: "star_map_generator",
+      label: "Star Map Generator",
+      status: "active",
+      backend_source: "site_events_raw",
+      window: {
+        start_day: "2026-04-02",
+        end_day: "2026-04-08",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      exclude_test_mode: true,
+      production_only: true,
+      support_class: "event_only",
+      section_availability: {
+        summary: true,
+        today: true,
+        traffic: false,
+        human_traffic_events: true,
+        observability: true,
+        identity: false,
+        read: true,
+      },
+    },
+    summary: {
+      accepted_events_7d: 8,
+      pageviews_7d: null,
+      traffic_requests_7d: null,
+      traffic_visits_7d: null,
+      last_received_at: "2026-04-08T10:00:00.000Z",
+      has_recent_signal: true,
+    },
+    traffic: {
+      cloudflare_traffic_enabled: false,
+      latest_day: { day: null, visits: null, requests: null, captured_at: null },
+      last_7_days: {
+        visits: null,
+        requests: null,
+        avg_daily_visits: null,
+        avg_daily_requests: null,
+        days_with_data: 0,
+      },
+    },
+    events: {
+      accepted_events: 8,
+      unique_paths: 3,
+      by_event_name: [{ event_name: "page_view", events: 8 }],
+      top_sources: [{ source: "search", events: 6 }],
+      top_campaigns: [],
+      top_referrers: [],
+    },
+    identity: null,
+    health: {
+      last_received_at: "2026-04-08T10:00:00.000Z",
+      included_events: 8,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 0,
+      dropped_rate_limited: 0,
+      dropped_invalid: null,
+      cloudflare_traffic_enabled: false,
+      production_only_default: true,
+    },
+  });
+
+  assert.equal(payload.view, "site");
+  assert.equal(payload.scope.support_class, "event_only");
+  assert.equal(payload.scope.section_availability.identity, false);
+  assert.equal(payload.identity, null);
 });

@@ -152,6 +152,18 @@ type SiteEventSummary = {
     last_received_at: string | null;
   };
 };
+export type SupportClass = "legacy_hybrid" | "event_only" | "event_plus_cf_traffic" | "not_yet_normalized";
+type SharedEventName = "page_view" | "outbound_click" | "contact_click" | "service_interest";
+type EventTaxonomyKind = "shared" | "extension" | "invalid";
+type SiteSectionAvailability = {
+  summary: boolean;
+  today: boolean;
+  traffic: boolean;
+  human_traffic_events: boolean;
+  observability: boolean;
+  identity: boolean;
+  read: boolean;
+};
 type ReportView = "legacy" | "fleet" | "site" | "source_health";
 type ReportWindow = {
   start_day: string;
@@ -192,6 +204,8 @@ type SiteReportPayload = {
     window: ReportWindow;
     exclude_test_mode: boolean;
     production_only: boolean;
+    support_class: SupportClass;
+    section_availability: SiteSectionAvailability;
   };
   summary: {
     accepted_events_7d: number;
@@ -214,6 +228,7 @@ type SiteReportPayload = {
     top_campaigns: Array<{ utm_campaign: string; events: number }>;
     top_referrers: Array<{ referrer_domain: string; events: number }>;
   };
+  identity: IdentitySummary | null;
   health: {
     last_received_at: string | null;
     included_events: number;
@@ -308,13 +323,29 @@ const TRACKED_SITES: readonly TrackedSite[] = [
   },
 ];
 
+export const CANONICAL_SHARED_EVENT_TAXONOMY: ReadonlyArray<SharedEventName> = [
+  "page_view",
+  "outbound_click",
+  "contact_click",
+  "service_interest",
+];
+
+const SHARED_EVENT_ALIAS_TO_CANONICAL: Readonly<Record<string, SharedEventName>> = {
+  pageview: "page_view",
+  page_view: "page_view",
+  link_click: "outbound_click",
+  outbound_click: "outbound_click",
+  contact_click: "contact_click",
+  service_interest: "service_interest",
+};
+
 // Developer/operator analytics suppression (`dev_mode`) is enforced by site loaders before emission.
 // Lighthouse ingest routes intentionally remain cookie-agnostic on the server side.
 
 const MANIFEST_PATH = "/manifest/core/stable.json";
 const MANIFEST_KEY = "manifest/core/stable.json";
-const PAGEVIEW_METRICS_PATH = "/metrics/pageview";
-const SITE_EVENT_METRICS_PATH = "/metrics/event";
+const PAGEVIEW_METRICS_PATH = "/metrics/pageview"; // BUS Core legacy-only ingest path.
+const SITE_EVENT_METRICS_PATH = "/metrics/event"; // Canonical fleet ingest path.
 const RELEASE_PATH = /^\/releases\/([^/]+)$/;
 const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
@@ -419,6 +450,118 @@ function getSiteByKey(siteKey: string): TrackedSite | undefined {
 
 function siteSupportsLegacyPageviews(site: TrackedSite): boolean {
   return site.site_key === "buscore";
+}
+
+export function supportClassForSite(site: {
+  status: SiteStatus;
+  cloudflare_traffic_enabled: boolean;
+  site_key: string;
+}): SupportClass {
+  if (site.status !== "active") {
+    return "not_yet_normalized";
+  }
+
+  if (site.site_key === "buscore") {
+    return "legacy_hybrid";
+  }
+
+  if (site.cloudflare_traffic_enabled) {
+    return "event_plus_cf_traffic";
+  }
+
+  return "event_only";
+}
+
+export function sectionAvailabilityForSupportClass(supportClass: SupportClass): SiteSectionAvailability {
+  if (supportClass === "legacy_hybrid") {
+    return {
+      summary: true,
+      today: true,
+      traffic: true,
+      human_traffic_events: true,
+      observability: true,
+      identity: true,
+      read: true,
+    };
+  }
+
+  if (supportClass === "event_plus_cf_traffic") {
+    return {
+      summary: true,
+      today: true,
+      traffic: true,
+      human_traffic_events: true,
+      observability: true,
+      identity: false,
+      read: true,
+    };
+  }
+
+  if (supportClass === "event_only") {
+    return {
+      summary: true,
+      today: true,
+      traffic: false,
+      human_traffic_events: true,
+      observability: true,
+      identity: false,
+      read: true,
+    };
+  }
+
+  return {
+    summary: true,
+    today: true,
+    traffic: false,
+    human_traffic_events: true,
+    observability: true,
+    identity: false,
+    read: true,
+  };
+}
+
+export function normalizeEventNameToCanonicalShared(eventName: string): SharedEventName | null {
+  const normalized = eventName.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  return SHARED_EVENT_ALIAS_TO_CANONICAL[normalized] ?? null;
+}
+
+export function classifyEventNameAgainstTaxonomy(eventName: string): EventTaxonomyKind {
+  const canonical = normalizeEventNameToCanonicalShared(eventName);
+  if (canonical) {
+    return "shared";
+  }
+  return eventName.trim() ? "extension" : "invalid";
+}
+
+export function normalizeEventNameForReporting(eventName: string): string {
+  const canonical = normalizeEventNameToCanonicalShared(eventName);
+  if (canonical) {
+    return canonical;
+  }
+  return eventName.trim();
+}
+
+export function computeAcceptedSignal7d(input: {
+  acceptedEvents7d: number;
+  pageviews7d: number | null;
+}): number {
+  return (input.pageviews7d ?? 0) + input.acceptedEvents7d;
+}
+
+export function hasRecentSignalFromAcceptedSignal7d(acceptedSignal7d: number): boolean {
+  return acceptedSignal7d > 0;
+}
+
+export function supportsIdentityForSite(site: {
+  status: SiteStatus;
+  cloudflare_traffic_enabled: boolean;
+  site_key: string;
+}): boolean {
+  const supportClass = supportClassForSite(site);
+  return sectionAvailabilityForSupportClass(supportClass).identity;
 }
 
 function defaultSiteEventFilter(site: TrackedSite): SiteEventFilter {
@@ -1102,10 +1245,23 @@ async function querySiteEventsByEventName(
     .prepare(
       `SELECT event_name, COUNT(*) AS events FROM site_events_raw WHERE ${where.join(" AND ")} GROUP BY event_name ORDER BY events DESC, event_name ASC LIMIT ?`
     )
-    .bind(...bindings, limit)
+    .bind(...bindings, 1000)
     .all<{ event_name: string; events: number }>();
 
-  return rows.results ?? [];
+  const normalizedCounts = new Map<string, number>();
+  for (const row of rows.results ?? []) {
+    const normalizedName = normalizeEventNameForReporting(row.event_name);
+    if (!normalizedName) {
+      continue;
+    }
+
+    normalizedCounts.set(normalizedName, (normalizedCounts.get(normalizedName) ?? 0) + (row.events ?? 0));
+  }
+
+  return Array.from(normalizedCounts.entries())
+    .map(([event_name, events]) => ({ event_name, events }))
+    .sort((a, b) => (b.events - a.events) || a.event_name.localeCompare(b.event_name))
+    .slice(0, limit);
 }
 
 async function querySiteEventTopCampaigns(
@@ -2253,7 +2409,10 @@ async function buildSiteSignalSnapshot(
     site.cloudflare_traffic_enabled ? queryLatestTrafficRow(db) : Promise.resolve<TrafficRow | null>(null),
   ]);
 
-  const acceptedSignal7d = (pageviewRange?.pageviews ?? 0) + siteEventSummary.totals.accepted_events;
+  const acceptedSignal7d = computeAcceptedSignal7d({
+    acceptedEvents7d: siteEventSummary.totals.accepted_events,
+    pageviews7d: supportsPageviews ? (pageviewRange?.pageviews ?? 0) : null,
+  });
   const lastReceivedAt = maxIsoTimestamp(pageviewAllTime?.last_received_at ?? null, siteEventAllTimeOverview.last_received_at);
 
   return {
@@ -2267,8 +2426,26 @@ async function buildSiteSignalSnapshot(
     acceptedSignal7d,
     droppedRateLimited: (pageviewRange?.dropped_rate_limited ?? 0) + siteEventSummary.observability.dropped_rate_limited,
     droppedInvalid: supportsPageviews ? (pageviewRange?.dropped_invalid ?? 0) : null,
-    hasRecentSignal: acceptedSignal7d > 0,
+    hasRecentSignal: hasRecentSignalFromAcceptedSignal7d(acceptedSignal7d),
   };
+}
+
+async function buildSiteIdentitySection(
+  db: D1Database,
+  site: TrackedSite,
+  todayDay: string,
+  startDay: string
+): Promise<IdentitySummary | null> {
+  if (!supportsIdentityForSite(site)) {
+    return null;
+  }
+
+  const [identityEvents, firstSeenByIdentity] = await Promise.all([
+    queryAcceptedIdentityEventsInRange(db, startDay, todayDay),
+    queryIdentityFirstSeen(db),
+  ]);
+
+  return summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, startDay);
 }
 
 async function buildLegacyReport(
@@ -2378,7 +2555,11 @@ async function buildSiteReport(
     throw new Error("invalid_site_key");
   }
 
+  const supportClass = supportClassForSite(site);
+  const sectionAvailability = sectionAvailabilityForSupportClass(supportClass);
+
   const snapshot = await buildSiteSignalSnapshot(db, site, filter, last7StartDay, todayDay);
+  const identity = await buildSiteIdentitySection(db, site, todayDay, last7StartDay);
   const traffic = {
     cloudflare_traffic_enabled: site.cloudflare_traffic_enabled,
     latest_day: latestTrafficWindow(snapshot.latestTraffic),
@@ -2395,6 +2576,8 @@ async function buildSiteReport(
       window: reportWindow(last7StartDay, todayDay),
       exclude_test_mode: filter.excludeTestMode,
       production_only: filter.productionOnly,
+      support_class: supportClass,
+      section_availability: sectionAvailability,
     },
     summary: {
       accepted_events_7d: snapshot.siteEventSummary.totals.accepted_events,
@@ -2413,6 +2596,7 @@ async function buildSiteReport(
       top_campaigns: snapshot.siteEventSummary.top_campaigns,
       top_referrers: snapshot.siteEventSummary.top_referrers,
     },
+    identity,
     health: {
       last_received_at: snapshot.lastReceivedAt,
       included_events: snapshot.siteEventSummary.observability.included_events,

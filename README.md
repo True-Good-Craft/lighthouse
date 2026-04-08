@@ -35,6 +35,34 @@ Lighthouse currently does six things:
 
 It does not implement retries, identity, session tracking, unload analytics, or a broad analytics warehouse.
 
+## Fleet Normalization Standard
+
+Normalization intent:
+- Preserve classic BUS Core operational discipline.
+- Use tracked-site event ingestion as the fleet standard.
+- Keep BUS Core legacy pageview ingestion supported, but legacy-only.
+
+Canonical rules:
+1. `TRACKED_SITES` is the canonical tracked-property registry.
+2. `POST /metrics/event` is the canonical fleet telemetry path.
+3. `POST /metrics/pageview` is BUS Core legacy-only support.
+4. `dev_mode` is the canonical cross-site suppression contract.
+5. Shared event names must be standardized by documented catalog.
+6. Shared report and payload field names must keep one meaning.
+7. Normalization must not manufacture parity.
+8. Unsupported sections/metrics must remain `null` or omitted by documented rule.
+
+Current support classes (descriptive current reality):
+- `buscore`: `legacy_hybrid`
+- `star_map_generator`: `event_only`
+- `tgc_site`: `event_only`
+
+Support class definitions:
+- `legacy_hybrid`: standardized events plus legacy pageviews.
+- `event_only`: standardized events only, no Cloudflare site traffic in report.
+- `event_plus_cf_traffic`: standardized events plus Cloudflare traffic support.
+- `not_yet_normalized`: tracked but not yet normalization-ready.
+
 ## Cross-Site Analytics Suppression Standard
 
 All Lighthouse-integrated public sites must use one shared developer/operator analytics exclusion standard:
@@ -224,7 +252,17 @@ Additional authenticated view modes:
       "semantics": "current_utc_day_plus_previous_6_days"
     },
     "exclude_test_mode": true,
-    "production_only": true
+    "production_only": true,
+    "support_class": "event_only",
+    "section_availability": {
+      "summary": true,
+      "today": true,
+      "traffic": false,
+      "human_traffic_events": true,
+      "observability": true,
+      "identity": false,
+      "read": true
+    }
   },
   "summary": {
     "accepted_events_7d": 8,
@@ -258,6 +296,7 @@ Additional authenticated view modes:
     "top_campaigns": [],
     "top_referrers": []
   },
+  "identity": null,
   "health": {
     "last_received_at": "2026-04-08T10:00:00.000Z",
     "included_events": 8,
@@ -299,6 +338,29 @@ View notes:
 - In fleet, site, and source-health views, `last_received_at` is the latest accepted telemetry `received_at` included for that site. BUS Core considers both legacy pageviews and standardized site events; other sites consider standardized site events only.
 - `has_recent_signal` is `true` when the selected site has at least one accepted supported signal in the current 7-day UTC window.
 - `dropped_invalid` is currently supported only for BUS Core legacy pageview telemetry. Standardized-event invalid submissions are not persisted, so other sites return `null`.
+- Site-view payloads expose `scope.support_class` and `scope.section_availability` to make section support deterministic by current support class.
+- Site-view `identity` is populated only for support classes with identity support (currently BUS Core `legacy_hybrid`) and is `null` for event-only sites.
+
+Normalized section contract (logical per-site sections where supported):
+- Summary
+- Today
+- Traffic
+- Human Traffic / Events
+- Observability
+- Identity
+- Read
+
+Section rules:
+- Unsupported sections stay `null` or omitted by documented rule.
+- No site-specific reinterpretation of shared section meaning.
+- Comparable fleet summaries must not imply unsupported metrics exist.
+
+Shared field meaning rules:
+- `accepted_signal_7d`: accepted supported telemetry signals in 7-day UTC window.
+- `accepted_events_7d`: accepted standardized events only.
+- `has_recent_signal`: `accepted_signal_7d > 0`.
+- `last_received_at`: latest accepted telemetry timestamp included for the site in the view.
+- `cloudflare_traffic_enabled`: support/capability flag from tracked-site registry.
 
 ## Star Map Go-Live Inputs
 
@@ -316,8 +378,10 @@ Operator launch-readiness report calls:
 
 Expected Star Map event names:
 
-- Lighthouse accepts any non-empty `event_name` and does not enforce a fixed taxonomy.
-- Before go-live, the Star Map owner must provide and freeze the launch event-name list so `/report` top event-name and source/campaign readouts can be interpreted consistently.
+- Ingest compatibility remains permissive and accepts any non-empty `event_name`.
+- Shared comparable event names are frozen to: `page_view`, `outbound_click`, `contact_click`, `service_interest`.
+- Report normalization aliases equivalent shared names into canonical forms (for example `pageview -> page_view`, `link_click -> outbound_click`) to prevent semantic drift in shared-action reporting.
+- Site-specific event names remain valid as extensions and are treated as site-scoped unless explicitly added to shared taxonomy.
 
 ## D1 Schema
 

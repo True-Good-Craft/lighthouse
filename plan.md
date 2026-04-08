@@ -1,72 +1,146 @@
-# Lighthouse Plan
+# Lighthouse Normalization Audit and Execution Plan
 
-This document is a planning artifact for Lighthouse.
-It distinguishes current shipped reality from future direction.
+Date: 2026-04-08
+Scope: `buscore`, `star_map_generator`, `tgc_site`
 
-## Current System Reality
+## Mission Alignment
 
-Lighthouse is currently a single Cloudflare Worker that is privacy-first and aggregate-only.
+Normalization target:
+- Preserve classic BUS Core operational discipline (contract stability, additive reporting, explicit unsupported handling).
+- Do not preserve BUS Core legacy pageview ingestion as fleet standard.
+- Fleet standard is tracked-site driven and event-driven.
 
-Current shipped behavior:
-- Serves manifest JSON at `GET /manifest/core/stable.json` with no counting.
-- Serves update checks at `GET /update/check` and increments fixed `update_checks` counter unless `IGNORED_IP` matches the request IP.
-- Serves download initiation at `GET /download/latest` and increments fixed `downloads` counter unless `IGNORED_IP` matches the request IP.
-- Serves release artifacts at `GET /releases/:filename` from R2 with no counting.
-- Exposes protected, on-demand reporting at `GET /report` using `X-Admin-Token`.
+Canonical architecture rules:
+1. `TRACKED_SITES` is the canonical property registry.
+2. `POST /metrics/event` is the canonical fleet telemetry path.
+3. `POST /metrics/pageview` remains supported only as BUS Core legacy ingestion.
+4. `dev_mode` is the canonical cross-site suppression contract.
+5. Shared event naming must be standardized by a documented catalog.
+6. Shared report/payload fields must have one meaning across views where applicable.
+7. Normalization must not manufacture parity.
+8. Unsupported metrics/sections must remain `null` or omitted by documented rule.
 
-Current persisted aggregate model:
-- D1 table `metrics_daily` with fixed columns: `update_checks`, `downloads`, `errors`.
-- Daily key is UTC date (`YYYY-MM-DD`).
-- Reporting output includes: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`.
+## Audit Summary (Current Lighthouse Reality)
 
-Current operational model:
-- On-demand reporting only.
-- No cron-triggered jobs.
-- No outbound Discord posting.
+What is already aligned:
+- Tracked-site registry exists in code (`TRACKED_SITES`) and is already the source for site identity, CORS, production host filters, and Cloudflare traffic availability.
+- `POST /metrics/event` exists and is already the multi-site telemetry path.
+- `POST /metrics/pageview` remains BUS Core scoped (CORS and report support).
+- `/report` already returns `null` for unsupported per-site metrics in fleet/site/source-health views.
+- `dev_mode` contract is documented in SOT/README and acknowledged in code comments as site-loader enforced.
 
-## Confirmed Constraints
+Primary drift found:
+- This file was stale and contradicted shipped behavior (cron, event ingest, and multi-view reporting were missing).
+- Shared cross-site event catalog is not yet frozen as a documented contract.
+- Shared field semantics exist but were not previously grouped into one explicit normalization rule set.
 
-- Aggregate-only storage; no user-level telemetry.
-- Deterministic counter increments from explicit server-side paths.
-- Protected admin reporting via exact token match.
-- Lighthouse must remain operationally independent and independently runnable as a standalone service.
-- Lighthouse must not become hard-dependent on BUS Core, Price Guard, Discord, email, cron, or any other external service for core operation.
-- Integrations are allowed only as optional, additive, non-blocking layers.
-- Any roadmap item that would make Lighthouse unable to function without another system must be rejected or reworked.
-- Keep public behavior aligned with SOT and changelog before introducing new capability.
-- Avoid implicit expansion of scope through docs that describe unshipped behavior as current.
+## Per-Site Normalization Inventory
 
-## Near-Term Doc/Operational Priorities
+| label | site_key | production_hosts | allowed_origins | staging_hosts | cloudflare_traffic_enabled | lighthouse_first_party_telemetry_enabled | ingestion path(s) in use | support_class | logically supported sections | known drift / ambiguity |
+|---|---|---|---|---|---|---|---|---|---|---|
+| BUS Core | `buscore` | `buscore.ca`, `www.buscore.ca` | `https://buscore.ca`, `https://www.buscore.ca` | none | true | true | `/metrics/pageview` + `/metrics/event` | `legacy_hybrid` | Summary, Today, Traffic, Human Traffic / Events, Observability, Identity, Read | Legacy + standardized dual-ingest remains intentional; requires explicit non-parity handling vs event-only sites |
+| Star Map Generator | `star_map_generator` | `starmap.truegoodcraft.ca` | `https://starmap.truegoodcraft.ca` | none | false | true | `/metrics/event` | `event_only` | Summary, Today, Human Traffic / Events, Observability, Read | No Cloudflare traffic section support; identity section not yet exposed in site report |
+| True Good Craft | `tgc_site` | `truegoodcraft.ca`, `www.truegoodcraft.ca` | `https://truegoodcraft.ca`, `https://www.truegoodcraft.ca` | none | false | true | `/metrics/event` | `event_only` | Summary, Today, Human Traffic / Events, Observability, Read | Event naming catalog not yet frozen; cloudflare section intentionally unsupported |
 
-- Keep README and SOT synchronized with the shipped route surface.
-- Keep reporting contract documentation explicit and stable for operators.
-- Treat `/report` as an operator contract, not an improv analytics surface.
-- Keep changelog Unreleased entries clearly marked as planned, not shipped.
-- Preserve terminology consistency: aggregate-only, privacy-first, single Cloudflare Worker, on-demand reporting.
-- Keep deployment/runbook docs concise and operationally focused.
-- Keep Lighthouse fixed-metric in the near term for simplicity, inspectability, and drift resistance.
+Support-class rule:
+- `legacy_hybrid`: site uses standardized events plus legacy pageviews.
+- `event_only`: site uses standardized events and no Cloudflare traffic in report.
+- `event_plus_cf_traffic`: site uses standardized events and has Cloudflare traffic enabled.
+- `not_yet_normalized`: site in registry but lacking normalized telemetry/report readiness.
 
-## Approved/Desired Future Direction
+## Canonical Normalized Per-Site Report Contract
 
-These items are strategic direction, not current implementation:
+Every normalized per-site report should aim to expose these logical sections where supported:
+- Summary
+- Today
+- Traffic
+- Human Traffic / Events
+- Observability
+- Identity
+- Read
 
-- Keep the fixed metric model as the default until at least 2-3 additional stable, recurring counters justify migration complexity.
-- Re-evaluate migration from fixed counter columns to a dynamic metric-ledger model (`day`, `metric`, `count`) only when that threshold is met.
-- Evaluate a metric-based increment helper that can support additional counters without schema changes.
-- Evaluate Price Guard integration for a `calculations` metric in D1, including auth and failure semantics.
-- Evaluate all integrations under a strict independence gate: integration failure must not block Lighthouse core request handling and reporting.
-- If the metric-ledger model ships, revise reporting aggregation and documentation together in one controlled change set.
-- Consider a public metrics board only after storage/reporting contracts are stable and documented.
+Rules:
+- Unsupported sections must be `null` or omitted by documented rule.
+- No site should improvise different meanings for those sections.
+- Fleet report must expose comparable site summaries without pretending unsupported metrics exist.
 
-## Explicit Non-Goals / Not Yet Implemented
+Current practical mapping in Lighthouse:
+- Summary: `view=site.summary` and `view=fleet.sites[*]` summary fields.
+- Today: represented in legacy report blocks and as implied window endpoint in `view=site` window metadata.
+- Traffic: `traffic` object in site/fleet where `cloudflare_traffic_enabled = true`, otherwise `null` metrics with explicit flag.
+- Human Traffic / Events: `events` block (standardized events) and BUS Core legacy `human_traffic` section.
+- Observability: `health` block in `view=site`, plus `view=source_health`.
+- Identity: currently supported in legacy BUS Core identity block; not yet normalized as a per-site section for all sites.
+- Read: all report views are read-only outputs; no write semantics are exposed by report routes.
 
-Not currently in Lighthouse:
-- Dynamic metric enumeration in runtime reporting.
-- Generic `(day, metric, count)` storage schema.
-- Price Guard metric ingestion endpoint and `calculations` counter in shipped reports.
-- Cron summaries.
-- Discord report posting.
-- Any per-user telemetry or behavioral tracking.
+## Shared Field Meaning Freeze
 
-Roadmap guardrail:
-- Lighthouse is not a BUS Core submodule and must not be planned as BUS Core-dependent infrastructure.
+Shared field names must keep one meaning across report views where applicable:
+- `accepted_signal_7d`: accepted telemetry signals in current UTC day + previous six days, using supported sources for the site.
+- `accepted_events_7d`: accepted standardized events only (never includes legacy pageviews).
+- `has_recent_signal`: boolean equivalent of `accepted_signal_7d > 0` over supported sources.
+- `last_received_at`: latest accepted `received_at` included for that site in the view.
+- `cloudflare_traffic_enabled`: capability/availability flag from tracked-site config; not a traffic count.
+
+Rules:
+- If a field is only valid in one view/section, document that explicitly.
+- Do not let field meanings drift by site or report view.
+
+## No-Fiction Normalization Rules
+
+- Do not fake unsupported metrics.
+- Do not backfill unsupported metrics from unrelated sources for cosmetic parity.
+- Do not treat Cloudflare traffic, first-party events, and legacy pageviews as equivalent layers.
+- Keep `null` values honest.
+
+## Shared Event Name Standardization (Execution Target)
+
+Current state:
+- Runtime accepts any non-empty `event_name` for `/metrics/event`.
+- Star Map production currently emits named events (for example `page_view`, `preview_generated`, `high_res_requested`, `download_completed`, `payment_click`, plus error variants).
+
+Next-pass requirement:
+- Publish and freeze one shared fleet event-name catalog for cross-site comparable events.
+- Keep site-specific events allowed, but mark them as site-scoped and non-comparable.
+
+## Practical Live Verification (This Pass)
+
+Completed:
+- BUS Core live HTML references shared loader (`/assets/js/site-analytics.js`).
+- BUS Core live loader includes `/metrics/pageview`, `dev_mode` cookie check, and Cloudflare beacon gating.
+- True Good Craft live HTML includes `assets/js/telemetry.js` and Cloudflare beacon script.
+- True Good Craft live telemetry script uses `/metrics/event` with beacon flow.
+- Star Map live script includes `LIGHTHOUSE_SITE_KEY = 'star_map_generator'`, `dev_mode` suppression check, and `/metrics/event` emission.
+- Star Map script contains concrete `trackEvent(...)` names used in production script.
+
+Not completed in this pass:
+- Browser-interaction capture to verify every emitted event name path under real user interactions.
+- End-to-end confirmation that every host conditionally suppresses both Cloudflare and Lighthouse telemetry under `dev_mode` for all interaction paths.
+
+## Drift List
+
+1. `plan.md` was materially stale against shipped behavior and has been replaced.
+2. Shared cross-site event-name catalog is not yet frozen as an explicit Lighthouse contract.
+3. Identity reporting is currently richer for BUS Core legacy pageviews than event-only sites; this is acceptable only if documented as unsupported elsewhere.
+
+## Recommended Implementation Sequence (Next Pass)
+
+1. Freeze shared event taxonomy
+	- Publish canonical shared event names and mapping rules in SOT/README.
+	- Mark site-specific non-comparable events explicitly.
+
+2. Normalize report contract exposure
+	- Add explicit per-site section availability metadata in `view=site` (or adjacent doc contract) without synthetic values.
+	- Keep unsupported sections `null`/omitted by rule.
+
+3. Normalize field dictionary enforcement
+	- Add tests for shared-field semantics across `view=fleet`, `view=site`, and `view=source_health`.
+	- Guard against regressions in meaning of `accepted_signal_7d`, `accepted_events_7d`, `has_recent_signal`, `last_received_at`.
+
+4. Site rollout discipline
+	- For each tracked site, verify production loader emits standardized shared events where applicable.
+	- Keep BUS Core legacy `/metrics/pageview` support documented as legacy-only.
+
+5. Verification closeout
+	- Run live host verification checklist for each release touching telemetry contracts.
+	- Record observed evidence snippets for loader and suppression behavior.
