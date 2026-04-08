@@ -16,7 +16,7 @@
 - Source audit report: `tgc-ops/indexes/daily-estate-compliance-report.md`
 - Source audit UTC: 2026-03-23T23:32:27.1579301Z
 - Last projected by: Codex Local Automation
-- Projection date UTC: 2026-03-23T23:36:40.2738495Z
+- Projection date UTC: 2026-04-05T18:33:27.7702857Z
 
 ## 4. Baseline checks
 - README: YES
