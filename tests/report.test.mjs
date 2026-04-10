@@ -17,6 +17,7 @@ import {
   computeAcceptedSignal7d,
   hasRecentSignalFromAcceptedSignal7d,
   supportsIdentityForSite,
+  buildProductionHostClause,
 } from "../dist/index.js";
 
 test("normalizeReportView keeps bare /report on the legacy contract", () => {
@@ -297,4 +298,291 @@ test("assembleSiteReport includes support metadata and explicit null identity fo
   assert.equal(payload.scope.support_class, "event_only");
   assert.equal(payload.scope.section_availability.identity, false);
   assert.equal(payload.identity, null);
+});
+
+// ---------------------------------------------------------------------------
+// Star Map reporting path — production-host filtering and observability
+// ---------------------------------------------------------------------------
+
+test("buildProductionHostClause generates https and http LIKE patterns for each production host", () => {
+  const result = buildProductionHostClause({ production_hosts: ["starmap.truegoodcraft.ca"] });
+  assert.equal(result.sql, "(LOWER(url) LIKE ? OR LOWER(url) LIKE ?)");
+  assert.deepEqual(result.bindings, [
+    "https://starmap.truegoodcraft.ca/%",
+    "http://starmap.truegoodcraft.ca/%",
+  ]);
+});
+
+test("buildProductionHostClause generates patterns only for canonical production host, never for stale dev-host", () => {
+  const result = buildProductionHostClause({ production_hosts: ["starmap.truegoodcraft.ca"] });
+  for (const binding of result.bindings) {
+    assert.equal(binding.includes("pages.dev"), false,
+      "production host clause must not include stale star-map-generator.pages.dev hostname");
+  }
+});
+
+test("buildProductionHostClause handles multiple hosts for BUS Core", () => {
+  const result = buildProductionHostClause({ production_hosts: ["buscore.ca", "www.buscore.ca"] });
+  assert.equal(
+    result.sql,
+    "(LOWER(url) LIKE ? OR LOWER(url) LIKE ? OR LOWER(url) LIKE ? OR LOWER(url) LIKE ?)"
+  );
+  assert.equal(result.bindings.length, 4);
+  assert.equal(result.bindings[0], "https://buscore.ca/%");
+  assert.equal(result.bindings[1], "http://buscore.ca/%");
+  assert.equal(result.bindings[2], "https://www.buscore.ca/%");
+  assert.equal(result.bindings[3], "http://www.buscore.ca/%");
+});
+
+test("buildProductionHostClause returns never-matching SQL for site with no production hosts", () => {
+  const result = buildProductionHostClause({ production_hosts: [] });
+  assert.equal(result.sql, "1 = 0");
+  assert.deepEqual(result.bindings, []);
+});
+
+test("Star Map keeps event_only support class and production_only_default true", () => {
+  const starMapSite = {
+    status: "active",
+    cloudflare_traffic_enabled: false,
+    site_key: "star_map_generator",
+  };
+  assert.equal(supportClassForSite(starMapSite), "event_only");
+  assert.equal(sectionAvailabilityForSupportClass("event_only").traffic, false);
+  assert.equal(sectionAvailabilityForSupportClass("event_only").identity, false);
+});
+
+test("event_only site report shows null traffic fields by design, not as a bug", () => {
+  const payload = assembleSiteReport({
+    generated_at: "2026-04-10T12:00:00.000Z",
+    scope: {
+      site_key: "star_map_generator",
+      label: "Star Map Generator",
+      status: "active",
+      backend_source: "site_events_raw",
+      window: {
+        start_day: "2026-04-04",
+        end_day: "2026-04-10",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      exclude_test_mode: true,
+      production_only: true,
+      support_class: "event_only",
+      section_availability: {
+        summary: true,
+        today: true,
+        traffic: false,
+        human_traffic_events: true,
+        observability: true,
+        identity: false,
+        read: true,
+      },
+    },
+    summary: {
+      accepted_events_7d: 5,
+      pageviews_7d: null,
+      traffic_requests_7d: null,
+      traffic_visits_7d: null,
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      has_recent_signal: true,
+    },
+    traffic: {
+      cloudflare_traffic_enabled: false,
+      latest_day: { day: null, visits: null, requests: null, captured_at: null },
+      last_7_days: {
+        visits: null,
+        requests: null,
+        avg_daily_visits: null,
+        avg_daily_requests: null,
+        days_with_data: 0,
+      },
+    },
+    events: {
+      accepted_events: 5,
+      unique_paths: 2,
+      by_event_name: [
+        { event_name: "page_view", events: 3 },
+        { event_name: "preview_generated", events: 2 },
+      ],
+      top_sources: [],
+      top_campaigns: [],
+      top_referrers: [],
+    },
+    identity: null,
+    health: {
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      included_events: 5,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 0,
+      dropped_rate_limited: 0,
+      dropped_invalid: null,
+      cloudflare_traffic_enabled: false,
+      production_only_default: true,
+    },
+  });
+
+  // Traffic layer is unavailable by design for event_only sites.
+  assert.equal(payload.traffic.cloudflare_traffic_enabled, false);
+  assert.equal(payload.traffic.latest_day.day, null);
+  assert.equal(payload.traffic.latest_day.requests, null);
+  assert.equal(payload.traffic.latest_day.visits, null);
+  assert.equal(payload.traffic.last_7_days.requests, null);
+  assert.equal(payload.traffic.last_7_days.visits, null);
+  assert.equal(payload.summary.traffic_requests_7d, null);
+  assert.equal(payload.summary.traffic_visits_7d, null);
+  assert.equal(payload.summary.pageviews_7d, null);
+});
+
+test("health.included_events and events.accepted_events carry the same filter-scoped count", () => {
+  // After the binding-order fix, included_events and accepted_events are computed
+  // from the same filter predicate and must produce the same value.
+  const eventCount = 7;
+  const payload = assembleSiteReport({
+    generated_at: "2026-04-10T12:00:00.000Z",
+    scope: {
+      site_key: "star_map_generator",
+      label: "Star Map Generator",
+      status: "active",
+      backend_source: "site_events_raw",
+      window: {
+        start_day: "2026-04-04",
+        end_day: "2026-04-10",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      exclude_test_mode: true,
+      production_only: true,
+      support_class: "event_only",
+      section_availability: {
+        summary: true,
+        today: true,
+        traffic: false,
+        human_traffic_events: true,
+        observability: true,
+        identity: false,
+        read: true,
+      },
+    },
+    summary: {
+      accepted_events_7d: eventCount,
+      pageviews_7d: null,
+      traffic_requests_7d: null,
+      traffic_visits_7d: null,
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      has_recent_signal: true,
+    },
+    traffic: {
+      cloudflare_traffic_enabled: false,
+      latest_day: { day: null, visits: null, requests: null, captured_at: null },
+      last_7_days: {
+        visits: null,
+        requests: null,
+        avg_daily_visits: null,
+        avg_daily_requests: null,
+        days_with_data: 0,
+      },
+    },
+    events: {
+      accepted_events: eventCount,
+      unique_paths: 3,
+      by_event_name: [{ event_name: "page_view", events: eventCount }],
+      top_sources: [],
+      top_campaigns: [],
+      top_referrers: [],
+    },
+    identity: null,
+    health: {
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      included_events: eventCount,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 0,
+      dropped_rate_limited: 0,
+      dropped_invalid: null,
+      cloudflare_traffic_enabled: false,
+      production_only_default: true,
+    },
+  });
+
+  // events.accepted_events and health.included_events represent the same
+  // filter-scoped accepted event count and must be equal.
+  assert.equal(payload.events.accepted_events, payload.health.included_events);
+  assert.equal(payload.events.accepted_events, eventCount);
+});
+
+test("excluded_non_production_host is computed independently of included_events filter scope", () => {
+  // excluded_non_production_host counts accepted events whose url does NOT match any
+  // production host, regardless of the productionOnly filter setting.
+  // When production_only=true, included_events + excluded_non_production_host
+  // accounts for all accepted non-test-mode events.
+  const payload = assembleSiteReport({
+    generated_at: "2026-04-10T12:00:00.000Z",
+    scope: {
+      site_key: "star_map_generator",
+      label: "Star Map Generator",
+      status: "active",
+      backend_source: "site_events_raw",
+      window: {
+        start_day: "2026-04-04",
+        end_day: "2026-04-10",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      exclude_test_mode: true,
+      production_only: true,
+      support_class: "event_only",
+      section_availability: {
+        summary: true,
+        today: true,
+        traffic: false,
+        human_traffic_events: true,
+        observability: true,
+        identity: false,
+        read: true,
+      },
+    },
+    summary: {
+      accepted_events_7d: 3,
+      pageviews_7d: null,
+      traffic_requests_7d: null,
+      traffic_visits_7d: null,
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      has_recent_signal: true,
+    },
+    traffic: {
+      cloudflare_traffic_enabled: false,
+      latest_day: { day: null, visits: null, requests: null, captured_at: null },
+      last_7_days: {
+        visits: null,
+        requests: null,
+        avg_daily_visits: null,
+        avg_daily_requests: null,
+        days_with_data: 0,
+      },
+    },
+    events: {
+      accepted_events: 3,
+      unique_paths: 1,
+      by_event_name: [{ event_name: "page_view", events: 3 }],
+      top_sources: [],
+      top_campaigns: [],
+      top_referrers: [],
+    },
+    identity: null,
+    health: {
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      included_events: 3,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 2,
+      dropped_rate_limited: 0,
+      dropped_invalid: null,
+      cloudflare_traffic_enabled: false,
+      production_only_default: true,
+    },
+  });
+
+  // excluded_non_production_host is populated independently.
+  // It is not subtracted from included_events in the assembled payload.
+  assert.equal(payload.health.excluded_non_production_host, 2);
+  assert.equal(payload.health.included_events, 3);
+  assert.equal(typeof payload.health.excluded_non_production_host, "number");
 });

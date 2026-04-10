@@ -428,22 +428,24 @@ Shared field meaning rules:
 - `has_recent_signal`: `accepted_signal_7d > 0`.
 - `last_received_at`: latest accepted telemetry timestamp included for the site in the view.
 - `cloudflare_traffic_enabled`: support/capability flag from tracked-site registry.
+- `health.included_events` and `events.accepted_events` are computed from the same filter predicate over the same 7-day window and must be equal. A mismatch indicates a querying defect.
 
-## Star Map Go-Live Inputs
+## Star Map Configuration
 
-When the final Star Map production domain is known, update the `star_map_generator` entry in `src/index.ts` `TRACKED_SITES`:
+Star Map Generator is registered as `site_key: "star_map_generator"` in `TRACKED_SITES` with:
+- `production_hosts`: `starmap.truegoodcraft.ca`
+- `allowed_origins`: `https://starmap.truegoodcraft.ca`
+- `cloudflare_traffic_enabled`: `false` — Star Map is `event_only`; traffic and identity sections are `null` by design.
+- `production_only_default`: `true` — operator reports filter to production-host events by default.
 
-- `production_hosts`: canonical production host(s) used in event `url` values.
-- `allowed_origins`: browser origin(s) allowed for CORS on `POST /metrics/event`.
-- `staging_hosts`: non-production hosts used for launch testing.
-- `production_only_default`: keep `true` for production-clean operator reporting by default.
+Star Map support class: `event_only`. Traffic and identity layers are not active. Extension-layer events (`preview_generated`, `high_res_requested`, `payment_click`, `download_completed`, `error_preview`, `error_high_res`) are accepted as site-specific extensions alongside shared events (`page_view`).
 
-Operator launch-readiness report calls:
+Operator report calls for Star Map:
 
-- `/report?site_key=star_map_generator`
-- `/report?site_key=star_map_generator&exclude_test_mode=true&production_only=true`
+- `/report?view=site&site_key=star_map_generator`
+- `/report?view=site&site_key=star_map_generator&exclude_test_mode=true&production_only=true`
 
-Expected Star Map event names:
+Event naming rules:
 
 - Ingest compatibility remains permissive and accepts any non-empty `event_name`.
 - Shared comparable event names are frozen to: `page_view`, `outbound_click`, `contact_click`, `service_interest`.

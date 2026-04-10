@@ -1166,7 +1166,7 @@ function buildSiteEventFilterWhereClause(
   };
 }
 
-function buildProductionHostClause(site: TrackedSite): { sql: string; bindings: string[] } {
+export function buildProductionHostClause(site: TrackedSite): { sql: string; bindings: string[] } {
   if (site.production_hosts.length === 0) {
     return { sql: "1 = 0", bindings: [] };
   }
@@ -1397,11 +1397,11 @@ async function querySiteEventObservability(
       WHERE site_key = ? AND received_day >= ? AND received_day <= ?`
     )
     .bind(
+      ...(filter.productionOnly ? production.bindings : []),
+      ...production.bindings,
       filter.siteKey,
       startDay,
-      endDay,
-      ...(filter.productionOnly ? production.bindings : []),
-      ...production.bindings
+      endDay
     )
     .first<{
       included_events: number;

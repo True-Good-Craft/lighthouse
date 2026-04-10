@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.13.2] - 2026-04-10
+
+### Fixed
+- Fix parameter binding order bug in `querySiteEventObservability` that caused all observability counters (`included_events`, `excluded_test_mode`, `excluded_non_production_host`, `dropped_rate_limited`, `dropped_invalid`) to return 0 for all sites regardless of actual stored events.
+- Root cause: the SQL places production-host `?` parameters in `SELECT` CASE WHEN expressions (appearing before the `WHERE` clause in SQL text), but the `.bind()` call provided the `WHERE` clause values (`siteKey`, `startDay`, `endDay`) first. This caused `WHERE site_key = ?` to receive a production host URL pattern string, matching zero rows, so every aggregated counter returned 0.
+- `querySiteEventOverview` was unaffected because its production host filter is appended to the `WHERE` clause (not in `SELECT` CASE WHEN expressions), so its bindings were in the correct left-to-right order. This is why `events.accepted_events` returned correct values while `health.included_events` returned 0.
+- Fix: swap binding order in `querySiteEventObservability` so production host params appear before the `WHERE` clause params, matching SQL text parameter order.
+
+### Changed
+- Export `buildProductionHostClause` to support direct unit testing of production-host URL pattern generation.
+- Add explicit contract note in SOT and README: `health.included_events` and `events.accepted_events` are computed from the same filter predicate over the same 7-day window and must agree.
+- Update Star Map section in README to remove stale pre-launch language; canonical production host `starmap.truegoodcraft.ca` has been registered since v1.11.1.
+
+### Notes
+- Runtime behavior changed: yes — `health.included_events`, `excluded_test_mode`, `excluded_non_production_host`, `dropped_rate_limited`, and `dropped_invalid` now return correct values.
+- Star Map support class remains `event_only`. Traffic and identity sections remain `null` by design; this was correct before this fix and remains correct after.
+- Compatibility: low risk. These observability fields were returning 0 (wrong); they now return the correct values operators and reports depend on.
+
 ## [1.13.1] - 2026-04-08
 
 ### Changed

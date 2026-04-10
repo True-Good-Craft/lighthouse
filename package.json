@@ -1,6 +1,6 @@
 {
   "name": "buscore-lighthouse",
-  "version": "1.13.1",
+  "version": "1.13.2",
   "description": "Standalone deterministic metrics worker: manifest proxy + fixed daily counters + protected on-demand reporting.",
   "scripts": {
     "dev": "wrangler dev",
