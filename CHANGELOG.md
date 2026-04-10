@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.3] - 2026-04-10
+
+### Added
+- Add `events.top_paths` to `GET /report?view=site` response: ranked `{ path, events }` array for accepted events by path, powered by `querySiteEventTopPaths` querying `site_events_raw` directly. Populated for all sites with event telemetry including `event_only` sites.
+- Add `events.top_contents` to `GET /report?view=site` response: ranked `{ utm_content, events }` array for non-empty `utm_content` values, powered by `querySiteEventTopContents`. Directly supports ad and creative-variant evaluation for operator ad spend review.
+
+### Notes
+- Runtime behavior changed: yes — `view=site` response now includes `events.top_paths` and `events.top_contents` fields.
+- `event_only` contract unchanged: Star Map Generator stays `event_only`; no traffic layer added; no identity layer added. The fix surfaces event breakdown and attribution aggregates that were always valid for `event_only` sites — `event_only` means no traffic and no identity, not totals-only.
+- Root cause for missing breakdowns confirmed: `events.top_paths` was never added to the `SiteEventSummary` type, `SiteReportPayload.events` type, or query pipeline. The existing breakdowns (`by_event_name`, `top_sources`, `top_campaigns`, `top_referrers`) were already present in the code and their query logic is correct. Empty arrays in runtime output for those fields indicate data filtered by the `production_only` flag (default `true` for `star_map_generator`) — events from non-production hosts are excluded by design.
+- `top_contents` added: evaluated and confirmed useful for ad/creative evaluation via `utm_content` which is already captured in `site_events_raw`.
+- Compatibility: additive only. No existing fields removed or changed. Consumers that do not read the new fields are unaffected.
+
 ## [1.13.2] - 2026-04-10
 
 ### Fixed

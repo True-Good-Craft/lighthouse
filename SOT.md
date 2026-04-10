@@ -282,13 +282,16 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `site_events.scope` echoes `site_key`, `exclude_test_mode`, and `production_only` used for the standardized-event summary.
 - `site_events.totals` contains `accepted_events` and `unique_paths` for the selected site over the current UTC day plus previous six UTC days.
 - `site_events.by_event_name` contains ranked `{ event_name, events }` for accepted events, with shared-name alias normalization in report assembly so equivalent shared actions are not split across multiple names.
+- `site_events.top_paths` contains ranked `{ path, events }` for accepted events by path. Populated for all sites with event telemetry, including `event_only` sites.
 - `site_events.top_sources` contains ranked `{ source, events }` using deterministic precedence `src -> utm.source -> referrer classification -> (direct)`.
 - `site_events.top_campaigns` contains ranked `{ utm_campaign, events }` for non-empty `utm_campaign` values.
 - `site_events.top_referrers` contains ranked `{ referrer_domain, events }` for non-empty referrer domains.
+- `site_events.top_contents` contains ranked `{ utm_content, events }` for non-empty `utm_content` values. Useful for ad and creative-variant evaluation.
 - `site_events.observability` exposes `included_events`, `excluded_test_mode`, `excluded_non_production_host`, `dropped_rate_limited`, `dropped_invalid`, and `last_received_at`.
 - `site_events.production_only` filtering is host-based against the selected tracked site `production_hosts` and is operator-controllable through the `production_only` query flag.
 - `view=fleet` returns one entry per tracked site with fields `site_key`, `label`, `status`, `backend_source`, `cloudflare_traffic_enabled`, `production_hosts`, `last_received_at`, `accepted_events_7d`, `pageviews_7d`, `traffic_requests_7d`, `traffic_visits_7d`, and `has_recent_signal`.
 - `view=site` returns top-level sections `scope`, `summary`, `traffic`, `events`, `identity`, and `health` for the selected site.
+- `view=site.events` contains `accepted_events`, `unique_paths`, `by_event_name`, `top_paths`, `top_sources`, `top_campaigns`, `top_referrers`, and `top_contents` for the selected site over the 7-day window. All breakdown arrays are populated for any site with event telemetry (`event_only` included); empty arrays are valid when no matching attribution data is present for a breakdown dimension.
 - `view=site.scope.support_class` exposes the deterministic normalization support class for the selected site.
 - `view=site.scope.section_availability` exposes deterministic section support flags by support class.
 - `view=site.identity` is populated only for support classes with identity support (currently `legacy_hybrid` via BUS Core pageview continuity) and returns `null` for event-only support classes.

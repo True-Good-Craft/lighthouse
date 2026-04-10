@@ -277,9 +277,11 @@ test("assembleSiteReport includes support metadata and explicit null identity fo
       accepted_events: 8,
       unique_paths: 3,
       by_event_name: [{ event_name: "page_view", events: 8 }],
+      top_paths: [{ path: "/", events: 8 }],
       top_sources: [{ source: "search", events: 6 }],
       top_campaigns: [],
       top_referrers: [],
+      top_contents: [],
     },
     identity: null,
     health: {
@@ -404,9 +406,14 @@ test("event_only site report shows null traffic fields by design, not as a bug",
         { event_name: "page_view", events: 3 },
         { event_name: "preview_generated", events: 2 },
       ],
+      top_paths: [
+        { path: "/", events: 3 },
+        { path: "/generate", events: 2 },
+      ],
       top_sources: [],
       top_campaigns: [],
       top_referrers: [],
+      top_contents: [],
     },
     identity: null,
     health: {
@@ -486,9 +493,11 @@ test("health.included_events and events.accepted_events carry the same filter-sc
       accepted_events: eventCount,
       unique_paths: 3,
       by_event_name: [{ event_name: "page_view", events: eventCount }],
+      top_paths: [{ path: "/", events: eventCount }],
       top_sources: [],
       top_campaigns: [],
       top_referrers: [],
+      top_contents: [],
     },
     identity: null,
     health: {
@@ -563,9 +572,11 @@ test("excluded_non_production_host is computed independently of included_events 
       accepted_events: 3,
       unique_paths: 1,
       by_event_name: [{ event_name: "page_view", events: 3 }],
+      top_paths: [{ path: "/", events: 3 }],
       top_sources: [],
       top_campaigns: [],
       top_referrers: [],
+      top_contents: [],
     },
     identity: null,
     health: {
@@ -585,4 +596,292 @@ test("excluded_non_production_host is computed independently of included_events 
   assert.equal(payload.health.excluded_non_production_host, 2);
   assert.equal(payload.health.included_events, 3);
   assert.equal(typeof payload.health.excluded_non_production_host, "number");
+});
+
+// ---------------------------------------------------------------------------
+// site-view event breakdown fields — event_only properties
+// ---------------------------------------------------------------------------
+
+function makeEventOnlySiteReport(eventsOverride) {
+  return assembleSiteReport({
+    generated_at: "2026-04-10T12:00:00.000Z",
+    scope: {
+      site_key: "star_map_generator",
+      label: "Star Map Generator",
+      status: "active",
+      backend_source: "site_events_raw",
+      window: {
+        start_day: "2026-04-04",
+        end_day: "2026-04-10",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      exclude_test_mode: true,
+      production_only: true,
+      support_class: "event_only",
+      section_availability: {
+        summary: true,
+        today: true,
+        traffic: false,
+        human_traffic_events: true,
+        observability: true,
+        identity: false,
+        read: true,
+      },
+    },
+    summary: {
+      accepted_events_7d: eventsOverride.accepted_events,
+      pageviews_7d: null,
+      traffic_requests_7d: null,
+      traffic_visits_7d: null,
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      has_recent_signal: eventsOverride.accepted_events > 0,
+    },
+    traffic: {
+      cloudflare_traffic_enabled: false,
+      latest_day: { day: null, visits: null, requests: null, captured_at: null },
+      last_7_days: {
+        visits: null,
+        requests: null,
+        avg_daily_visits: null,
+        avg_daily_requests: null,
+        days_with_data: 0,
+      },
+    },
+    events: eventsOverride,
+    identity: null,
+    health: {
+      last_received_at: "2026-04-10T09:00:00.000Z",
+      included_events: eventsOverride.accepted_events,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 0,
+      dropped_rate_limited: 0,
+      dropped_invalid: null,
+      cloudflare_traffic_enabled: false,
+      production_only_default: true,
+    },
+  });
+}
+
+test("event_only site-view: events section includes all breakdown fields", () => {
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 10,
+    unique_paths: 3,
+    by_event_name: [
+      { event_name: "page_view", events: 6 },
+      { event_name: "preview_generated", events: 3 },
+      { event_name: "payment_click", events: 1 },
+    ],
+    top_paths: [
+      { path: "/", events: 6 },
+      { path: "/generate", events: 3 },
+      { path: "/download", events: 1 },
+    ],
+    top_sources: [
+      { source: "search", events: 5 },
+      { source: "google_ads", events: 3 },
+      { source: "(direct)", events: 2 },
+    ],
+    top_campaigns: [{ utm_campaign: "spring_promo", events: 3 }],
+    top_referrers: [{ referrer_domain: "google.com", events: 5 }],
+    top_contents: [
+      { utm_content: "banner_v2", events: 3 },
+      { utm_content: "sidebar_v1", events: 0 },
+    ],
+  });
+
+  assert.equal(payload.events.accepted_events, 10);
+  assert.equal(payload.events.unique_paths, 3);
+
+  assert.equal(Array.isArray(payload.events.by_event_name), true);
+  assert.equal(payload.events.by_event_name.length, 3);
+  assert.equal(payload.events.by_event_name[0].event_name, "page_view");
+  assert.equal(payload.events.by_event_name[0].events, 6);
+
+  assert.equal(Array.isArray(payload.events.top_paths), true);
+  assert.equal(payload.events.top_paths.length, 3);
+  assert.equal(payload.events.top_paths[0].path, "/");
+  assert.equal(payload.events.top_paths[0].events, 6);
+
+  assert.equal(Array.isArray(payload.events.top_sources), true);
+  assert.equal(payload.events.top_sources.length, 3);
+  assert.equal(payload.events.top_sources[0].source, "search");
+
+  assert.equal(Array.isArray(payload.events.top_campaigns), true);
+  assert.equal(payload.events.top_campaigns.length, 1);
+  assert.equal(payload.events.top_campaigns[0].utm_campaign, "spring_promo");
+
+  assert.equal(Array.isArray(payload.events.top_referrers), true);
+  assert.equal(payload.events.top_referrers.length, 1);
+  assert.equal(payload.events.top_referrers[0].referrer_domain, "google.com");
+
+  assert.equal(Array.isArray(payload.events.top_contents), true);
+  assert.equal(payload.events.top_contents.length, 2);
+  assert.equal(payload.events.top_contents[0].utm_content, "banner_v2");
+
+  assert.equal(payload.identity, null);
+  assert.equal(payload.traffic.cloudflare_traffic_enabled, false);
+  assert.equal(payload.traffic.latest_day.requests, null);
+});
+
+test("event_only site-view: top_paths carries path breakdown independent of unique_paths count", () => {
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 12,
+    unique_paths: 4,
+    by_event_name: [{ event_name: "page_view", events: 12 }],
+    top_paths: [
+      { path: "/", events: 5 },
+      { path: "/generate", events: 4 },
+      { path: "/high-res", events: 2 },
+      { path: "/download", events: 1 },
+    ],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  });
+
+  assert.equal(payload.events.unique_paths, 4);
+  assert.equal(payload.events.top_paths.length, 4);
+  for (const entry of payload.events.top_paths) {
+    assert.equal(typeof entry.path, "string");
+    assert.equal(typeof entry.events, "number");
+  }
+});
+
+test("event_only site-view: top_sources aggregation via referrer classification", () => {
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 8,
+    unique_paths: 1,
+    by_event_name: [{ event_name: "page_view", events: 8 }],
+    top_paths: [{ path: "/", events: 8 }],
+    top_sources: [
+      { source: "search", events: 5 },
+      { source: "(direct)", events: 3 },
+    ],
+    top_campaigns: [],
+    top_referrers: [{ referrer_domain: "google.com", events: 5 }],
+    top_contents: [],
+  });
+
+  for (const entry of payload.events.top_sources) {
+    assert.equal(typeof entry.source, "string");
+    assert.equal(typeof entry.events, "number");
+  }
+  assert.equal(payload.events.top_sources[0].source, "search");
+  assert.equal(payload.events.top_sources[0].events, 5);
+});
+
+test("event_only site-view: top_campaigns aggregation for utm_campaign attribution", () => {
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 9,
+    unique_paths: 2,
+    by_event_name: [{ event_name: "page_view", events: 9 }],
+    top_paths: [{ path: "/", events: 9 }],
+    top_sources: [{ source: "google_ads", events: 9 }],
+    top_campaigns: [
+      { utm_campaign: "star_map_launch", events: 6 },
+      { utm_campaign: "retarget_q2", events: 3 },
+    ],
+    top_referrers: [],
+    top_contents: [],
+  });
+
+  assert.equal(Array.isArray(payload.events.top_campaigns), true);
+  assert.equal(payload.events.top_campaigns.length, 2);
+  assert.equal(payload.events.top_campaigns[0].utm_campaign, "star_map_launch");
+  assert.equal(payload.events.top_campaigns[0].events, 6);
+  assert.equal(typeof payload.events.top_campaigns[0].utm_campaign, "string");
+});
+
+test("event_only site-view: top_referrers aggregation for referrer domain attribution", () => {
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 7,
+    unique_paths: 2,
+    by_event_name: [{ event_name: "page_view", events: 7 }],
+    top_paths: [{ path: "/", events: 7 }],
+    top_sources: [{ source: "social", events: 7 }],
+    top_campaigns: [],
+    top_referrers: [
+      { referrer_domain: "reddit.com", events: 4 },
+      { referrer_domain: "twitter.com", events: 3 },
+    ],
+    top_contents: [],
+  });
+
+  assert.equal(Array.isArray(payload.events.top_referrers), true);
+  assert.equal(payload.events.top_referrers.length, 2);
+  assert.equal(payload.events.top_referrers[0].referrer_domain, "reddit.com");
+  assert.equal(payload.events.top_referrers[0].events, 4);
+});
+
+test("event_only site-view: top_contents aggregation for utm_content ad/creative evaluation", () => {
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 15,
+    unique_paths: 2,
+    by_event_name: [{ event_name: "page_view", events: 15 }],
+    top_paths: [{ path: "/", events: 15 }],
+    top_sources: [{ source: "google_ads", events: 15 }],
+    top_campaigns: [{ utm_campaign: "summer_sale", events: 15 }],
+    top_referrers: [],
+    top_contents: [
+      { utm_content: "hero_banner_v3", events: 9 },
+      { utm_content: "sidebar_cta_v1", events: 6 },
+    ],
+  });
+
+  assert.equal(Array.isArray(payload.events.top_contents), true);
+  assert.equal(payload.events.top_contents.length, 2);
+  assert.equal(payload.events.top_contents[0].utm_content, "hero_banner_v3");
+  assert.equal(payload.events.top_contents[0].events, 9);
+  assert.equal(typeof payload.events.top_contents[0].utm_content, "string");
+});
+
+test("event_only site-view: empty breakdown arrays when no attribution data present", () => {
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 3,
+    unique_paths: 1,
+    by_event_name: [{ event_name: "preview_generated", events: 3 }],
+    top_paths: [{ path: "/generate", events: 3 }],
+    top_sources: [{ source: "(direct)", events: 3 }],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  });
+
+  assert.equal(payload.events.top_campaigns.length, 0);
+  assert.equal(payload.events.top_referrers.length, 0);
+  assert.equal(payload.events.top_contents.length, 0);
+  assert.equal(payload.events.by_event_name.length > 0, true);
+  assert.equal(payload.events.top_paths.length > 0, true);
+  assert.equal(payload.events.top_sources.length > 0, true);
+});
+
+test("event_only site-view: Star Map extension events appear in by_event_name breakdown", () => {
+  const extensionEvents = [
+    { event_name: "page_view", events: 20 },
+    { event_name: "preview_generated", events: 15 },
+    { event_name: "high_res_requested", events: 8 },
+    { event_name: "payment_click", events: 5 },
+    { event_name: "download_completed", events: 3 },
+  ];
+  const payload = makeEventOnlySiteReport({
+    accepted_events: 51,
+    unique_paths: 3,
+    by_event_name: extensionEvents,
+    top_paths: [{ path: "/", events: 30 }, { path: "/generate", events: 21 }],
+    top_sources: [{ source: "(direct)", events: 51 }],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  });
+
+  assert.equal(payload.events.by_event_name.length, 5);
+  const names = payload.events.by_event_name.map((e) => e.event_name);
+  assert.equal(names.includes("page_view"), true);
+  assert.equal(names.includes("preview_generated"), true);
+  assert.equal(names.includes("payment_click"), true);
+  assert.equal(payload.scope.support_class, "event_only");
+  assert.equal(payload.identity, null);
+  assert.equal(payload.traffic.cloudflare_traffic_enabled, false);
 });

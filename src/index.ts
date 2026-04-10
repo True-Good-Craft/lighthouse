@@ -140,9 +140,11 @@ type SiteEventSummary = {
     unique_paths: number;
   };
   by_event_name: Array<{ event_name: string; events: number }>;
+  top_paths: Array<{ path: string; events: number }>;
   top_sources: Array<{ source: string; events: number }>;
   top_campaigns: Array<{ utm_campaign: string; events: number }>;
   top_referrers: Array<{ referrer_domain: string; events: number }>;
+  top_contents: Array<{ utm_content: string; events: number }>;
   observability: {
     included_events: number;
     excluded_test_mode: number;
@@ -224,9 +226,11 @@ type SiteReportPayload = {
     accepted_events: number;
     unique_paths: number;
     by_event_name: Array<{ event_name: string; events: number }>;
+    top_paths: Array<{ path: string; events: number }>;
     top_sources: Array<{ source: string; events: number }>;
     top_campaigns: Array<{ utm_campaign: string; events: number }>;
     top_referrers: Array<{ referrer_domain: string; events: number }>;
+    top_contents: Array<{ utm_content: string; events: number }>;
   };
   identity: IdentitySummary | null;
   health: {
@@ -1328,6 +1332,70 @@ async function querySiteEventTopReferrers(
   return rows.results ?? [];
 }
 
+async function querySiteEventTopPaths(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Promise<Array<{ path: string; events: number }>> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return [];
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql, "NULLIF(path, '') IS NOT NULL"];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT path, COUNT(*) AS events FROM site_events_raw WHERE ${where.join(" AND ")} GROUP BY path ORDER BY events DESC, path ASC LIMIT ?`
+    )
+    .bind(...bindings, limit)
+    .all<{ path: string; events: number }>();
+
+  return rows.results ?? [];
+}
+
+async function querySiteEventTopContents(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Promise<Array<{ utm_content: string; events: number }>> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return [];
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql, "NULLIF(utm_content, '') IS NOT NULL"];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT utm_content, COUNT(*) AS events FROM site_events_raw WHERE ${where.join(" AND ")} GROUP BY utm_content ORDER BY events DESC, utm_content ASC LIMIT ?`
+    )
+    .bind(...bindings, limit)
+    .all<{ utm_content: string; events: number }>();
+
+  return rows.results ?? [];
+}
+
 async function querySiteEventSourceRows(
   db: D1Database,
   filter: SiteEventFilter,
@@ -1443,11 +1511,13 @@ async function buildSiteEventSummary(
   startDay: string,
   endDay: string
 ): Promise<SiteEventSummary> {
-  const [overview, byEventName, topCampaigns, topReferrers, sourceRows, observability] = await Promise.all([
+  const [overview, byEventName, topPaths, topCampaigns, topReferrers, topContents, sourceRows, observability] = await Promise.all([
     querySiteEventOverview(db, filter, startDay, endDay),
     querySiteEventsByEventName(db, filter, startDay, endDay),
+    querySiteEventTopPaths(db, filter, startDay, endDay),
     querySiteEventTopCampaigns(db, filter, startDay, endDay),
     querySiteEventTopReferrers(db, filter, startDay, endDay),
+    querySiteEventTopContents(db, filter, startDay, endDay),
     querySiteEventSourceRows(db, filter, startDay, endDay),
     querySiteEventObservability(db, filter, startDay, endDay),
   ]);
@@ -1463,9 +1533,11 @@ async function buildSiteEventSummary(
       unique_paths: overview.unique_paths,
     },
     by_event_name: byEventName,
+    top_paths: topPaths,
     top_sources: summarizeSiteEventTopSources(sourceRows),
     top_campaigns: topCampaigns,
     top_referrers: topReferrers,
+    top_contents: topContents,
     observability: {
       included_events: observability.included_events,
       excluded_test_mode: observability.excluded_test_mode,
@@ -2592,9 +2664,11 @@ async function buildSiteReport(
       accepted_events: snapshot.siteEventSummary.totals.accepted_events,
       unique_paths: snapshot.siteEventSummary.totals.unique_paths,
       by_event_name: snapshot.siteEventSummary.by_event_name,
+      top_paths: snapshot.siteEventSummary.top_paths,
       top_sources: snapshot.siteEventSummary.top_sources,
       top_campaigns: snapshot.siteEventSummary.top_campaigns,
       top_referrers: snapshot.siteEventSummary.top_referrers,
+      top_contents: snapshot.siteEventSummary.top_contents,
     },
     identity,
     health: {
