@@ -266,6 +266,7 @@ Contract note:
 - Additive top-level `identity` summarizes anonymous continuity using accepted pageviews only.
 - Additive top-level `site_events` is populated only when `site_key` is provided on `/report`.
 - `/report` supports standardized-event scope flags: `site_key` (required for site events), `exclude_test_mode` (default `true`), and `production_only` (default from tracked-site `production_only_default`).
+- Lighthouse applies `production_only` defaults per site declaration. BUS Core remains a grandfathered legacy-hybrid exception with its current default preserved (`production_only_default: false`), while Star Map and TGC remain `true`.
 - Unknown `site_key` on `/report` returns `400` with `{"ok":false,"error":"invalid_site_key"}`.
 - `identity.last_7_days.return_rate` is `returning_users / distinct_users` over non-null `anon_user_id` values in the same 7-day window.
 - If a traffic window has no stored data, its traffic fields return `null` instead of synthetic zeroes.
@@ -358,10 +359,28 @@ Additional authenticated view modes:
   "events": {
     "accepted_events": 8,
     "unique_paths": 3,
-    "by_event_name": [],
-    "top_sources": [],
-    "top_campaigns": [],
-    "top_referrers": []
+    "by_event_name": [
+      { "event_name": "page_view", "events": 5 },
+      { "event_name": "preview_generated", "events": 2 },
+      { "event_name": "download_completed", "events": 1 }
+    ],
+    "top_paths": [
+      { "path": "/", "events": 5 },
+      { "path": "/generate", "events": 3 }
+    ],
+    "top_sources": [
+      { "source": "search", "events": 4 },
+      { "source": "(direct)", "events": 4 }
+    ],
+    "top_campaigns": [
+      { "utm_campaign": "spring_launch", "events": 2 }
+    ],
+    "top_referrers": [
+      { "referrer_domain": "google.com", "events": 4 }
+    ],
+    "top_contents": [
+      { "utm_content": "hero_banner_a", "events": 2 }
+    ]
   },
   "identity": null,
   "health": {
@@ -407,6 +426,7 @@ View notes:
 - `dropped_invalid` is currently supported only for BUS Core legacy pageview telemetry. Standardized-event invalid submissions are not persisted, so other sites return `null`.
 - Site-view payloads expose `scope.support_class` and `scope.section_availability` to make section support deterministic by current support class.
 - Site-view `identity` is populated only for support classes with identity support (currently BUS Core `legacy_hybrid`) and is `null` for event-only sites.
+- For `event_only` sites, unsupported traffic metrics remain explicitly `null` and `identity` remains `null` by design; useful output is provided through event breakdown arrays.
 
 Normalized section contract (logical per-site sections where supported):
 - Summary

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.4] - 2026-04-10
+
+### Changed
+- Align Lighthouse documentation and contract examples with the newly added TGC Analytics Policy reference while mirroring only implementation-relevant policy truth owned by Lighthouse.
+- Update README `view=site` example to show useful `event_only` output with explicit `events.top_paths` and `events.top_contents`, plus attribution breakdown arrays.
+- Clarify explicit unsupported-by-design behavior for `event_only` properties in docs: traffic metrics remain `null` and `identity` remains `null`.
+- Add explicit BUS Core grandfathering wording in SOT and README around per-site `production_only` defaults and `legacy_hybrid` semantics.
+- Replace stale `plan.md` assumptions with a focused policy-alignment baseline for future Lighthouse work.
+
+### Notes
+- Runtime behavior changed: no.
+- BUS Core behavior/contract/telemetry shape changed: no.
+
 ## [1.13.3] - 2026-04-10
 
 ### Added

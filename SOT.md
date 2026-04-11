@@ -12,6 +12,7 @@
 
 Shipped Lighthouse behavior is authorized by `SOT.md`, recorded in `CHANGELOG.md`, and versioned in `package.json`.
 No behavioral, contract, storage, configuration, auth, or scheduling change is considered released unless all three are updated together in the same change set.
+Lighthouse mirrors only implementation-relevant policy truth from `TGC Analytics Policie.pdf`; it does not duplicate full company policy prose that Lighthouse does not implement.
 
 ### Operational Independence Rule
 
@@ -174,6 +175,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - On auth failure: returns `401` JSON `{ "ok": false, "error": "unauthorized" }`.
   - If `view` is omitted, blank, or absent, `/report` preserves the legacy response shape with `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, additive top-level `traffic`, additive top-level `human_traffic`, additive top-level `identity`, and additive top-level `site_events`.
   - Bare legacy `/report` continues to support `site_key` with optional flags `exclude_test_mode` (default `true`) and `production_only` (default from tracked-site `production_only_default`) for the additive `site_events` block only.
+  - `production_only` defaulting is per tracked-site declaration, not one hard global runtime constant. BUS Core is explicitly grandfathered as the legacy-hybrid exception with `production_only_default = false`; Star Map and TGC remain `true`.
   - If legacy `/report` omits `site_key`, `site_events` is `null` to avoid silently blending multiple tracked sites.
   - `GET /report?view=fleet` returns `{ view, generated_at, sites }` for all tracked properties.
   - `GET /report?view=site&site_key=<site_key>` returns `{ view, generated_at, scope, summary, traffic, events, identity, health }` for exactly one tracked property and accepts the same `exclude_test_mode` and `production_only` flags as the legacy `site_events` scope.
@@ -336,7 +338,7 @@ Each tracked site is classified as exactly one of:
 
 Support class definitions:
 - `legacy_hybrid`:
-  legacy plus richer telemetry/reporting surfaces; may expose traffic, events, and identity-style sections where supported.
+  legacy plus richer telemetry/reporting surfaces; may expose traffic, events, and identity-style sections where supported. BUS Core is the explicit grandfathered legacy-hybrid property and keeps its richer surface without parity-forcing other sites.
 - `event_only`:
   first-party event telemetry only; no fake traffic richness; identity remains `null` unless a real supported layer is added.
 - `event_plus_cf_traffic`:
