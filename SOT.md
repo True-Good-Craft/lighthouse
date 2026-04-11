@@ -12,7 +12,7 @@
 
 Shipped Lighthouse behavior is authorized by `SOT.md`, recorded in `CHANGELOG.md`, and versioned in `package.json`.
 No behavioral, contract, storage, configuration, auth, or scheduling change is considered released unless all three are updated together in the same change set.
-Lighthouse mirrors only implementation-relevant policy truth from `TGC Analytics Policie.pdf`; it does not duplicate full company policy prose that Lighthouse does not implement.
+Lighthouse mirrors only implementation-relevant policy truth from `TGC Analytics Policie.md`; it does not duplicate full company policy prose that Lighthouse does not implement.
 
 ### Operational Independence Rule
 

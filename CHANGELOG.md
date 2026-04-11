@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.13.5] - 2026-04-10
+
+### Changed
+- Align Lighthouse policy-source references to `TGC Analytics Policie.md` as the governing analytics contract reference for Lighthouse-owned semantics.
+- Correct stale README wording so shipped BUS Core legacy-hybrid identity-style reporting is described accurately while preserving `event_only` identity `null` semantics.
+- Replace stale completed-pass wording in `plan.md` with a durable, future-facing Lighthouse policy-alignment baseline artifact.
+
+### Notes
+- Runtime behavior changed: no.
+- BUS Core behavior/contract/telemetry shape changed: no.
+
 ## [1.13.4] - 2026-04-10
 
 ### Changed

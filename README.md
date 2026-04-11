@@ -33,7 +33,8 @@ Lighthouse currently does six things:
 5. Exposes protected, on-demand aggregate reporting.
 6. Pulls one daily Buscore traffic snapshot from the Cloudflare GraphQL Analytics API into D1 on a scheduled cron.
 
-It does not implement retries, identity, session tracking, unload analytics, or a broad analytics warehouse.
+It does not implement retries, unload analytics, or a broad analytics warehouse.
+It exposes limited anonymous continuity and identity-style reporting only where supported (BUS Core legacy_hybrid), while `event_only` sites keep identity as `null`.
 
 ## Fleet Normalization Standard
 
