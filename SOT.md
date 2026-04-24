@@ -83,13 +83,13 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `GET /download/latest` — **Counted download initiation endpoint**
   - Increments `downloads` in D1 (current UTC day), unless the request IP matches `IGNORED_IP`.
   - Redirects (`302`) to the validated release artifact URL from `manifest.latest.download.url`.
-  - Accepts either a relative release URL (for example `/releases/TGC-BUS-Core-1.0.2.zip`) or an absolute URL using the same release path format.
+  - Accepts either a relative release URL (for example `/releases/BUS-Core-1.0.4.zip`) or an absolute URL using the same release path format.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` when URL is missing/invalid.
 
 - `GET /releases/:filename` — **Raw asset delivery (no counting)**
   - Serves release artifacts directly from `MANIFEST_R2` using key `releases/:filename`.
   - **Never increments any counters** (ensures no double-counting after `/download/latest` redirect).
-  - Allowed filename format: `TGC-BUS-Core-<semver>.zip`.
+  - Allowed filename formats: `BUS-Core-<semver>.zip` (current) and `TGC-BUS-Core-<semver>.zip` (legacy, preserved for backward compatibility).
   - Returns `200` with artifact body when object exists.
   - Returns `404` JSON `{ "ok": false, "error": "not_found" }` when missing or filename is invalid.
 

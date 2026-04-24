@@ -18,6 +18,7 @@ import {
   hasRecentSignalFromAcceptedSignal7d,
   supportsIdentityForSite,
   buildProductionHostClause,
+  isValidReleaseArtifactUrl,
 } from "../dist/index.js";
 
 test("normalizeReportView keeps bare /report on the legacy contract", () => {
@@ -884,4 +885,23 @@ test("event_only site-view: Star Map extension events appear in by_event_name br
   assert.equal(payload.scope.support_class, "event_only");
   assert.equal(payload.identity, null);
   assert.equal(payload.traffic.cloudflare_traffic_enabled, false);
+});
+
+test("isValidReleaseArtifactUrl accepts new BUS-Core-<semver>.zip filenames", () => {
+  assert.equal(isValidReleaseArtifactUrl("/releases/BUS-Core-1.0.4.zip"), true);
+  assert.equal(isValidReleaseArtifactUrl("https://lighthouse.buscore.ca/releases/BUS-Core-1.0.4.zip"), true);
+  assert.equal(isValidReleaseArtifactUrl("/releases/BUS-Core-2.0.0.zip"), true);
+});
+
+test("isValidReleaseArtifactUrl accepts legacy TGC-BUS-Core-<semver>.zip filenames", () => {
+  assert.equal(isValidReleaseArtifactUrl("/releases/TGC-BUS-Core-1.0.3.zip"), true);
+  assert.equal(isValidReleaseArtifactUrl("https://lighthouse.buscore.ca/releases/TGC-BUS-Core-1.0.3.zip"), true);
+});
+
+test("isValidReleaseArtifactUrl rejects invalid filenames", () => {
+  assert.equal(isValidReleaseArtifactUrl("/releases/malicious.exe"), false);
+  assert.equal(isValidReleaseArtifactUrl("/releases/BUS-Core-1.0.4.tar.gz"), false);
+  assert.equal(isValidReleaseArtifactUrl("/releases/../etc/passwd"), false);
+  assert.equal(isValidReleaseArtifactUrl("/releases/"), false);
+  assert.equal(isValidReleaseArtifactUrl("/update/check"), false);
 });

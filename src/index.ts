@@ -351,7 +351,7 @@ const MANIFEST_KEY = "manifest/core/stable.json";
 const PAGEVIEW_METRICS_PATH = "/metrics/pageview"; // BUS Core legacy-only ingest path.
 const SITE_EVENT_METRICS_PATH = "/metrics/event"; // Canonical fleet ingest path.
 const RELEASE_PATH = /^\/releases\/([^/]+)$/;
-const RELEASE_FILENAME = /^TGC-BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
+const RELEASE_FILENAME = /^(?:TGC-)?BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 const BUSCORE_HOST: string =
   TRACKED_SITES.find((s) => s.site_key === "buscore")?.cloudflare_host ?? "buscore.ca";
@@ -998,7 +998,7 @@ function extractLatestDownloadUrl(manifest: Record<string, unknown>): string | n
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function isValidReleaseArtifactUrl(rawUrl: string): boolean {
+export function isValidReleaseArtifactUrl(rawUrl: string): boolean {
   try {
     const parsed = new URL(rawUrl, "https://lighthouse.invalid");
     const releaseMatch = parsed.pathname.match(RELEASE_PATH);

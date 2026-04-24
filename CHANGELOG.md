@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.13.6] - 2026-04-24
+
+### Fixed
+- `GET /releases/:filename`: expand `RELEASE_FILENAME` allowlist regex from `TGC-BUS-Core-<semver>.zip` only to also accept `BUS-Core-<semver>.zip`, matching the current GitHub release asset naming convention. Previously, requests for `/releases/BUS-Core-1.0.4.zip` were rejected with `404 not_found` before R2 was contacted because the filename failed the allowlist check. The R2 key construction (`releases/<filename>`) was already correct; only the regex guard was wrong.
+- Preserve full backward compatibility: `TGC-BUS-Core-*.zip` filenames continue to be accepted and served.
+- Export `isValidReleaseArtifactUrl` for unit testing.
+
+### Notes
+- Runtime behavior changed: yes — `/releases/BUS-Core-<semver>.zip` URLs now resolve instead of returning 404.
+- BUS Core behavior/contract/telemetry shape changed: no.
+
 ## [1.13.5] - 2026-04-10
 
 ### Changed
