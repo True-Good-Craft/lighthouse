@@ -154,6 +154,26 @@ type SiteEventSummary = {
     last_received_at: string | null;
   };
 };
+type PageExecutionEventsSummary = {
+  accepted_events: number;
+  unique_paths: number;
+  by_event_name: Array<{ event_name: string; events: number }>;
+  top_paths: Array<{ path: string; events: number }>;
+  top_sources: Array<{ source: string; events: number }>;
+  top_campaigns: Array<{ utm_campaign: string; events: number }>;
+  top_referrers: Array<{ referrer_domain: string; events: number }>;
+  top_contents: Array<{ utm_content: string; events: number }>;
+};
+type TrafficLayerMeta = {
+  source: "cloudflare_edge";
+  semantics: "edge_observed_not_confirmed_human";
+  enabled: boolean;
+};
+type LegacyPageviewSummary = {
+  pageviews_7d: number;
+  days_with_data: number;
+  last_received_at: string | null;
+};
 export type SupportClass = "legacy_hybrid" | "event_only" | "event_plus_cf_traffic" | "not_yet_normalized";
 type SharedEventName = "page_view" | "outbound_click" | "contact_click" | "service_interest";
 type EventTaxonomyKind = "shared" | "extension" | "invalid";
@@ -217,21 +237,15 @@ type SiteReportPayload = {
     last_received_at: string | null;
     has_recent_signal: boolean;
   };
+  traffic_layer: TrafficLayerMeta;
   traffic: {
     cloudflare_traffic_enabled: boolean;
     latest_day: ReturnType<typeof latestTrafficWindow>;
     last_7_days: ReturnType<typeof trafficWindowFromTotals>;
   };
-  events: {
-    accepted_events: number;
-    unique_paths: number;
-    by_event_name: Array<{ event_name: string; events: number }>;
-    top_paths: Array<{ path: string; events: number }>;
-    top_sources: Array<{ source: string; events: number }>;
-    top_campaigns: Array<{ utm_campaign: string; events: number }>;
-    top_referrers: Array<{ referrer_domain: string; events: number }>;
-    top_contents: Array<{ utm_content: string; events: number }>;
-  };
+  page_execution_events: PageExecutionEventsSummary;
+  events: PageExecutionEventsSummary;
+  legacy_pageview: LegacyPageviewSummary | null;
   identity: IdentitySummary | null;
   health: {
     last_received_at: string | null;
@@ -2358,6 +2372,20 @@ export function assembleLegacyReport(input: {
   identity: IdentitySummary;
   siteEvents: SiteEventSummary | null;
 }) {
+  const humanTraffic = {
+    today: {
+      pageviews: input.humanToday.pageviews,
+      last_received_at: input.humanToday.last_received_at,
+    },
+    last_7_days: {
+      pageviews: input.humanLast7.pageviews,
+      days_with_data: input.humanLast7.days_with_data,
+      top_paths: input.topPaths.map((row) => ({ path: row.value, pageviews: row.pageviews })),
+      top_referrers: input.topReferrers.map((row) => ({ referrer_domain: row.value, pageviews: row.pageviews })),
+      top_sources: input.topSources,
+    },
+    observability: input.humanObservability,
+  };
   return {
     today: input.today,
     yesterday: input.yesterday,
@@ -2374,19 +2402,13 @@ export function assembleLegacyReport(input: {
       latest_day: latestTrafficWindow(input.latestTraffic),
       last_7_days: trafficWindowFromTotals(input.last7Traffic),
     },
-    human_traffic: {
-      today: {
-        pageviews: input.humanToday.pageviews,
-        last_received_at: input.humanToday.last_received_at,
-      },
-      last_7_days: {
-        pageviews: input.humanLast7.pageviews,
-        days_with_data: input.humanLast7.days_with_data,
-        top_paths: input.topPaths.map((row) => ({ path: row.value, pageviews: row.pageviews })),
-        top_referrers: input.topReferrers.map((row) => ({ referrer_domain: row.value, pageviews: row.pageviews })),
-        top_sources: input.topSources,
-      },
-      observability: input.humanObservability,
+    human_traffic: humanTraffic,
+    legacy_pageview: humanTraffic,
+    intent_counters: {
+      today: input.today,
+      yesterday: input.yesterday,
+      last_7_days: input.last7Days,
+      month_to_date: input.monthToDate,
     },
     identity: input.identity,
     site_events: input.siteEvents,
@@ -2638,6 +2660,17 @@ async function buildSiteReport(
     last_7_days: trafficWindowFromTotals(snapshot.trafficTotals ?? emptyTrafficTotals()),
   };
 
+  const pageExecutionEvents: PageExecutionEventsSummary = {
+    accepted_events: snapshot.siteEventSummary.totals.accepted_events,
+    unique_paths: snapshot.siteEventSummary.totals.unique_paths,
+    by_event_name: snapshot.siteEventSummary.by_event_name,
+    top_paths: snapshot.siteEventSummary.top_paths,
+    top_sources: snapshot.siteEventSummary.top_sources,
+    top_campaigns: snapshot.siteEventSummary.top_campaigns,
+    top_referrers: snapshot.siteEventSummary.top_referrers,
+    top_contents: snapshot.siteEventSummary.top_contents,
+  };
+
   return assembleSiteReport({
     generated_at: now.toISOString(),
     scope: {
@@ -2659,17 +2692,21 @@ async function buildSiteReport(
       last_received_at: snapshot.lastReceivedAt,
       has_recent_signal: snapshot.hasRecentSignal,
     },
-    traffic,
-    events: {
-      accepted_events: snapshot.siteEventSummary.totals.accepted_events,
-      unique_paths: snapshot.siteEventSummary.totals.unique_paths,
-      by_event_name: snapshot.siteEventSummary.by_event_name,
-      top_paths: snapshot.siteEventSummary.top_paths,
-      top_sources: snapshot.siteEventSummary.top_sources,
-      top_campaigns: snapshot.siteEventSummary.top_campaigns,
-      top_referrers: snapshot.siteEventSummary.top_referrers,
-      top_contents: snapshot.siteEventSummary.top_contents,
+    traffic_layer: {
+      source: "cloudflare_edge",
+      semantics: "edge_observed_not_confirmed_human",
+      enabled: site.cloudflare_traffic_enabled,
     },
+    traffic,
+    page_execution_events: pageExecutionEvents,
+    events: pageExecutionEvents,
+    legacy_pageview: siteSupportsLegacyPageviews(site)
+      ? {
+          pageviews_7d: snapshot.pageviewRange?.pageviews ?? 0,
+          days_with_data: snapshot.pageviewRange?.days_with_data ?? 0,
+          last_received_at: snapshot.pageviewRange?.last_received_at ?? null,
+        }
+      : null,
     identity,
     health: {
       last_received_at: snapshot.lastReceivedAt,

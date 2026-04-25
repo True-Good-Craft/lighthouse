@@ -230,6 +230,13 @@ Bare `GET /report` preserves the legacy operator contract and returns:
       "last_received_at": null
     }
   },
+  "legacy_pageview": "<same object as human_traffic — semantic alias for BUS Core /metrics/pageview layer>",
+  "intent_counters": {
+    "today": { "update_checks": 0, "downloads": 0, "errors": 0 },
+    "yesterday": { "update_checks": 0, "downloads": 0, "errors": 0 },
+    "last_7_days": { "update_checks": 0, "downloads": 0, "errors": 0 },
+    "month_to_date": { "update_checks": 0, "downloads": 0, "errors": 0 }
+  },
   "identity": {
     "today": {
       "new_users": 0,
@@ -252,7 +259,8 @@ Contract note:
 - Field additions/removals or semantic changes must be deliberate and documented in SOT/changelog, not ad-hoc.
 - Existing top-level fields `today`, `yesterday`, `last_7_days`, `month_to_date`, and `trends` remain intact and semantically unchanged.
 - Existing top-level `traffic` remains the Cloudflare-derived traffic summary and is not renamed or reinterpreted by pageview ingestion.
-- Additive top-level `human_traffic` is JS-fired first-party pageview telemetry, not verified-human analytics.
+- Additive top-level `human_traffic` is JS-fired first-party pageview telemetry, not verified-human analytics. `legacy_pageview` is a semantic alias for the same object (BUS Core `legacy_pageview` layer).
+- Additive top-level `intent_counters` groups the same `today`, `yesterday`, `last_7_days`, and `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer (`update_checks`, `downloads`, `errors`). The individual top-level fields remain for backward compatibility.
 - Bare `/report`, `view=fleet`, and `view=site` each perform one best-effort refresh capture for the previous completed UTC day before assembly.
 - `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
 - The refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.
@@ -341,6 +349,11 @@ Additional authenticated view modes:
     "last_received_at": "2026-04-08T10:00:00.000Z",
     "has_recent_signal": true
   },
+  "traffic_layer": {
+    "source": "cloudflare_edge",
+    "semantics": "edge_observed_not_confirmed_human",
+    "enabled": false
+  },
   "traffic": {
     "cloudflare_traffic_enabled": false,
     "latest_day": {
@@ -357,7 +370,7 @@ Additional authenticated view modes:
       "days_with_data": 0
     }
   },
-  "events": {
+  "page_execution_events": {
     "accepted_events": 8,
     "unique_paths": 3,
     "by_event_name": [
@@ -383,6 +396,8 @@ Additional authenticated view modes:
       { "utm_content": "hero_banner_a", "events": 2 }
     ]
   },
+  "events": "<same object as page_execution_events — compatibility alias>",
+  "legacy_pageview": null,
   "identity": null,
   "health": {
     "last_received_at": "2026-04-08T10:00:00.000Z",
@@ -428,6 +443,24 @@ View notes:
 - Site-view payloads expose `scope.support_class` and `scope.section_availability` to make section support deterministic by current support class.
 - Site-view `identity` is populated only for support classes with identity support (currently BUS Core `legacy_hybrid`) and is `null` for event-only sites.
 - For `event_only` sites, unsupported traffic metrics remain explicitly `null` and `identity` remains `null` by design; useful output is provided through event breakdown arrays.
+
+### Semantic Data Layer Labels (v1.14.0)
+
+Four semantic labels are established for Lighthouse reporting surfaces:
+
+| Label | Meaning | Fields |
+|---|---|---|
+| `page_execution_events` | Standardized first-party site events from `POST /metrics/event`; physical storage is `site_events_raw` | `page_execution_events` in `view=site` |
+| `legacy_pageview` | BUS Core first-party pageview telemetry from `POST /metrics/pageview`; physical storage is `pageview_*` tables | `legacy_pageview` in bare `/report` and `view=site` (BUS Core only) |
+| `traffic_layer` | Cloudflare-edge-observed traffic signals; edge requests and visits, not confirmed human usage | `traffic_layer` metadata in `view=site`; `traffic` data section |
+| `intent_counters` | Lighthouse aggregate operator counters (`update_checks`, `downloads`, `errors`) from `metrics_daily` | `intent_counters` in bare `/report` |
+
+Rules:
+- These four labels must be kept distinct in all reporting. They must not be blended or treated as equivalent.
+- Physical storage table names are unchanged: `site_events_raw`, `pageview_daily`, `buscore_traffic_daily`, `metrics_daily`.
+- `page_execution_events` and `events` in `view=site` carry identical data. `events` is retained as a backward-compatibility alias.
+- `legacy_pageview` and `human_traffic` in bare `/report` carry identical data. `human_traffic` is retained as a backward-compatibility alias.
+- `traffic_layer.enabled` is `false` for sites without Cloudflare traffic capture. When disabled, traffic values remain `null` and are never faked.
 
 Normalized section contract (logical per-site sections where supported):
 - Summary

@@ -87,6 +87,8 @@ test("assembleLegacyReport preserves the legacy top-level shape", () => {
     "trends",
     "traffic",
     "human_traffic",
+    "legacy_pageview",
+    "intent_counters",
     "identity",
     "site_events",
   ]);
@@ -604,6 +606,8 @@ test("excluded_non_production_host is computed independently of included_events 
 // ---------------------------------------------------------------------------
 
 function makeEventOnlySiteReport(eventsOverride) {
+  const pageExecutionEvents = eventsOverride;
+
   return assembleSiteReport({
     generated_at: "2026-04-10T12:00:00.000Z",
     scope: {
@@ -638,6 +642,11 @@ function makeEventOnlySiteReport(eventsOverride) {
       last_received_at: "2026-04-10T09:00:00.000Z",
       has_recent_signal: eventsOverride.accepted_events > 0,
     },
+    traffic_layer: {
+      source: "cloudflare_edge",
+      semantics: "edge_observed_not_confirmed_human",
+      enabled: false,
+    },
     traffic: {
       cloudflare_traffic_enabled: false,
       latest_day: { day: null, visits: null, requests: null, captured_at: null },
@@ -649,7 +658,9 @@ function makeEventOnlySiteReport(eventsOverride) {
         days_with_data: 0,
       },
     },
-    events: eventsOverride,
+    page_execution_events: pageExecutionEvents,
+    events: pageExecutionEvents,
+    legacy_pageview: null,
     identity: null,
     health: {
       last_received_at: "2026-04-10T09:00:00.000Z",
@@ -904,4 +915,345 @@ test("isValidReleaseArtifactUrl rejects invalid filenames", () => {
   assert.equal(isValidReleaseArtifactUrl("/releases/../etc/passwd"), false);
   assert.equal(isValidReleaseArtifactUrl("/releases/"), false);
   assert.equal(isValidReleaseArtifactUrl("/update/check"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Semantic layer fields — page_execution_events, traffic_layer, legacy_pageview,
+// intent_counters (v1.14.0 analytics standardization)
+// ---------------------------------------------------------------------------
+
+function makeBusCoreHybridSiteReport(eventsOverride, legacyPageviewOverride) {
+  return assembleSiteReport({
+    generated_at: "2026-04-25T12:00:00.000Z",
+    scope: {
+      site_key: "buscore",
+      label: "BUS Core",
+      status: "active",
+      backend_source: "pageview_daily+site_events_raw+buscore_traffic_daily",
+      window: {
+        start_day: "2026-04-19",
+        end_day: "2026-04-25",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      exclude_test_mode: true,
+      production_only: false,
+      support_class: "legacy_hybrid",
+      section_availability: {
+        summary: true,
+        today: true,
+        traffic: true,
+        human_traffic_events: true,
+        observability: true,
+        identity: true,
+        read: true,
+      },
+    },
+    summary: {
+      accepted_events_7d: eventsOverride.accepted_events,
+      pageviews_7d: legacyPageviewOverride.pageviews_7d,
+      traffic_requests_7d: 4200,
+      traffic_visits_7d: 1100,
+      last_received_at: "2026-04-25T11:00:00.000Z",
+      has_recent_signal: true,
+    },
+    traffic_layer: {
+      source: "cloudflare_edge",
+      semantics: "edge_observed_not_confirmed_human",
+      enabled: true,
+    },
+    traffic: {
+      cloudflare_traffic_enabled: true,
+      latest_day: { day: "2026-04-24", visits: 150, requests: 600, captured_at: "2026-04-25T00:05:00.000Z" },
+      last_7_days: {
+        visits: 1100,
+        requests: 4200,
+        avg_daily_visits: 157,
+        avg_daily_requests: 600,
+        days_with_data: 7,
+      },
+    },
+    page_execution_events: eventsOverride,
+    events: eventsOverride,
+    legacy_pageview: legacyPageviewOverride,
+    identity: null,
+    health: {
+      last_received_at: "2026-04-25T11:00:00.000Z",
+      included_events: eventsOverride.accepted_events,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 0,
+      dropped_rate_limited: 0,
+      dropped_invalid: 0,
+      cloudflare_traffic_enabled: true,
+      production_only_default: false,
+    },
+  });
+}
+
+test("view=site has page_execution_events field matching events", () => {
+  const events = {
+    accepted_events: 12,
+    unique_paths: 4,
+    by_event_name: [{ event_name: "page_view", events: 12 }],
+    top_paths: [{ path: "/", events: 12 }],
+    top_sources: [{ source: "(direct)", events: 12 }],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  };
+  const payload = makeEventOnlySiteReport(events);
+
+  // page_execution_events must exist and carry the same shape as events.
+  assert.ok("page_execution_events" in payload, "page_execution_events must be present in view=site");
+  assert.equal(payload.page_execution_events.accepted_events, payload.events.accepted_events);
+  assert.equal(payload.page_execution_events.unique_paths, payload.events.unique_paths);
+  assert.deepEqual(payload.page_execution_events.by_event_name, payload.events.by_event_name);
+  assert.deepEqual(payload.page_execution_events.top_paths, payload.events.top_paths);
+  assert.deepEqual(payload.page_execution_events.top_sources, payload.events.top_sources);
+  assert.deepEqual(payload.page_execution_events.top_campaigns, payload.events.top_campaigns);
+  assert.deepEqual(payload.page_execution_events.top_referrers, payload.events.top_referrers);
+  assert.deepEqual(payload.page_execution_events.top_contents, payload.events.top_contents);
+});
+
+test("view=site page_execution_events does not contain intent counter fields", () => {
+  const events = {
+    accepted_events: 5,
+    unique_paths: 1,
+    by_event_name: [{ event_name: "page_view", events: 5 }],
+    top_paths: [{ path: "/", events: 5 }],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  };
+  const payload = makeEventOnlySiteReport(events);
+
+  // page_execution_events must not carry Lighthouse intent counter fields.
+  assert.equal("update_checks" in payload.page_execution_events, false);
+  assert.equal("downloads" in payload.page_execution_events, false);
+  assert.equal("errors" in payload.page_execution_events, false);
+});
+
+test("view=site has traffic_layer metadata with cloudflare_edge source and semantics", () => {
+  const events = {
+    accepted_events: 3,
+    unique_paths: 1,
+    by_event_name: [{ event_name: "page_view", events: 3 }],
+    top_paths: [{ path: "/", events: 3 }],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  };
+  const payload = makeEventOnlySiteReport(events);
+
+  assert.ok("traffic_layer" in payload, "traffic_layer must be present in view=site");
+  assert.equal(payload.traffic_layer.source, "cloudflare_edge");
+  assert.equal(payload.traffic_layer.semantics, "edge_observed_not_confirmed_human");
+});
+
+test("traffic_layer.enabled is false for event_only sites — no fake traffic", () => {
+  const events = {
+    accepted_events: 7,
+    unique_paths: 2,
+    by_event_name: [{ event_name: "page_view", events: 7 }],
+    top_paths: [{ path: "/", events: 7 }],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  };
+  const payload = makeEventOnlySiteReport(events);
+
+  // event_only sites have no Cloudflare traffic layer; enabled must be false.
+  assert.equal(payload.traffic_layer.enabled, false);
+  // And the actual traffic values must remain null to match the disabled layer.
+  assert.equal(payload.traffic.cloudflare_traffic_enabled, false);
+  assert.equal(payload.traffic.latest_day.requests, null);
+  assert.equal(payload.traffic.last_7_days.requests, null);
+});
+
+test("traffic_layer.enabled is true for cloudflare-enabled sites", () => {
+  const events = {
+    accepted_events: 9,
+    unique_paths: 3,
+    by_event_name: [{ event_name: "page_view", events: 9 }],
+    top_paths: [{ path: "/", events: 9 }],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  };
+  const legacyPv = { pageviews_7d: 42, days_with_data: 6, last_received_at: "2026-04-25T10:00:00.000Z" };
+  const payload = makeBusCoreHybridSiteReport(events, legacyPv);
+
+  assert.equal(payload.traffic_layer.enabled, true);
+  assert.equal(payload.traffic_layer.source, "cloudflare_edge");
+  assert.equal(payload.traffic_layer.semantics, "edge_observed_not_confirmed_human");
+  assert.equal(payload.traffic.cloudflare_traffic_enabled, true);
+});
+
+test("view=site BUS Core has non-null legacy_pageview with pageview summary fields", () => {
+  const events = {
+    accepted_events: 5,
+    unique_paths: 2,
+    by_event_name: [{ event_name: "page_view", events: 5 }],
+    top_paths: [{ path: "/", events: 5 }],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  };
+  const legacyPv = { pageviews_7d: 34, days_with_data: 5, last_received_at: "2026-04-25T09:00:00.000Z" };
+  const payload = makeBusCoreHybridSiteReport(events, legacyPv);
+
+  assert.notEqual(payload.legacy_pageview, null, "BUS Core view=site must have non-null legacy_pageview");
+  assert.equal(payload.legacy_pageview.pageviews_7d, 34);
+  assert.equal(payload.legacy_pageview.days_with_data, 5);
+  assert.equal(payload.legacy_pageview.last_received_at, "2026-04-25T09:00:00.000Z");
+  // legacy_pageview is the pageview summary; it must not contain site_events fields.
+  assert.equal("by_event_name" in payload.legacy_pageview, false);
+  assert.equal("accepted_events" in payload.legacy_pageview, false);
+});
+
+test("view=site event_only site has null legacy_pageview", () => {
+  const events = {
+    accepted_events: 4,
+    unique_paths: 1,
+    by_event_name: [{ event_name: "page_view", events: 4 }],
+    top_paths: [{ path: "/", events: 4 }],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  };
+  const payload = makeEventOnlySiteReport(events);
+
+  // event_only sites have no legacy pageview layer; must be null.
+  assert.equal(payload.legacy_pageview, null);
+});
+
+test("legacy report has legacy_pageview matching human_traffic shape", () => {
+  const payload = assembleLegacyReport({
+    today: { update_checks: 2, downloads: 1, errors: 0 },
+    yesterday: { update_checks: 3, downloads: 2, errors: 0 },
+    last7Days: { update_checks: 10, downloads: 7, errors: 0 },
+    previous7Days: { update_checks: 8, downloads: 5, errors: 0 },
+    monthToDate: { update_checks: 20, downloads: 14, errors: 0 },
+    latestTraffic: { day: "2026-04-24", visits: 150, requests: 600, captured_at: "2026-04-25T00:05:00.000Z" },
+    last7Traffic: { row_count: 7, visits: 1050, requests: 4200 },
+    humanToday: { pageviews: 18, last_received_at: "2026-04-25T10:00:00.000Z" },
+    humanLast7: { pageviews: 120, days_with_data: 6 },
+    humanObservability: {
+      accepted: 120,
+      dropped_rate_limited: 2,
+      dropped_invalid: 1,
+      last_received_at: "2026-04-25T10:00:00.000Z",
+    },
+    topPaths: [{ value: "/", pageviews: 80 }],
+    topReferrers: [{ value: "google.com", pageviews: 40 }],
+    topSources: [{ source: "search", pageviews: 40 }],
+    identity: {
+      today: { new_users: 2, returning_users: 3, sessions: 5 },
+      last_7_days: { new_users: 10, returning_users: 15, sessions: 25, return_rate: 0.6 },
+      top_sources_by_returning_users: [{ source: "search", users: 10 }],
+    },
+    siteEvents: null,
+  });
+
+  // legacy_pageview must be present and share shape with human_traffic.
+  assert.ok("legacy_pageview" in payload, "legacy_pageview must be present in legacy report");
+  assert.deepEqual(payload.legacy_pageview, payload.human_traffic);
+  assert.equal(payload.legacy_pageview.today.pageviews, 18);
+  assert.equal(payload.legacy_pageview.last_7_days.pageviews, 120);
+  assert.equal(payload.legacy_pageview.observability.accepted, 120);
+});
+
+test("legacy report has intent_counters wrapping the counter windows", () => {
+  const payload = assembleLegacyReport({
+    today: { update_checks: 2, downloads: 1, errors: 0 },
+    yesterday: { update_checks: 3, downloads: 2, errors: 0 },
+    last7Days: { update_checks: 10, downloads: 7, errors: 0 },
+    previous7Days: { update_checks: 8, downloads: 5, errors: 0 },
+    monthToDate: { update_checks: 20, downloads: 14, errors: 0 },
+    latestTraffic: null,
+    last7Traffic: { row_count: 0, visits: null, requests: null },
+    humanToday: { pageviews: 0, last_received_at: null },
+    humanLast7: { pageviews: 0, days_with_data: 0 },
+    humanObservability: { accepted: 0, dropped_rate_limited: 0, dropped_invalid: 0, last_received_at: null },
+    topPaths: [],
+    topReferrers: [],
+    topSources: [],
+    identity: {
+      today: { new_users: 0, returning_users: 0, sessions: 0 },
+      last_7_days: { new_users: 0, returning_users: 0, sessions: 0, return_rate: 0 },
+      top_sources_by_returning_users: [],
+    },
+    siteEvents: null,
+  });
+
+  assert.ok("intent_counters" in payload, "intent_counters must be present in legacy report");
+  // intent_counters wraps the four time-window metric counter objects.
+  assert.ok("today" in payload.intent_counters);
+  assert.ok("yesterday" in payload.intent_counters);
+  assert.ok("last_7_days" in payload.intent_counters);
+  assert.ok("month_to_date" in payload.intent_counters);
+  // Counter fields are present and numeric.
+  assert.equal(payload.intent_counters.today.update_checks, 2);
+  assert.equal(payload.intent_counters.today.downloads, 1);
+  assert.equal(payload.intent_counters.last_7_days.update_checks, 10);
+  assert.equal(payload.intent_counters.month_to_date.downloads, 14);
+  // intent_counters must not contain event-layer or pageview-layer fields.
+  assert.equal("pageviews" in payload.intent_counters, false);
+  assert.equal("accepted_events" in payload.intent_counters, false);
+});
+
+test("intent_counters and page_execution_events are distinct data layers across reports", () => {
+  // Verify the conceptual separation: intent counters (update_checks/downloads/errors)
+  // live in the legacy report and never appear in page_execution_events (view=site).
+  const legacyPayload = assembleLegacyReport({
+    today: { update_checks: 5, downloads: 3, errors: 1 },
+    yesterday: { update_checks: 4, downloads: 2, errors: 0 },
+    last7Days: { update_checks: 25, downloads: 15, errors: 2 },
+    previous7Days: { update_checks: 20, downloads: 12, errors: 1 },
+    monthToDate: { update_checks: 60, downloads: 40, errors: 3 },
+    latestTraffic: null,
+    last7Traffic: { row_count: 0, visits: null, requests: null },
+    humanToday: { pageviews: 0, last_received_at: null },
+    humanLast7: { pageviews: 0, days_with_data: 0 },
+    humanObservability: { accepted: 0, dropped_rate_limited: 0, dropped_invalid: 0, last_received_at: null },
+    topPaths: [],
+    topReferrers: [],
+    topSources: [],
+    identity: {
+      today: { new_users: 0, returning_users: 0, sessions: 0 },
+      last_7_days: { new_users: 0, returning_users: 0, sessions: 0, return_rate: 0 },
+      top_sources_by_returning_users: [],
+    },
+    siteEvents: null,
+  });
+
+  const sitePayload = makeEventOnlySiteReport({
+    accepted_events: 8,
+    unique_paths: 2,
+    by_event_name: [{ event_name: "page_view", events: 8 }],
+    top_paths: [{ path: "/", events: 8 }],
+    top_sources: [],
+    top_campaigns: [],
+    top_referrers: [],
+    top_contents: [],
+  });
+
+  // Legacy report carries intent_counters with update_checks/downloads/errors.
+  assert.equal(legacyPayload.intent_counters.today.update_checks, 5);
+  assert.equal("update_checks" in legacyPayload.intent_counters.today, true);
+
+  // view=site page_execution_events carries event-layer data only.
+  assert.equal(sitePayload.page_execution_events.accepted_events, 8);
+  assert.equal("update_checks" in sitePayload.page_execution_events, false);
+  assert.equal("downloads" in sitePayload.page_execution_events, false);
+
+  // The two layers must not bleed into each other.
+  assert.equal("accepted_events" in legacyPayload.intent_counters, false);
+  assert.equal("pageviews" in legacyPayload.intent_counters, false);
 });

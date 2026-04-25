@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.14.0] - 2026-04-25
+
+### Added
+- Add four canonical semantic data-layer labels to Lighthouse reporting vocabulary: `page_execution_events`, `legacy_pageview`, `traffic_layer`, and `intent_counters`. Physical storage is unchanged — no table renames, no migrations.
+- Add `page_execution_events` to `GET /report?view=site`: same data as the existing `events` field; `events` is retained as a backward-compatibility alias. `page_execution_events` is the canonical name for standardized first-party site events from `POST /metrics/event` (stored in `site_events_raw`).
+- Add `traffic_layer` metadata object to `GET /report?view=site`: `{ source: "cloudflare_edge", semantics: "edge_observed_not_confirmed_human", enabled: boolean }`. Always present; `enabled` mirrors `cloudflare_traffic_enabled` from the tracked-site registry. Identifies Cloudflare-edge-observed traffic as edge metrics only, not confirmed human usage. `enabled: false` for event-only sites — traffic values remain `null` and are never faked.
+- Add `legacy_pageview` to `GET /report?view=site`: non-null for BUS Core (`legacy_hybrid`) only, containing `{ pageviews_7d, days_with_data, last_received_at }` from `pageview_daily`. Returns `null` for all event-only sites. Semantic label for the BUS Core `/metrics/pageview` layer.
+- Add `legacy_pageview` to bare `GET /report`: same object reference as `human_traffic`; identifies the BUS Core first-party pageview telemetry layer. `human_traffic` is retained as a backward-compatibility alias.
+- Add `intent_counters` to bare `GET /report`: groups `today`, `yesterday`, `last_7_days`, and `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer (`update_checks`, `downloads`, `errors`). References the same objects as the existing top-level time-window fields, which are retained for backward compatibility.
+- Add tests: `page_execution_events` matches `events`; `traffic_layer` metadata correctness; `traffic_layer.enabled` false for event-only sites; `legacy_pageview` non-null for BUS Core and null for event-only; `intent_counters` structure and content; intent-counter/page-execution-event layer separation.
+- Document all four semantic layers in SOT.md and README.md.
+
+### Notes
+- Runtime behavior changed: yes — `view=site` now includes `traffic_layer`, `page_execution_events`, and `legacy_pageview`; bare `/report` now includes `legacy_pageview` and `intent_counters`.
+- BUS Core behavior/contract/telemetry shape changed: additive only. No existing fields removed or changed. `events` and `human_traffic` are unchanged. `POST /metrics/pageview` is unchanged and fully functional.
+- Compatibility: all existing fields preserved. Consumers that do not read the new fields are unaffected. Agent Smith and any other consumers of existing fields are unaffected.
+- No D1 migration. No physical table rename. Physical storage remains `site_events_raw`, `pageview_*`, `buscore_traffic_daily`, `metrics_daily`.
+
 ## [1.13.6] - 2026-04-24
 
 ### Fixed

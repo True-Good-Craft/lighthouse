@@ -258,10 +258,24 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
 - When used, the refresh reuses the same per-day capture logic as scheduled capture, remains idempotent via per-day upsert, and does not block successful report responses on capture failure.
 
+### Semantic Layer Terminology (Canonical)
+
+Four semantic data-layer terms are established for Lighthouse reporting vocabulary:
+
+- `page_execution_events` — standardized first-party site events accepted via `POST /metrics/event` and stored in `site_events_raw`. Physical storage remains `site_events_raw`; this is a reporting label, not a table rename.
+- `legacy_pageview` — first-party BUS Core pageview telemetry accepted via `POST /metrics/pageview` and stored in `pageview_events_raw` / aggregated in `pageview_daily`. Continues to function unchanged.
+- `traffic_layer` — Cloudflare-edge-observed traffic signals derived from `buscore_traffic_daily`. Edge-observed metrics and not confirmed human usage. Applies only to sites with `cloudflare_traffic_enabled = true`.
+- `intent_counters` — Lighthouse aggregate operator counters (`update_checks`, `downloads`, `errors`) stored in `metrics_daily`. Represent application-level intent signals, not site analytics.
+
+These terms must be kept distinct in all reporting surfaces. They must not be blended, bridged, or used interchangeably.
+
 ### Report Contract Stability
 
 - `GET /report` is an operator-facing contract, not an ad-hoc analytics surface.
 - Bare `/report` preserves the shipped legacy response shape: `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, `traffic`, `human_traffic`, `identity`, and additive `site_events` (nullable unless `site_key` is provided).
+- Bare `/report` additionally exposes `legacy_pageview` (same data as `human_traffic`; semantic alias identifying the BUS Core `/metrics/pageview` telemetry layer) and `intent_counters` (groups `today`, `yesterday`, `last_7_days`, `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer).
+- `legacy_pageview` and `human_traffic` in bare `/report` are the same object; `human_traffic` is retained for backward compatibility and `legacy_pageview` is the canonical semantic name.
+- `intent_counters.today`, `intent_counters.yesterday`, `intent_counters.last_7_days`, and `intent_counters.month_to_date` reference the same objects as the top-level `today`, `yesterday`, `last_7_days`, and `month_to_date` fields; those top-level fields are retained for backward compatibility.
 - Additional shipped view modes are `view=fleet`, `view=site`, and `view=source_health`.
 - Current shipped `trends` fields include: `downloads_change_percent`, `update_checks_change_percent`, `weekly_downloads_change_percent`, `weekly_update_checks_change_percent`, `conversion_ratio`.
 - `conversion_ratio` is defined as today downloads divided by today update checks (with safe zero-denominator handling).
@@ -292,8 +306,12 @@ No new bindings or secrets are introduced by pageview ingestion.
 - `site_events.observability` exposes `included_events`, `excluded_test_mode`, `excluded_non_production_host`, `dropped_rate_limited`, `dropped_invalid`, and `last_received_at`.
 - `site_events.production_only` filtering is host-based against the selected tracked site `production_hosts` and is operator-controllable through the `production_only` query flag.
 - `view=fleet` returns one entry per tracked site with fields `site_key`, `label`, `status`, `backend_source`, `cloudflare_traffic_enabled`, `production_hosts`, `last_received_at`, `accepted_events_7d`, `pageviews_7d`, `traffic_requests_7d`, `traffic_visits_7d`, and `has_recent_signal`.
-- `view=site` returns top-level sections `scope`, `summary`, `traffic`, `events`, `identity`, and `health` for the selected site.
-- `view=site.events` contains `accepted_events`, `unique_paths`, `by_event_name`, `top_paths`, `top_sources`, `top_campaigns`, `top_referrers`, and `top_contents` for the selected site over the 7-day window. All breakdown arrays are populated for any site with event telemetry (`event_only` included); empty arrays are valid when no matching attribution data is present for a breakdown dimension.
+- `view=site` returns top-level sections `scope`, `summary`, `traffic_layer`, `traffic`, `page_execution_events`, `events`, `legacy_pageview`, `identity`, and `health` for the selected site.
+- `view=site.traffic_layer` is a metadata section with fields `source` (`"cloudflare_edge"`), `semantics` (`"edge_observed_not_confirmed_human"`), and `enabled` (boolean matching the site's `cloudflare_traffic_enabled` flag). It is always present and identifies whether and how the Cloudflare traffic layer applies; `enabled: false` means traffic values remain `null` by design and are not faked.
+- `view=site.page_execution_events` contains the standardized first-party event summary from `site_events_raw`: `accepted_events`, `unique_paths`, `by_event_name`, `top_paths`, `top_sources`, `top_campaigns`, `top_referrers`, and `top_contents` for the selected site over the 7-day window. This is the canonical semantic name for the standardized event layer.
+- `view=site.events` is a compatibility alias for `view=site.page_execution_events`; both fields carry identical data. `events` is retained for backward compatibility; `page_execution_events` is the canonical name.
+- `view=site.legacy_pageview` is populated only for sites with legacy pageview support (currently BUS Core `legacy_hybrid`) and contains `pageviews_7d`, `days_with_data`, and `last_received_at` derived from `pageview_daily`. Returns `null` for all other sites. This field is absent from the physical storage; it is computed from the existing `pageview_daily` queries.
+- All breakdown arrays in `page_execution_events` / `events` are populated for any site with event telemetry (`event_only` included); empty arrays are valid when no matching attribution data is present for a breakdown dimension.
 - `view=site.scope.support_class` exposes the deterministic normalization support class for the selected site.
 - `view=site.scope.section_availability` exposes deterministic section support flags by support class.
 - `view=site.identity` is populated only for support classes with identity support (currently `legacy_hybrid` via BUS Core pageview continuity) and returns `null` for event-only support classes.
