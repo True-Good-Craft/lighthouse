@@ -8,16 +8,15 @@
 - Repo class: operational/supporting service repo
 - Canonical branch: main
 - Local authority docs:
-  - SOT.md
-  - README.md
-  - CHANGELOG.md
+  - `SOT.md`
+  - `README.md`
 
 ## 3. Compliance status
 - Status: PARTIAL
 - Source audit report: `tgc-ops/indexes/daily-estate-compliance-report.md`
-- Source audit UTC: 2026-04-08T20:53:59.7472678Z
+- Source audit UTC: 2026-04-25T13:05:36.7011063Z
 - Last projected by: Codex Local Automation
-- Projection date UTC: 2026-04-08T21:48:13.1419913Z
+- Projection date UTC: 2026-04-25T13:31:05.1987574Z
 
 ## 4. Baseline checks
 - README: YES
@@ -30,10 +29,10 @@
 - Registered in tgc-ops: YES
 
 ## 5. Current gaps
-- Version/release authority declaration is light.
+- Version/release authority declaration remains light.
 
 ## 6. Required remediation
-- Reconcile the canonical ops row with current local docs, then refresh `TGC-COMPLIANCE.md` to the updated canonical state.
+- Tighten the explicit version/release authority statement in local docs.
 
 ## 7. Justified exceptions
 - N/A
