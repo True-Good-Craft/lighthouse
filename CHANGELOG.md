@@ -15,6 +15,9 @@
 - Add additive release-signal reporting that separates artifact downloads, update checks, unknown-version checks, update-available impressions, and latest-version check-ins.
 - Add tests covering redirect-vs-handout download counting, missing artifact and `HEAD` non-counting behavior, ignored-IP suppression for both legacy counters and new aggregates, update-check detail bucketing, and additive `/report` release-signal output.
 
+### Fixed
+- Keep legacy `GET /report`, `GET /update/check`, and successful `GET /releases/:filename` responses available if additive release-signal aggregate reads or writes fail, such as during D1 migration lag. Existing `metrics_daily` counters still update, and `/report` returns zeroed additive `release_signals` windows when those aggregate reads are unavailable.
+
 ### Notes
 - Runtime behavior changed: yes.
 - BUS Core behavior/contract/telemetry shape changed: additive only. Existing numeric `downloads` and `update_checks` fields remain present for current consumers, including Agent Smith.

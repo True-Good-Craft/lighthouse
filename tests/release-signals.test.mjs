@@ -83,10 +83,12 @@ class FakeStatement {
 }
 
 class FakeD1Database {
-  constructor() {
+  constructor(options = {}) {
     this.metricsDaily = new Map();
     this.releaseDownloadsDaily = new Map();
     this.releaseUpdateChecksDaily = new Map();
+    this.failReleaseSignalReads = options.failReleaseSignalReads ?? false;
+    this.failReleaseSignalWrites = options.failReleaseSignalWrites ?? false;
   }
 
   prepare(sql) {
@@ -130,6 +132,9 @@ class FakeD1Database {
     }
 
     if (sql.startsWith("INSERT INTO release_downloads_daily")) {
+      if (this.failReleaseSignalWrites) {
+        throw new Error("no such table: release_downloads_daily");
+      }
       const [day, filename, releaseVersion] = args;
       const key = `${day}|${filename}|${releaseVersion}`;
       this.releaseDownloadsDaily.set(key, (this.releaseDownloadsDaily.get(key) ?? 0) + 1);
@@ -137,6 +142,9 @@ class FakeD1Database {
     }
 
     if (sql.startsWith("INSERT INTO release_update_checks_daily")) {
+      if (this.failReleaseSignalWrites) {
+        throw new Error("no such table: release_update_checks_daily");
+      }
       const [day, channel, clientVersion, latestVersion, updateAvailable] = args;
       const key = `${day}|${channel}|${clientVersion}|${latestVersion}|${updateAvailable}`;
       this.releaseUpdateChecksDaily.set(key, (this.releaseUpdateChecksDaily.get(key) ?? 0) + 1);
@@ -147,6 +155,14 @@ class FakeD1Database {
   }
 
   async first(sql, args) {
+    if (this.failReleaseSignalReads && sql.includes("FROM release_downloads_daily")) {
+      throw new Error("no such table: release_downloads_daily");
+    }
+
+    if (this.failReleaseSignalReads && sql.includes("FROM release_update_checks_daily")) {
+      throw new Error("no such table: release_update_checks_daily");
+    }
+
     if (sql.startsWith("SELECT COALESCE(SUM(update_checks),0) AS update_checks")) {
       const [startDay, endDay] = args;
       const totals = { update_checks: 0, downloads: 0, errors: 0 };
@@ -242,6 +258,10 @@ class FakeD1Database {
   }
 
   async all(sql, args) {
+    if (this.failReleaseSignalReads && sql.includes("FROM release_downloads_daily")) {
+      throw new Error("no such table: release_downloads_daily");
+    }
+
     if (sql.startsWith("SELECT release_version, filename, SUM(downloads) AS downloads FROM release_downloads_daily")) {
       const [startDay, endDay] = args;
       const rows = this.releaseDownloadRows()
@@ -270,7 +290,10 @@ function createHarness(options = {}) {
     releases.set(`releases/${filename}`, body);
   }
 
-  const db = new FakeD1Database();
+  const db = new FakeD1Database({
+    failReleaseSignalReads: options.failReleaseSignalReads,
+    failReleaseSignalWrites: options.failReleaseSignalWrites,
+  });
   const env = {
     DB: db,
     MANIFEST_R2: new FakeR2Bucket(manifestRaw, releases),
@@ -329,6 +352,16 @@ test("GET /releases/BUS-Core-1.1.0.zip increments metrics_daily.downloads", asyn
       downloads: 1,
     },
   ]);
+});
+
+test("GET /releases/... still succeeds when additive release-signal writes fail", async () => {
+  const { db, env } = createHarness({ failReleaseSignalWrites: true });
+
+  const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip");
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).downloads, 1);
+  assert.deepEqual(db.releaseDownloadRows(), []);
 });
 
 test("/download/latest redirect flow followed by /releases increments downloads exactly once", async () => {
@@ -392,6 +425,16 @@ test("GET /update/check still increments metrics_daily.update_checks", async () 
 
   assert.equal(response.status, 200);
   assert.equal(db.metricRow(todayDay()).update_checks, 1);
+});
+
+test("GET /update/check still succeeds when additive release-signal writes fail", async () => {
+  const { db, env } = createHarness({ failReleaseSignalWrites: true });
+
+  const response = await dispatch(env, "/update/check?current_version=1.0.4");
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).update_checks, 1);
+  assert.deepEqual(db.releaseUpdateCheckRows(), []);
 });
 
 test("GET /update/check without client version records an unknown client-version bucket", async () => {
@@ -476,6 +519,37 @@ test("GET /update/check?current_version=1.1.0 records update_available = false a
       update_checks_unknown_client_version: 0,
       update_available_impressions: 0,
       latest_version_checkins: 1,
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+
+test("/report remains available when additive release-signal aggregate reads fail", async () => {
+  const { env } = createHarness({ failReleaseSignalReads: true });
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("skip refresh");
+  };
+
+  try {
+    const reportResponse = await dispatch(env, "/report?site_key=buscore", {
+      headers: { "X-Admin-Token": "secret-token" },
+    });
+    const payload = await reportResponse.json();
+
+    assert.equal(reportResponse.status, 200);
+    assert.equal(typeof payload.today.downloads, "number");
+    assert.equal(typeof payload.last_7_days.update_checks, "number");
+    assert.deepEqual(payload.release_signals.today, {
+      artifact_downloads: 0,
+      artifact_downloads_by_release: [],
+      update_checks: 0,
+      update_checks_with_known_client_version: 0,
+      update_checks_unknown_client_version: 0,
+      update_available_impressions: 0,
+      latest_version_checkins: 0,
     });
   } finally {
     global.fetch = originalFetch;

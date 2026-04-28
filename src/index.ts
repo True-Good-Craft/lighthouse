@@ -1112,6 +1112,34 @@ async function incrementReleaseUpdateCheckCounter(
     .run();
 }
 
+async function incrementReleaseDownloadCounterBestEffort(
+  db: D1Database,
+  day: string,
+  filename: string,
+  releaseVersion: string
+): Promise<void> {
+  try {
+    await incrementReleaseDownloadCounter(db, day, filename, releaseVersion);
+  } catch (error) {
+    console.warn("Release download aggregate increment skipped after D1 failure.", error);
+  }
+}
+
+async function incrementReleaseUpdateCheckCounterBestEffort(
+  db: D1Database,
+  day: string,
+  channel: string,
+  clientVersion: string,
+  latestVersion: string,
+  updateAvailable: ReleaseUpdateAvailability
+): Promise<void> {
+  try {
+    await incrementReleaseUpdateCheckCounter(db, day, channel, clientVersion, latestVersion, updateAvailable);
+  } catch (error) {
+    console.warn("Release update-check aggregate increment skipped after D1 failure.", error);
+  }
+}
+
 async function incrementErrorCounterBestEffort(db: D1Database, day: string): Promise<void> {
   try {
     await incrementCounter(db, day, "errors");
@@ -1240,22 +1268,39 @@ async function queryReleaseUpdateSignalsInRange(
   };
 }
 
+function emptyReleaseSignalWindow(): ReleaseSignalWindow {
+  return {
+    artifact_downloads: 0,
+    artifact_downloads_by_release: [],
+    update_checks: 0,
+    update_checks_with_known_client_version: 0,
+    update_checks_unknown_client_version: 0,
+    update_available_impressions: 0,
+    latest_version_checkins: 0,
+  };
+}
+
 async function buildReleaseSignalWindow(
   db: D1Database,
   startDay: string,
   endDay: string
 ): Promise<ReleaseSignalWindow> {
-  const [artifactDownloads, artifactDownloadBreakdown, updateSignals] = await Promise.all([
-    queryReleaseDownloadTotalsInRange(db, startDay, endDay),
-    queryReleaseDownloadBreakdownInRange(db, startDay, endDay),
-    queryReleaseUpdateSignalsInRange(db, startDay, endDay),
-  ]);
+  try {
+    const [artifactDownloads, artifactDownloadBreakdown, updateSignals] = await Promise.all([
+      queryReleaseDownloadTotalsInRange(db, startDay, endDay),
+      queryReleaseDownloadBreakdownInRange(db, startDay, endDay),
+      queryReleaseUpdateSignalsInRange(db, startDay, endDay),
+    ]);
 
-  return {
-    artifact_downloads: artifactDownloads,
-    artifact_downloads_by_release: artifactDownloadBreakdown,
-    ...updateSignals,
-  };
+    return {
+      artifact_downloads: artifactDownloads,
+      artifact_downloads_by_release: artifactDownloadBreakdown,
+      ...updateSignals,
+    };
+  } catch (error) {
+    console.warn("Release signal report window unavailable; returning zeroed additive release_signals window.", error);
+    return emptyReleaseSignalWindow();
+  }
 }
 
 async function queryTrafficTotalsInRange(db: D1Database, startDay: string, endDay: string): Promise<TrafficTotals> {
@@ -3221,10 +3266,15 @@ export default {
             latestVersion === UNKNOWN_VERSION_BUCKET ? null : latestVersion
           );
 
-          await Promise.all([
-            incrementCounter(env.DB, day, "update_checks"),
-            incrementReleaseUpdateCheckCounter(env.DB, day, channel, clientVersion, latestVersion, updateAvailable),
-          ]);
+          await incrementCounter(env.DB, day, "update_checks");
+          await incrementReleaseUpdateCheckCounterBestEffort(
+            env.DB,
+            day,
+            channel,
+            clientVersion,
+            latestVersion,
+            updateAvailable
+          );
         }
         return withCors(
           request,
@@ -3276,10 +3326,8 @@ export default {
       if (!shouldSkipCounting(getClientIp(request), env.IGNORED_IP) && shouldCountArtifactDownload(request)) {
         const releaseVersion = extractReleaseVersionFromFilename(filename);
         if (releaseVersion) {
-          await Promise.all([
-            incrementCounter(env.DB, day, "downloads"),
-            incrementReleaseDownloadCounter(env.DB, day, filename, releaseVersion),
-          ]);
+          await incrementCounter(env.DB, day, "downloads");
+          await incrementReleaseDownloadCounterBestEffort(env.DB, day, filename, releaseVersion);
         }
       }
 
