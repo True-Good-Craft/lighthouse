@@ -21,6 +21,38 @@ import {
   isValidReleaseArtifactUrl,
 } from "../dist/index.js";
 
+function emptyReleaseSignals() {
+  return {
+    today: {
+      artifact_downloads: 0,
+      artifact_downloads_by_release: [],
+      update_checks: 0,
+      update_checks_with_known_client_version: 0,
+      update_checks_unknown_client_version: 0,
+      update_available_impressions: 0,
+      latest_version_checkins: 0,
+    },
+    last_7_days: {
+      artifact_downloads: 0,
+      artifact_downloads_by_release: [],
+      update_checks: 0,
+      update_checks_with_known_client_version: 0,
+      update_checks_unknown_client_version: 0,
+      update_available_impressions: 0,
+      latest_version_checkins: 0,
+    },
+    last_30_days: {
+      artifact_downloads: 0,
+      artifact_downloads_by_release: [],
+      update_checks: 0,
+      update_checks_with_known_client_version: 0,
+      update_checks_unknown_client_version: 0,
+      update_available_impressions: 0,
+      latest_version_checkins: 0,
+    },
+  };
+}
+
 test("normalizeReportView keeps bare /report on the legacy contract", () => {
   assert.equal(normalizeReportView(null), "legacy");
   assert.equal(normalizeReportView(""), "legacy");
@@ -51,6 +83,7 @@ test("assembleLegacyReport preserves the legacy top-level shape", () => {
     today: { update_checks: 1, downloads: 2, errors: 0 },
     yesterday: { update_checks: 3, downloads: 4, errors: 0 },
     last7Days: { update_checks: 5, downloads: 6, errors: 0 },
+    last30Days: { update_checks: 9, downloads: 10, errors: 0 },
     previous7Days: { update_checks: 2, downloads: 3, errors: 0 },
     monthToDate: { update_checks: 7, downloads: 8, errors: 0 },
     latestTraffic: {
@@ -77,18 +110,21 @@ test("assembleLegacyReport preserves the legacy top-level shape", () => {
       top_sources_by_returning_users: [{ source: "github", users: 2 }],
     },
     siteEvents: null,
+    releaseSignals: emptyReleaseSignals(),
   });
 
   assert.deepEqual(Object.keys(payload), [
     "today",
     "yesterday",
     "last_7_days",
+    "last_30_days",
     "month_to_date",
     "trends",
     "traffic",
     "human_traffic",
     "legacy_pageview",
     "intent_counters",
+    "release_signals",
     "identity",
     "site_events",
   ]);
@@ -1138,6 +1174,7 @@ test("legacy report has legacy_pageview matching human_traffic shape", () => {
     today: { update_checks: 2, downloads: 1, errors: 0 },
     yesterday: { update_checks: 3, downloads: 2, errors: 0 },
     last7Days: { update_checks: 10, downloads: 7, errors: 0 },
+    last30Days: { update_checks: 30, downloads: 20, errors: 0 },
     previous7Days: { update_checks: 8, downloads: 5, errors: 0 },
     monthToDate: { update_checks: 20, downloads: 14, errors: 0 },
     latestTraffic: { day: "2026-04-24", visits: 150, requests: 600, captured_at: "2026-04-25T00:05:00.000Z" },
@@ -1159,6 +1196,7 @@ test("legacy report has legacy_pageview matching human_traffic shape", () => {
       top_sources_by_returning_users: [{ source: "search", users: 10 }],
     },
     siteEvents: null,
+    releaseSignals: emptyReleaseSignals(),
   });
 
   // legacy_pageview must be present and share shape with human_traffic.
@@ -1174,6 +1212,7 @@ test("legacy report has intent_counters wrapping the counter windows", () => {
     today: { update_checks: 2, downloads: 1, errors: 0 },
     yesterday: { update_checks: 3, downloads: 2, errors: 0 },
     last7Days: { update_checks: 10, downloads: 7, errors: 0 },
+    last30Days: { update_checks: 22, downloads: 16, errors: 0 },
     previous7Days: { update_checks: 8, downloads: 5, errors: 0 },
     monthToDate: { update_checks: 20, downloads: 14, errors: 0 },
     latestTraffic: null,
@@ -1190,6 +1229,7 @@ test("legacy report has intent_counters wrapping the counter windows", () => {
       top_sources_by_returning_users: [],
     },
     siteEvents: null,
+    releaseSignals: emptyReleaseSignals(),
   });
 
   assert.ok("intent_counters" in payload, "intent_counters must be present in legacy report");
@@ -1197,11 +1237,13 @@ test("legacy report has intent_counters wrapping the counter windows", () => {
   assert.ok("today" in payload.intent_counters);
   assert.ok("yesterday" in payload.intent_counters);
   assert.ok("last_7_days" in payload.intent_counters);
+  assert.ok("last_30_days" in payload.intent_counters);
   assert.ok("month_to_date" in payload.intent_counters);
   // Counter fields are present and numeric.
   assert.equal(payload.intent_counters.today.update_checks, 2);
   assert.equal(payload.intent_counters.today.downloads, 1);
   assert.equal(payload.intent_counters.last_7_days.update_checks, 10);
+  assert.equal(payload.intent_counters.last_30_days.downloads, 16);
   assert.equal(payload.intent_counters.month_to_date.downloads, 14);
   // intent_counters must not contain event-layer or pageview-layer fields.
   assert.equal("pageviews" in payload.intent_counters, false);
@@ -1215,6 +1257,7 @@ test("intent_counters and page_execution_events are distinct data layers across 
     today: { update_checks: 5, downloads: 3, errors: 1 },
     yesterday: { update_checks: 4, downloads: 2, errors: 0 },
     last7Days: { update_checks: 25, downloads: 15, errors: 2 },
+    last30Days: { update_checks: 80, downloads: 48, errors: 5 },
     previous7Days: { update_checks: 20, downloads: 12, errors: 1 },
     monthToDate: { update_checks: 60, downloads: 40, errors: 3 },
     latestTraffic: null,
@@ -1231,6 +1274,7 @@ test("intent_counters and page_execution_events are distinct data layers across 
       top_sources_by_returning_users: [],
     },
     siteEvents: null,
+    releaseSignals: emptyReleaseSignals(),
   });
 
   const sitePayload = makeEventOnlySiteReport({

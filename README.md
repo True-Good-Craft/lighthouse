@@ -161,15 +161,17 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 | Method | Path | Behavior |
 |--------|------|----------|
 | GET | `/manifest/core/stable.json` | Return manifest JSON from R2 (no counting) |
-| GET | `/update/check` | Return manifest JSON and increment `update_checks` unless request IP matches `IGNORED_IP` |
-| GET | `/download/latest` | Increment `downloads` unless request IP matches `IGNORED_IP`, then `302` redirect to latest release URL from manifest |
-| GET | `/releases/:filename` | Serve release artifact from R2 key `releases/:filename` (no counting) |
+| GET | `/update/check` | Return manifest JSON, increment `update_checks` unless request IP matches `IGNORED_IP`, and record additive release-uptake detail buckets |
+| GET | `/download/latest` | Validate latest manifest download URL and return `302` redirect intent only |
+| GET | `/releases/:filename` | Serve release artifact from R2 key `releases/:filename` and count successful full artifact handouts |
 | POST | `/metrics/pageview` | Accept first-party JS-fired pageview JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | POST | `/metrics/event` | Accept standardized multi-site event JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | GET | `/report` | Return protected aggregate report; supports legacy bare mode plus `view=fleet`, `view=site`, and `view=source_health` |
 
 Notes:
-- `/manifest/core/stable.json` and `/releases/:filename` never increment counters.
+- `/manifest/core/stable.json` never increments counters.
+- `/download/latest` never increments `downloads` directly.
+- `/releases/:filename` increments `downloads` only for successful full `GET` artifact handouts that pass through Lighthouse.
 - `/update/check` does not require `X-BUS-Update-Source: core` for counting.
 - If `IGNORED_IP` is configured and matches `CF-Connecting-IP`, counting is suppressed while normal responses are still returned.
 - `POST /metrics/pageview` is unauthenticated by design, parses raw request text then JSON, and still returns `204` for malformed, invalid, or rate-limited submissions.
@@ -188,6 +190,7 @@ Bare `GET /report` preserves the legacy operator contract and returns:
   "today": { "update_checks": 0, "downloads": 0, "errors": 0 },
   "yesterday": { "update_checks": 0, "downloads": 0, "errors": 0 },
   "last_7_days": { "update_checks": 0, "downloads": 0, "errors": 0 },
+  "last_30_days": { "update_checks": 0, "downloads": 0, "errors": 0 },
   "month_to_date": { "update_checks": 0, "downloads": 0, "errors": 0 },
   "trends": {
     "downloads_change_percent": 0,
@@ -235,7 +238,37 @@ Bare `GET /report` preserves the legacy operator contract and returns:
     "today": { "update_checks": 0, "downloads": 0, "errors": 0 },
     "yesterday": { "update_checks": 0, "downloads": 0, "errors": 0 },
     "last_7_days": { "update_checks": 0, "downloads": 0, "errors": 0 },
+    "last_30_days": { "update_checks": 0, "downloads": 0, "errors": 0 },
     "month_to_date": { "update_checks": 0, "downloads": 0, "errors": 0 }
+  },
+  "release_signals": {
+    "today": {
+      "artifact_downloads": 0,
+      "artifact_downloads_by_release": [],
+      "update_checks": 0,
+      "update_checks_with_known_client_version": 0,
+      "update_checks_unknown_client_version": 0,
+      "update_available_impressions": 0,
+      "latest_version_checkins": 0
+    },
+    "last_7_days": {
+      "artifact_downloads": 0,
+      "artifact_downloads_by_release": [],
+      "update_checks": 0,
+      "update_checks_with_known_client_version": 0,
+      "update_checks_unknown_client_version": 0,
+      "update_available_impressions": 0,
+      "latest_version_checkins": 0
+    },
+    "last_30_days": {
+      "artifact_downloads": 0,
+      "artifact_downloads_by_release": [],
+      "update_checks": 0,
+      "update_checks_with_known_client_version": 0,
+      "update_checks_unknown_client_version": 0,
+      "update_available_impressions": 0,
+      "latest_version_checkins": 0
+    }
   },
   "identity": {
     "today": {
@@ -257,10 +290,11 @@ Bare `GET /report` preserves the legacy operator contract and returns:
 Contract note:
 - `/report` is treated as an operator contract.
 - Field additions/removals or semantic changes must be deliberate and documented in SOT/changelog, not ad-hoc.
-- Existing top-level fields `today`, `yesterday`, `last_7_days`, `month_to_date`, and `trends` remain intact and semantically unchanged.
+- Existing top-level fields `today`, `yesterday`, `last_7_days`, `month_to_date`, and `trends` remain intact. Additive `last_30_days` extends the same intent-counter model.
 - Existing top-level `traffic` remains the Cloudflare-derived traffic summary and is not renamed or reinterpreted by pageview ingestion.
 - Additive top-level `human_traffic` is JS-fired first-party pageview telemetry, not verified-human analytics. `legacy_pageview` is a semantic alias for the same object (BUS Core `legacy_pageview` layer).
-- Additive top-level `intent_counters` groups the same `today`, `yesterday`, `last_7_days`, and `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer (`update_checks`, `downloads`, `errors`). The individual top-level fields remain for backward compatibility.
+- Additive top-level `intent_counters` groups the same `today`, `yesterday`, `last_7_days`, `last_30_days`, and `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer (`update_checks`, `downloads`, `errors`). The individual top-level fields remain for backward compatibility.
+- Additive top-level `release_signals` reports truthful release signals only: successful artifact handouts, update checks, unknown-version checks, update-available impressions, and latest-version check-ins. Lighthouse still does not claim installs.
 - Bare `/report`, `view=fleet`, and `view=site` each perform one best-effort refresh capture for the previous completed UTC day before assembly.
 - `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
 - The refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.

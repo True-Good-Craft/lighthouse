@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.15.0] - 2026-04-27
+
+### Changed
+- Redefine `metrics_daily.downloads` to mean successful release artifact handouts served by `GET /releases/:filename` going forward.
+- `GET /download/latest` is now redirect intent only. It validates the latest manifest download URL and returns `302`, but no longer increments `downloads` directly.
+- `GET /manifest/core/stable.json` remains intentionally uncounted.
+- `GET /update/check` still increments `update_checks`, and now also records additive daily update-check detail buckets for channel, client version, latest manifest version served, and `update_available` state (`true`, `false`, `unknown`).
+- Extend bare `GET /report` additively with top-level `last_30_days` and `release_signals` windows. Existing top-level fields remain intact.
+
+### Added
+- Add D1 migration `0009_add_release_signal_aggregates.sql` creating `release_downloads_daily` and `release_update_checks_daily`.
+- Add additive release download breakdown reporting by `release_version` and `filename`.
+- Add additive release-signal reporting that separates artifact downloads, update checks, unknown-version checks, update-available impressions, and latest-version check-ins.
+- Add tests covering redirect-vs-handout download counting, missing artifact and `HEAD` non-counting behavior, ignored-IP suppression for both legacy counters and new aggregates, update-check detail bucketing, and additive `/report` release-signal output.
+
+### Notes
+- Runtime behavior changed: yes.
+- BUS Core behavior/contract/telemetry shape changed: additive only. Existing numeric `downloads` and `update_checks` fields remain present for current consumers, including Agent Smith.
+- Lighthouse now reports truthful release signals only: successful artifact handouts, update checks, update-available impressions, latest-version check-ins, and unknown-version checks. It still does not claim installs or direct R2 bypass downloads.
+
 ## [1.14.0] - 2026-04-25
 
 ### Added

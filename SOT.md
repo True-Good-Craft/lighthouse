@@ -75,20 +75,26 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 
 - `GET /update/check` — **Manifest proxy with update check counting**
   - Returns manifest JSON from `MANIFEST_R2`.
-  - Increments `update_checks` in D1 (current UTC day) **unless** request IP matches `IGNORED_IP`.
+  - On successful manifest proxy response, increments `update_checks` in D1 (current UTC day) **unless** request IP matches `IGNORED_IP`.
+  - On the same successful response, records additive daily update-check detail in `release_update_checks_daily` with `channel`, `client_version`, `latest_version`, and `update_available` (`true` | `false` | `unknown`).
+  - Lighthouse accepts optional client-version signals from query params `current_version` or `version`, and header `X-BUS-Core-Version`.
+  - Lighthouse accepts optional channel signals from query param `channel` or header `X-BUS-Core-Channel`.
+  - Missing or malformed client versions do not fail the request; they are stored as `client_version = "unknown"` and `update_available = "unknown"`.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` on manifest errors.
 
 ### Download Service
 
-- `GET /download/latest` — **Counted download initiation endpoint**
-  - Increments `downloads` in D1 (current UTC day), unless the request IP matches `IGNORED_IP`.
+- `GET /download/latest` — **Redirect intent endpoint**
   - Redirects (`302`) to the validated release artifact URL from `manifest.latest.download.url`.
   - Accepts either a relative release URL (for example `/releases/BUS-Core-1.0.4.zip`) or an absolute URL using the same release path format.
+  - Never increments `downloads` directly.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` when URL is missing/invalid.
 
-- `GET /releases/:filename` — **Raw asset delivery (no counting)**
+- `GET /releases/:filename` — **Raw asset delivery with successful artifact-handout counting**
   - Serves release artifacts directly from `MANIFEST_R2` using key `releases/:filename`.
-  - **Never increments any counters** (ensures no double-counting after `/download/latest` redirect).
+  - Successful full `GET` artifact responses increment `downloads` in `metrics_daily` and the additive per-day `release_downloads_daily` breakdown, unless the request IP matches `IGNORED_IP`.
+  - `downloads` now means successful Lighthouse-served artifact handouts, not redirect intent.
+  - Does not increment counters for `404` missing artifacts, invalid filenames, non-`GET` requests, `HEAD`, ignored IPs, or conservative non-full requests carrying `Range`.
   - Allowed filename formats: `BUS-Core-<semver>.zip` (current) and `TGC-BUS-Core-<semver>.zip` (legacy, preserved for backward compatibility).
   - Returns `200` with artifact body when object exists.
   - Returns `404` JSON `{ "ok": false, "error": "not_found" }` when missing or filename is invalid.
@@ -173,7 +179,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
     - `const token = request.headers.get("X-Admin-Token")`
     - `if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) { ...401 unauthorized... }`
   - On auth failure: returns `401` JSON `{ "ok": false, "error": "unauthorized" }`.
-  - If `view` is omitted, blank, or absent, `/report` preserves the legacy response shape with `today`, `yesterday`, `last_7_days`, `month_to_date`, `trends`, additive top-level `traffic`, additive top-level `human_traffic`, additive top-level `identity`, and additive top-level `site_events`.
+  - If `view` is omitted, blank, or absent, `/report` preserves the legacy response shape with `today`, `yesterday`, `last_7_days`, additive top-level `last_30_days`, `month_to_date`, `trends`, additive top-level `traffic`, additive top-level `human_traffic`, additive top-level `identity`, additive top-level `site_events`, and additive top-level `release_signals`.
   - Bare legacy `/report` continues to support `site_key` with optional flags `exclude_test_mode` (default `true`) and `production_only` (default from tracked-site `production_only_default`) for the additive `site_events` block only.
   - `production_only` defaulting is per tracked-site declaration, not one hard global runtime constant. BUS Core is explicitly grandfathered as the legacy-hybrid exception with `production_only_default = false`; Star Map and TGC remain `true`.
   - If legacy `/report` omits `site_key`, `site_events` is `null` to avoid silently blending multiple tracked sites.
@@ -188,6 +194,21 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - When the best-effort refresh runs, it remains idempotent via per-day upsert semantics and keeps one stored row per completed UTC day.
   - If a best-effort refresh attempt fails, `/report` still returns successfully using only currently stored traffic data.
   - This behavior is additive and does not replace the scheduled daily capture job.
+
+### Release Signals
+
+- Bare `/report` includes additive `release_signals.today`, `release_signals.last_7_days`, and `release_signals.last_30_days` windows.
+- Each release-signal window contains:
+  - `artifact_downloads`
+  - `artifact_downloads_by_release[]` with `release_version`, `filename`, and `downloads`
+  - `update_checks`
+  - `update_checks_with_known_client_version`
+  - `update_checks_unknown_client_version`
+  - `update_available_impressions`
+  - `latest_version_checkins`
+- `update_available_impressions` means a known client version was older than the latest manifest version served.
+- `latest_version_checkins` means a known client version matched the latest manifest version served.
+- Lighthouse does not claim installs or successful update completion; it reports only observable check and handout signals.
 
 ### Fallback Behavior
 
@@ -210,7 +231,10 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Table: `pageview_rate_limit`
 - Table: `site_events_raw`
 - Table: `site_event_rate_limit`
+- Table: `release_downloads_daily`
+- Table: `release_update_checks_daily`
 - Aggregate counters: `update_checks`, `downloads`, `errors`
+- `downloads` means successful Lighthouse-served release artifact handouts.
 - Day key format: UTC `YYYY-MM-DD`
 - `buscore_traffic_daily` schema:
   - `day TEXT PRIMARY KEY`
@@ -231,6 +255,8 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `pageview_rate_limit` stores approximate per-minute IP-hash counters only for ingestion noise control and has no reporting role.
 - `site_event_rate_limit` stores approximate per-minute IP-hash counters only for standardized event ingestion noise control and has no reporting role.
 - `site_events_raw` stores append-only multi-site event submissions with standard enrichment fields. `site_key` is the per-site discriminator for report isolation. `event_name` identifies the event type within a site. `accepted = 1` means the event was accepted and persisted. `drop_reason` currently uses `rate_limited` for standardized ingest drops. `ip_hash` and `user_agent_hash` are SHA-256 hashes when source values are present; raw values are never stored.
+- `release_downloads_daily` stores one row per day, filename, and release version for successful Lighthouse-served artifact handouts.
+- `release_update_checks_daily` stores one row per day, channel, client version bucket, latest manifest version bucket, and `update_available` state for successful `GET /update/check` responses.
 
 ## 5. Configuration
 

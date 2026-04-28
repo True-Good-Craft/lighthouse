@@ -9,6 +9,29 @@ export interface Env {
 
 type CounterColumn = "update_checks" | "downloads" | "errors";
 type MetricTotals = { update_checks: number; downloads: number; errors: number };
+type ReleaseDownloadSummaryRow = { release_version: string; filename: string; downloads: number };
+type ReleaseUpdateAvailability = "true" | "false" | "unknown";
+type ReleaseSignalWindow = {
+  artifact_downloads: number;
+  artifact_downloads_by_release: ReleaseDownloadSummaryRow[];
+  update_checks: number;
+  update_checks_with_known_client_version: number;
+  update_checks_unknown_client_version: number;
+  update_available_impressions: number;
+  latest_version_checkins: number;
+};
+type ReleaseSignalsSummary = {
+  today: ReleaseSignalWindow;
+  last_7_days: ReleaseSignalWindow;
+  last_30_days: ReleaseSignalWindow;
+};
+type ReleaseUpdateSignalAggregateRow = {
+  update_checks?: number | null;
+  update_checks_with_known_client_version?: number | null;
+  update_checks_unknown_client_version?: number | null;
+  update_available_impressions?: number | null;
+  latest_version_checkins?: number | null;
+};
 type TrafficTotals = { row_count: number; visits: number | null; requests: number | null };
 type TrafficRow = { day: string; visits: number | null; requests: number; captured_at: string };
 type PageviewInput = {
@@ -365,7 +388,8 @@ const MANIFEST_KEY = "manifest/core/stable.json";
 const PAGEVIEW_METRICS_PATH = "/metrics/pageview"; // BUS Core legacy-only ingest path.
 const SITE_EVENT_METRICS_PATH = "/metrics/event"; // Canonical fleet ingest path.
 const RELEASE_PATH = /^\/releases\/([^/]+)$/;
-const RELEASE_FILENAME = /^(?:TGC-)?BUS-Core-[0-9]+\.[0-9]+\.[0-9]+\.zip$/;
+const RELEASE_FILENAME = /^(?:TGC-)?BUS-Core-([0-9]+\.[0-9]+\.[0-9]+)\.zip$/;
+const SEMVER_PATTERN = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/;
 const CLOUDFLARE_GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 const BUSCORE_HOST: string =
   TRACKED_SITES.find((s) => s.site_key === "buscore")?.cloudflare_host ?? "buscore.ca";
@@ -384,6 +408,8 @@ const SITE_EVENT_RATE_LIMIT_RETENTION_DAYS = 2;
 const TOP_PAGEVIEW_DIMENSION_LIMIT = 5;
 const DIRECT_SOURCE_LABEL = "(direct)";
 const EARLIEST_REPORT_DAY = "0000-01-01";
+const UNKNOWN_VERSION_BUCKET = "unknown";
+const UNKNOWN_CHANNEL_BUCKET = "unknown";
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGEVIEW_ALLOWED_DEVICES = new Set(["desktop", "mobile", "tablet"]);
 const PAGEVIEW_VIEWPORT_PATTERN = /^\d+x\d+$/;
@@ -460,6 +486,76 @@ function nullIfBlank(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function normalizeSemver(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const match = value.trim().match(SEMVER_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  return `${Number.parseInt(match[1], 10)}.${Number.parseInt(match[2], 10)}.${Number.parseInt(match[3], 10)}`;
+}
+
+function compareSemver(left: string, right: string): number {
+  const leftMatch = left.match(SEMVER_PATTERN);
+  const rightMatch = right.match(SEMVER_PATTERN);
+  if (!leftMatch || !rightMatch) {
+    return 0;
+  }
+
+  for (let index = 1; index <= 3; index += 1) {
+    const leftPart = Number.parseInt(leftMatch[index], 10);
+    const rightPart = Number.parseInt(rightMatch[index], 10);
+    if (leftPart !== rightPart) {
+      return leftPart - rightPart;
+    }
+  }
+
+  return 0;
+}
+
+function extractReleaseVersionFromFilename(filename: string): string | null {
+  const match = filename.match(RELEASE_FILENAME);
+  return match ? normalizeSemver(match[1]) : null;
+}
+
+function normalizeChannelSignal(value: string | null): string {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : UNKNOWN_CHANNEL_BUCKET;
+}
+
+function resolveClientVersionSignal(url: URL, request: Request): string | null {
+  return (
+    nullIfBlank(url.searchParams.get("current_version")) ??
+    nullIfBlank(url.searchParams.get("version")) ??
+    nullIfBlank(request.headers.get("X-BUS-Core-Version"))
+  );
+}
+
+function resolveChannelSignal(url: URL, request: Request): string {
+  return normalizeChannelSignal(
+    nullIfBlank(url.searchParams.get("channel")) ?? nullIfBlank(request.headers.get("X-BUS-Core-Channel"))
+  );
+}
+
+function resolveUpdateAvailability(
+  clientVersion: string | null,
+  latestVersion: string | null
+): ReleaseUpdateAvailability {
+  if (!clientVersion || !latestVersion) {
+    return "unknown";
+  }
+
+  return compareSemver(latestVersion, clientVersion) > 0 ? "true" : "false";
+}
+
+function shouldCountArtifactDownload(request: Request): boolean {
+  return request.method === "GET" && !request.headers.has("Range");
 }
 
 function getSiteByKey(siteKey: string): TrackedSite | undefined {
@@ -986,6 +1082,36 @@ async function incrementCounter(db: D1Database, day: string, column: CounterColu
     .run();
 }
 
+async function incrementReleaseDownloadCounter(
+  db: D1Database,
+  day: string,
+  filename: string,
+  releaseVersion: string
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO release_downloads_daily(day, filename, release_version, downloads) VALUES (?, ?, ?, 1) ON CONFLICT(day, filename, release_version) DO UPDATE SET downloads = downloads + 1"
+    )
+    .bind(day, filename, releaseVersion)
+    .run();
+}
+
+async function incrementReleaseUpdateCheckCounter(
+  db: D1Database,
+  day: string,
+  channel: string,
+  clientVersion: string,
+  latestVersion: string,
+  updateAvailable: ReleaseUpdateAvailability
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO release_update_checks_daily(day, channel, client_version, latest_version, update_available, checks) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(day, channel, client_version, latest_version, update_available) DO UPDATE SET checks = checks + 1"
+    )
+    .bind(day, channel, clientVersion, latestVersion, updateAvailable)
+    .run();
+}
+
 async function incrementErrorCounterBestEffort(db: D1Database, day: string): Promise<void> {
   try {
     await incrementCounter(db, day, "errors");
@@ -1010,6 +1136,27 @@ function extractLatestDownloadUrl(manifest: Record<string, unknown>): string | n
   const download = latest?.download as Record<string, unknown> | undefined;
   const value = download?.url;
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function extractLatestManifestVersion(manifest: Record<string, unknown>): string | null {
+  const latest = manifest.latest as Record<string, unknown> | undefined;
+  const fromManifest = normalizeSemver(typeof latest?.version === "string" ? latest.version : null);
+  if (fromManifest) {
+    return fromManifest;
+  }
+
+  const latestUrl = extractLatestDownloadUrl(manifest);
+  if (!latestUrl) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(latestUrl, "https://lighthouse.invalid");
+    const filename = parsed.pathname.split("/").pop() ?? "";
+    return extractReleaseVersionFromFilename(filename);
+  } catch {
+    return null;
+  }
 }
 
 export function isValidReleaseArtifactUrl(rawUrl: string): boolean {
@@ -1044,6 +1191,71 @@ async function queryTotalsInRange(db: D1Database, startDay: string, endDay: stri
     .first<MetricTotals>();
 
   return row ?? { update_checks: 0, downloads: 0, errors: 0 };
+}
+
+async function queryReleaseDownloadTotalsInRange(db: D1Database, startDay: string, endDay: string): Promise<number> {
+  const row = await db
+    .prepare(
+      "SELECT COALESCE(SUM(downloads),0) AS artifact_downloads FROM release_downloads_daily WHERE day >= ? AND day <= ?"
+    )
+    .bind(startDay, endDay)
+    .first<{ artifact_downloads: number }>();
+
+  return row?.artifact_downloads ?? 0;
+}
+
+async function queryReleaseDownloadBreakdownInRange(
+  db: D1Database,
+  startDay: string,
+  endDay: string
+): Promise<ReleaseDownloadSummaryRow[]> {
+  const rows = await db
+    .prepare(
+      "SELECT release_version, filename, SUM(downloads) AS downloads FROM release_downloads_daily WHERE day >= ? AND day <= ? GROUP BY release_version, filename ORDER BY downloads DESC, release_version DESC, filename ASC"
+    )
+    .bind(startDay, endDay)
+    .all<ReleaseDownloadSummaryRow>();
+
+  return rows.results ?? [];
+}
+
+async function queryReleaseUpdateSignalsInRange(
+  db: D1Database,
+  startDay: string,
+  endDay: string
+): Promise<Omit<ReleaseSignalWindow, "artifact_downloads" | "artifact_downloads_by_release">> {
+  const row = await db
+    .prepare(
+      "SELECT COALESCE(SUM(checks),0) AS update_checks, COALESCE(SUM(CASE WHEN client_version != ? THEN checks ELSE 0 END),0) AS update_checks_with_known_client_version, COALESCE(SUM(CASE WHEN client_version = ? THEN checks ELSE 0 END),0) AS update_checks_unknown_client_version, COALESCE(SUM(CASE WHEN update_available = 'true' THEN checks ELSE 0 END),0) AS update_available_impressions, COALESCE(SUM(CASE WHEN update_available = 'false' AND client_version = latest_version AND client_version != ? THEN checks ELSE 0 END),0) AS latest_version_checkins FROM release_update_checks_daily WHERE day >= ? AND day <= ?"
+    )
+    .bind(UNKNOWN_VERSION_BUCKET, UNKNOWN_VERSION_BUCKET, UNKNOWN_VERSION_BUCKET, startDay, endDay)
+    .first<ReleaseUpdateSignalAggregateRow>();
+
+  return {
+    update_checks: row?.update_checks ?? 0,
+    update_checks_with_known_client_version: row?.update_checks_with_known_client_version ?? 0,
+    update_checks_unknown_client_version: row?.update_checks_unknown_client_version ?? 0,
+    update_available_impressions: row?.update_available_impressions ?? 0,
+    latest_version_checkins: row?.latest_version_checkins ?? 0,
+  };
+}
+
+async function buildReleaseSignalWindow(
+  db: D1Database,
+  startDay: string,
+  endDay: string
+): Promise<ReleaseSignalWindow> {
+  const [artifactDownloads, artifactDownloadBreakdown, updateSignals] = await Promise.all([
+    queryReleaseDownloadTotalsInRange(db, startDay, endDay),
+    queryReleaseDownloadBreakdownInRange(db, startDay, endDay),
+    queryReleaseUpdateSignalsInRange(db, startDay, endDay),
+  ]);
+
+  return {
+    artifact_downloads: artifactDownloads,
+    artifact_downloads_by_release: artifactDownloadBreakdown,
+    ...updateSignals,
+  };
 }
 
 async function queryTrafficTotalsInRange(db: D1Database, startDay: string, endDay: string): Promise<TrafficTotals> {
@@ -2354,6 +2566,7 @@ export function assembleLegacyReport(input: {
   today: MetricTotals;
   yesterday: MetricTotals;
   last7Days: MetricTotals;
+  last30Days: MetricTotals;
   previous7Days: MetricTotals;
   monthToDate: MetricTotals;
   latestTraffic: TrafficRow | null;
@@ -2371,6 +2584,7 @@ export function assembleLegacyReport(input: {
   topSources: Array<{ source: string; pageviews: number }>;
   identity: IdentitySummary;
   siteEvents: SiteEventSummary | null;
+  releaseSignals: ReleaseSignalsSummary;
 }) {
   const humanTraffic = {
     today: {
@@ -2390,6 +2604,7 @@ export function assembleLegacyReport(input: {
     today: input.today,
     yesterday: input.yesterday,
     last_7_days: input.last7Days,
+    last_30_days: input.last30Days,
     month_to_date: input.monthToDate,
     trends: {
       downloads_change_percent: percentChange(input.today.downloads, input.yesterday.downloads),
@@ -2408,8 +2623,10 @@ export function assembleLegacyReport(input: {
       today: input.today,
       yesterday: input.yesterday,
       last_7_days: input.last7Days,
+      last_30_days: input.last30Days,
       month_to_date: input.monthToDate,
     },
+    release_signals: input.releaseSignals,
     identity: input.identity,
     site_events: input.siteEvents,
   };
@@ -2445,6 +2662,7 @@ function reportDayBounds(now: Date): {
   todayDay: string;
   yesterdayDay: string;
   last7StartDay: string;
+  last30StartDay: string;
   previous7StartDay: string;
   previous7EndDay: string;
   monthStartDay: string;
@@ -2453,6 +2671,7 @@ function reportDayBounds(now: Date): {
     todayDay: utcDay(now),
     yesterdayDay: utcDay(addUtcDays(now, -1)),
     last7StartDay: utcDay(addUtcDays(now, -6)),
+    last30StartDay: utcDay(addUtcDays(now, -29)),
     previous7StartDay: utcDay(addUtcDays(now, -13)),
     previous7EndDay: utcDay(addUtcDays(now, -7)),
     monthStartDay: utcMonthStart(now),
@@ -2547,7 +2766,7 @@ async function buildLegacyReport(
   now: Date,
   siteEventFilter: SiteEventFilter | null
 ): Promise<ReturnType<typeof assembleLegacyReport>> {
-  const { todayDay, yesterdayDay, last7StartDay, previous7StartDay, previous7EndDay, monthStartDay } = reportDayBounds(now);
+  const { todayDay, yesterdayDay, last7StartDay, last30StartDay, previous7StartDay, previous7EndDay, monthStartDay } = reportDayBounds(now);
   const siteEventSummaryPromise = siteEventFilter
     ? buildSiteEventSummary(db, siteEventFilter, last7StartDay, todayDay)
     : Promise.resolve<SiteEventSummary | null>(null);
@@ -2556,6 +2775,7 @@ async function buildLegacyReport(
     today,
     yesterday,
     last7Days,
+    last30Days,
     previous7Days,
     monthToDate,
     latestTraffic,
@@ -2569,10 +2789,14 @@ async function buildLegacyReport(
     identityEvents,
     firstSeenByIdentity,
     siteEvents,
+    todayReleaseSignals,
+    last7ReleaseSignals,
+    last30ReleaseSignals,
   ] = await Promise.all([
     queryTotalsInRange(db, todayDay, todayDay),
     queryTotalsInRange(db, yesterdayDay, yesterdayDay),
     queryTotalsInRange(db, last7StartDay, todayDay),
+    queryTotalsInRange(db, last30StartDay, todayDay),
     queryTotalsInRange(db, previous7StartDay, previous7EndDay),
     queryTotalsInRange(db, monthStartDay, todayDay),
     queryLatestTrafficRow(db),
@@ -2586,6 +2810,9 @@ async function buildLegacyReport(
     queryAcceptedIdentityEventsInRange(db, last7StartDay, todayDay),
     queryIdentityFirstSeen(db),
     siteEventSummaryPromise,
+    buildReleaseSignalWindow(db, todayDay, todayDay),
+    buildReleaseSignalWindow(db, last7StartDay, todayDay),
+    buildReleaseSignalWindow(db, last30StartDay, todayDay),
   ]);
 
   const identity = summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, last7StartDay);
@@ -2594,6 +2821,7 @@ async function buildLegacyReport(
     today,
     yesterday,
     last7Days,
+    last30Days,
     previous7Days,
     monthToDate,
     latestTraffic,
@@ -2606,6 +2834,11 @@ async function buildLegacyReport(
     topSources,
     identity,
     siteEvents,
+    releaseSignals: {
+      today: todayReleaseSignals,
+      last_7_days: last7ReleaseSignals,
+      last_30_days: last30ReleaseSignals,
+    },
   });
 }
 
@@ -2978,10 +3211,21 @@ export default {
 
     if (url.pathname === "/update/check") {
       try {
-        if (!shouldSkipCounting(getClientIp(request), env.IGNORED_IP)) {
-          await incrementCounter(env.DB, day, "update_checks");
-        }
         const manifest = await readManifestFromR2(env);
+        if (!shouldSkipCounting(getClientIp(request), env.IGNORED_IP)) {
+          const latestVersion = extractLatestManifestVersion(manifest.parsed) ?? UNKNOWN_VERSION_BUCKET;
+          const clientVersion = normalizeSemver(resolveClientVersionSignal(url, request)) ?? UNKNOWN_VERSION_BUCKET;
+          const channel = resolveChannelSignal(url, request);
+          const updateAvailable = resolveUpdateAvailability(
+            clientVersion === UNKNOWN_VERSION_BUCKET ? null : clientVersion,
+            latestVersion === UNKNOWN_VERSION_BUCKET ? null : latestVersion
+          );
+
+          await Promise.all([
+            incrementCounter(env.DB, day, "update_checks"),
+            incrementReleaseUpdateCheckCounter(env.DB, day, channel, clientVersion, latestVersion, updateAvailable),
+          ]);
+        }
         return withCors(
           request,
           new Response(manifest.raw, {
@@ -3000,9 +3244,6 @@ export default {
 
     if (url.pathname === "/download/latest") {
       try {
-        if (!shouldSkipCounting(getClientIp(request), env.IGNORED_IP)) {
-          await incrementCounter(env.DB, day, "downloads");
-        }
         const manifest = await readManifestFromR2(env);
         const latestUrl = extractLatestDownloadUrl(manifest.parsed);
         const redirectUrl = latestUrl ? toAbsoluteReleaseUrl(latestUrl, url.origin) : null;
@@ -3030,6 +3271,16 @@ export default {
       const object = await env.MANIFEST_R2.get(`releases/${filename}`);
       if (!object) {
         return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
+      }
+
+      if (!shouldSkipCounting(getClientIp(request), env.IGNORED_IP) && shouldCountArtifactDownload(request)) {
+        const releaseVersion = extractReleaseVersionFromFilename(filename);
+        if (releaseVersion) {
+          await Promise.all([
+            incrementCounter(env.DB, day, "downloads"),
+            incrementReleaseDownloadCounter(env.DB, day, filename, releaseVersion),
+          ]);
+        }
       }
 
       const headers = new Headers();
