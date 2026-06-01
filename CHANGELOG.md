@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.16.0] - 2026-06-01
+
+### Added
+- Add a BUS Core `operator_summary` section to `GET /report?view=site&site_key=buscore` with aggregate-only source-to-lead, source-to-intent, conversion, telemetry-health, and short operator-note fields for the current 7-day window.
+- Add optional `BUSCORE_LEADS_DB` D1 binding to read early-access lead attribution aggregates from `early_access_leads` without exposing lead emails or persistent analytics identifiers.
+- Report BUS Core site-specific counted-intent extension events (`download_click`, `early_access_submit_success`, `github_click`, `discord_click`, `support_click`, `docs_click`) from existing `site_events_raw` data.
+
+### Notes
+- Runtime behavior changed: yes — `view=site` for BUS Core now includes additive `operator_summary` when reports are requested.
+- BUS Core behavior/contract/telemetry shape changed: additive only. Existing `/report`, `/metrics/event`, `/metrics/pageview`, and pageview ingestion behavior are preserved.
+- Discord behavior changed: no. Lighthouse still has no outbound Discord webhook/posting integration; the new block is the aggregate operator report surface that a future approved sender could consume.
+- Privacy: the report uses aggregates only and does not include lead emails, raw IPs, hashed IPs, user-agent hashes, `bc_uid`, `bc_sid`, `anon_user_id`, or `session_id`.
+
 ## [1.15.0] - 2026-04-27
 
 ### Changed

@@ -341,6 +341,124 @@ test("assembleSiteReport includes support metadata and explicit null identity fo
   assert.equal(payload.identity, null);
 });
 
+test("assembleSiteReport can carry BUS Core aggregate operator summary without PII", () => {
+  const payload = assembleSiteReport({
+    generated_at: "2026-06-01T12:00:00.000Z",
+    scope: {
+      site_key: "buscore",
+      label: "BUS Core",
+      status: "active",
+      backend_source: "pageview_daily+site_events_raw+buscore_traffic_daily",
+      window: {
+        start_day: "2026-05-26",
+        end_day: "2026-06-01",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      exclude_test_mode: true,
+      production_only: false,
+      support_class: "legacy_hybrid",
+      section_availability: {
+        summary: true,
+        today: true,
+        traffic: true,
+        human_traffic_events: true,
+        observability: true,
+        identity: true,
+        read: true,
+      },
+    },
+    summary: {
+      accepted_events_7d: 6,
+      pageviews_7d: 20,
+      traffic_requests_7d: 30,
+      traffic_visits_7d: 10,
+      last_received_at: "2026-06-01T11:00:00.000Z",
+      has_recent_signal: true,
+    },
+    traffic: {
+      cloudflare_traffic_enabled: true,
+      latest_day: { day: "2026-05-31", visits: 10, requests: 30, captured_at: "2026-06-01T00:05:00.000Z" },
+      last_7_days: {
+        visits: 10,
+        requests: 30,
+        avg_daily_visits: 10,
+        avg_daily_requests: 30,
+        days_with_data: 1,
+      },
+    },
+    events: {
+      accepted_events: 6,
+      unique_paths: 2,
+      by_event_name: [{ event_name: "download_click", events: 3 }],
+      top_paths: [{ path: "/downloads.html", events: 3 }],
+      top_sources: [{ source: "linkedin", events: 4 }],
+      top_campaigns: [{ utm_campaign: "beta_post", events: 3 }],
+      top_referrers: [],
+      top_contents: [],
+    },
+    legacy_pageview: {
+      pageviews_7d: 20,
+      days_with_data: 1,
+      last_received_at: "2026-06-01T10:00:00.000Z",
+    },
+    identity: null,
+    operator_summary: {
+      window: {
+        start_day: "2026-05-26",
+        end_day: "2026-06-01",
+        timezone: "UTC",
+        semantics: "current_utc_day_plus_previous_6_days",
+      },
+      source_to_lead: {
+        available: true,
+        top_sources_by_early_access_leads: [{ source: "linkedin", count: 2 }],
+        top_campaigns_by_early_access_leads: [{ utm_campaign: "beta_post", count: 2 }],
+        direct_unknown_leads: 1,
+      },
+      source_to_intent: {
+        top_sources_by_download_click: [{ source: "linkedin", events: 3 }],
+        top_sources_by_early_access_submit_success: [{ source: "linkedin", events: 2 }],
+        top_sources_by_github_click: [],
+        top_sources_by_discord_click: [],
+        top_sources_by_support_click: [],
+        top_sources_by_docs_click: [],
+      },
+      conversion_summary: {
+        page_views_by_source: [{ source: "linkedin", pageviews: 10 }],
+        counted_intent_by_source: [{ source: "linkedin", events: 5 }],
+        leads_by_source: [{ source: "linkedin", leads: 2 }],
+        conversion_by_source: [{ source: "linkedin", pageviews: 10, counted_intent: 5, leads: 2, lead_conversion_percent: 20 }],
+      },
+      telemetry_health: {
+        last_received_event_timestamp: "2026-06-01T11:00:00.000Z",
+        accepted_events_in_window: 6,
+        dropped_rate_limited_count: 0,
+        warning: null,
+      },
+      operator_note: {
+        best_source_this_period: "Best source this period: linkedin",
+        weak_unknown_attribution: "Weak/unknown attribution: 1 leads",
+      },
+    },
+    health: {
+      last_received_at: "2026-06-01T11:00:00.000Z",
+      included_events: 6,
+      excluded_test_mode: 0,
+      excluded_non_production_host: 0,
+      dropped_rate_limited: 0,
+      dropped_invalid: 0,
+      cloudflare_traffic_enabled: true,
+      production_only_default: false,
+    },
+  });
+
+  assert.equal(payload.operator_summary.source_to_lead.top_sources_by_early_access_leads[0].source, "linkedin");
+  assert.equal(payload.operator_summary.conversion_summary.conversion_by_source[0].lead_conversion_percent, 20);
+  const serialized = JSON.stringify(payload.operator_summary);
+  assert.doesNotMatch(serialized, /owner@example\.com|bc_uid|bc_sid|anon_user_id|session_id|ip_hash|user_agent_hash/i);
+});
+
 // ---------------------------------------------------------------------------
 // Star Map reporting path — production-host filtering and observability
 // ---------------------------------------------------------------------------

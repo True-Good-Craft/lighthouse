@@ -33,6 +33,8 @@ Lighthouse currently does six things:
 5. Exposes protected, on-demand aggregate reporting.
 6. Pulls one daily Buscore traffic snapshot from the Cloudflare GraphQL Analytics API into D1 on a scheduled cron.
 
+For BUS Core, the authenticated site report also includes an aggregate-only `operator_summary` that combines Lighthouse counted-intent events with early-access lead attribution totals when the optional `BUSCORE_LEADS_DB` binding is configured. It does not post to Discord.
+
 It does not implement retries, unload analytics, or a broad analytics warehouse.
 It exposes limited anonymous continuity and identity-style reporting only where supported (BUS Core legacy_hybrid), while `event_only` sites keep identity as `null`.
 
@@ -346,6 +348,7 @@ Additional authenticated view modes:
 ```
 
 - `GET /report?view=site&site_key=<site_key>`
+- BUS Core `view=site` includes additive `operator_summary` for source-to-lead, source-to-intent, conversion, telemetry health, and operator-note aggregates over the 7-day report window.
 
 ```json
 {
@@ -493,6 +496,8 @@ Rules:
 - These four labels must be kept distinct in all reporting. They must not be blended or treated as equivalent.
 - Physical storage table names are unchanged: `site_events_raw`, `pageview_daily`, `buscore_traffic_daily`, `metrics_daily`.
 - `page_execution_events` and `events` in `view=site` carry identical data. `events` is retained as a backward-compatibility alias.
+- BUS Core `operator_summary` is aggregate-only. It may include top lead sources/campaigns from `early_access_leads`, counted-intent event sources for `download_click`, `early_access_submit_success`, `github_click`, `discord_click`, `support_click`, and `docs_click`, pageview/intent/lead conversion rows, telemetry health, and two short operator-note strings. If lead attribution is unavailable, the section says so rather than faking zeroes.
+- `operator_summary` must not include lead emails, raw event dumps, `bc_uid`, `bc_sid`, `anon_user_id`, `session_id`, raw IPs, hashed IPs, or user-agent hashes.
 - `legacy_pageview` and `human_traffic` in bare `/report` carry identical data. `human_traffic` is retained as a backward-compatibility alias.
 - `traffic_layer.enabled` is `false` for sites without Cloudflare traffic capture. When disabled, traffic values remain `null` and are never faked.
 
@@ -638,6 +643,7 @@ Lighthouse is on-demand only.
 - Daily cron trigger captures one previous completed UTC day Buscore traffic snapshot from the Cloudflare GraphQL Analytics API.
 - The same scheduled execution also prunes raw pageview events older than about 30 UTC days and stale rate-limit buckets older than about 2 days.
 - No outbound Discord posting.
+- Discord report handling remains local/operator-report only. Lighthouse does not create or send Discord webhook messages unless a future SOT change explicitly approves an outbound integration.
 
 Traffic capture notes:
 - The cron always queries the previous completed UTC day. It never queries the current UTC day and never stores rolling-window snapshots.

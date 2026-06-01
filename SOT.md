@@ -5,7 +5,7 @@
   - Lighthouse is a single Cloudflare Worker that acts as a minimal, privacy-first, aggregate-first stats source with a multi-site event ingestion spine and a legacy BUS Core pageview ingestion path.
 - Lighthouse is a generic, deterministic metrics primitive; BUS Core is a current observed client/use-case, not a runtime dependency.
 - It serves/proxies manifest data from R2, records daily aggregate counters in D1, records daily Buscore traffic snapshots in D1, accepts first-party pageview events into D1, and exposes an admin-protected multi-view `GET /report` endpoint.
-- It does not post reports to Discord.
+- It does not post reports to Discord. Discord/operator report requirements are satisfied by authenticated local report payloads unless an outbound sender is explicitly approved in this SOT.
 - Runtime surface: Worker `fetch` handler plus one scheduled daily traffic capture and retention handler.
 
 ### Version and Release Authority
@@ -184,7 +184,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - `production_only` defaulting is per tracked-site declaration, not one hard global runtime constant. BUS Core is explicitly grandfathered as the legacy-hybrid exception with `production_only_default = false`; Star Map and TGC remain `true`.
   - If legacy `/report` omits `site_key`, `site_events` is `null` to avoid silently blending multiple tracked sites.
   - `GET /report?view=fleet` returns `{ view, generated_at, sites }` for all tracked properties.
-  - `GET /report?view=site&site_key=<site_key>` returns `{ view, generated_at, scope, summary, traffic, events, identity, health }` for exactly one tracked property and accepts the same `exclude_test_mode` and `production_only` flags as the legacy `site_events` scope.
+  - `GET /report?view=site&site_key=<site_key>` returns `{ view, generated_at, scope, summary, traffic, events, identity, health }` for exactly one tracked property and accepts the same `exclude_test_mode` and `production_only` flags as the legacy `site_events` scope. For BUS Core only, it also returns additive `operator_summary`.
   - `GET /report?view=source_health` returns `{ view, generated_at, sites }` as a telemetry-integrity view.
   - Invalid `view` returns `400` JSON `{ "ok": false, "error": "invalid_view" }`.
   - `view=site` without `site_key` returns `400` JSON `{ "ok": false, "error": "missing_site_key" }`.
@@ -230,6 +230,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Table: `pageview_daily_dim`
 - Table: `pageview_rate_limit`
 - Table: `site_events_raw`
+- Optional external read binding: `BUSCORE_LEADS_DB`, pointing at the BUS Core site `early_access_leads` D1 database for aggregate operator reporting only.
 - Table: `site_event_rate_limit`
 - Table: `release_downloads_daily`
 - Table: `release_update_checks_daily`
@@ -255,6 +256,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `pageview_rate_limit` stores approximate per-minute IP-hash counters only for ingestion noise control and has no reporting role.
 - `site_event_rate_limit` stores approximate per-minute IP-hash counters only for standardized event ingestion noise control and has no reporting role.
 - `site_events_raw` stores append-only multi-site event submissions with standard enrichment fields. `site_key` is the per-site discriminator for report isolation. `event_name` identifies the event type within a site. `accepted = 1` means the event was accepted and persisted. `drop_reason` currently uses `rate_limited` for standardized ingest drops. `ip_hash` and `user_agent_hash` are SHA-256 hashes when source values are present; raw values are never stored.
+- `BUSCORE_LEADS_DB` is read only by the BUS Core `operator_summary` report path. It aggregates `early_access_leads` attribution columns (`src`, `utm_source`, `utm_campaign`, `referrer_domain`, and timestamps) and never returns lead emails, workflow details, analytics IDs, IP addresses, hashed IPs, user-agent hashes, or raw lead rows.
 - `release_downloads_daily` stores one row per day, filename, and release version for successful Lighthouse-served artifact handouts.
 - `release_update_checks_daily` stores one row per day, channel, client version bucket, latest manifest version bucket, and `update_available` state for successful `GET /update/check` responses.
 
@@ -341,6 +343,10 @@ These terms must be kept distinct in all reporting surfaces. They must not be bl
 - `view=site.scope.support_class` exposes the deterministic normalization support class for the selected site.
 - `view=site.scope.section_availability` exposes deterministic section support flags by support class.
 - `view=site.identity` is populated only for support classes with identity support (currently `legacy_hybrid` via BUS Core pageview continuity) and returns `null` for event-only support classes.
+- `view=site.operator_summary` is populated only for BUS Core. It uses the current UTC day plus previous six UTC days and contains aggregate-only sections: `source_to_lead`, `source_to_intent`, `conversion_summary`, `telemetry_health`, and `operator_note`. Lead attribution is read from `BUSCORE_LEADS_DB` when configured; if unavailable, lead fields report `not available` or `No attributed leads recorded yet.` rather than synthetic zeroes.
+- `operator_summary.source_to_lead` reports top sources by early-access leads, top campaigns by early-access leads, and direct/unknown lead count. `operator_summary.source_to_intent` reports top sources for BUS Core extension-layer events `download_click`, `early_access_submit_success`, `github_click`, `discord_click`, `support_click`, and `docs_click` when present.
+- `operator_summary.conversion_summary` reports page views by source, counted intent by source, leads by source, and simple lead conversion percentages only where the pageview denominator is available. `operator_summary.telemetry_health` reports last received standardized event timestamp, accepted events in the window, persisted rate-limited drops, and a warning when no recent signal exists.
+- `operator_summary` does not expose PII or persistent identifiers. It must not include lead emails, `bc_uid`, `bc_sid`, `anon_user_id`, `session_id`, raw IPs, hashed IPs, user-agent hashes, or raw event dumps.
 - `view=source_health` returns one entry per tracked site with fields `site_key`, `label`, `backend_source`, `cloudflare_traffic_enabled`, `production_only_default`, `last_received_at`, `accepted_signal_7d`, `dropped_invalid`, and `dropped_rate_limited`.
 - `backend_source` is deterministic and reflects the current persisted reporting surfaces actually used by Lighthouse for that site, joined with `+` from this set: `pageview_daily`, `site_events_raw`, `buscore_traffic_daily`.
 - All `*_7d` metrics use the current UTC day plus the previous six UTC days.

@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  BUSCORE_LEADS_DB?: D1Database;
   MANIFEST_R2: R2Bucket;
   ADMIN_TOKEN: string;
   IGNORED_IP: string;
@@ -197,6 +198,52 @@ type LegacyPageviewSummary = {
   days_with_data: number;
   last_received_at: string | null;
 };
+type OperatorSourceCount = { source: string; count: number };
+type OperatorCampaignCount = { utm_campaign: string; count: number };
+type OperatorPageviewSourceCount = { source: string; pageviews: number };
+type OperatorIntentSourceCount = { source: string; events: number };
+type OperatorLeadSourceCount = { source: string; leads: number };
+type OperatorConversionSource = {
+  source: string;
+  pageviews: number | null;
+  counted_intent: number;
+  leads: number | null;
+  lead_conversion_percent: number | null;
+};
+type OperatorSummary = {
+  window: ReportWindow;
+  source_to_lead: {
+    available: boolean;
+    message?: string;
+    top_sources_by_early_access_leads: OperatorSourceCount[] | null;
+    top_campaigns_by_early_access_leads: OperatorCampaignCount[] | null;
+    direct_unknown_leads: number | null;
+  };
+  source_to_intent: {
+    top_sources_by_download_click: OperatorIntentSourceCount[];
+    top_sources_by_early_access_submit_success: OperatorIntentSourceCount[];
+    top_sources_by_github_click: OperatorIntentSourceCount[];
+    top_sources_by_discord_click: OperatorIntentSourceCount[];
+    top_sources_by_support_click: OperatorIntentSourceCount[];
+    top_sources_by_docs_click: OperatorIntentSourceCount[];
+  };
+  conversion_summary: {
+    page_views_by_source: OperatorPageviewSourceCount[] | null;
+    counted_intent_by_source: OperatorIntentSourceCount[];
+    leads_by_source: OperatorLeadSourceCount[] | null;
+    conversion_by_source: OperatorConversionSource[];
+  };
+  telemetry_health: {
+    last_received_event_timestamp: string | null;
+    accepted_events_in_window: number;
+    dropped_rate_limited_count: number;
+    warning: string | null;
+  };
+  operator_note: {
+    best_source_this_period: string;
+    weak_unknown_attribution: string;
+  };
+};
 export type SupportClass = "legacy_hybrid" | "event_only" | "event_plus_cf_traffic" | "not_yet_normalized";
 type SharedEventName = "page_view" | "outbound_click" | "contact_click" | "service_interest";
 type EventTaxonomyKind = "shared" | "extension" | "invalid";
@@ -270,6 +317,7 @@ type SiteReportPayload = {
   events: PageExecutionEventsSummary;
   legacy_pageview: LegacyPageviewSummary | null;
   identity: IdentitySummary | null;
+  operator_summary?: OperatorSummary;
   health: {
     last_received_at: string | null;
     included_events: number;
@@ -1776,6 +1824,249 @@ function summarizeSiteEventTopSources(
     .slice(0, limit);
 }
 
+async function querySiteIntentSourceRows(
+  db: D1Database,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string
+): Promise<Array<{ event_name: string; src: string | null; utm_source: string | null; referrer_domain: string | null }>> {
+  const site = getSiteByKey(filter.siteKey);
+  if (!site) {
+    return [];
+  }
+
+  const base = buildSiteEventFilterWhereClause(filter);
+  const where: string[] = [base.whereSql, "event_name IN ('download_click', 'early_access_submit_success', 'github_click', 'discord_click', 'support_click', 'docs_click')"];
+  const bindings: Array<string | number> = [...base.bindings, startDay, endDay];
+
+  if (filter.productionOnly) {
+    const production = buildProductionHostClause(site);
+    where.push(production.sql);
+    bindings.push(...production.bindings);
+  }
+
+  const rows = await db
+    .prepare(`SELECT event_name, src, utm_source, referrer_domain FROM site_events_raw WHERE ${where.join(" AND ")}`)
+    .bind(...bindings)
+    .all<{ event_name: string; src: string | null; utm_source: string | null; referrer_domain: string | null }>();
+
+  return rows.results ?? [];
+}
+
+function summarizeIntentRowsBySource(
+  rows: Array<{ event_name: string; src: string | null; utm_source: string | null; referrer_domain: string | null }>,
+  eventName: string | null,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): OperatorIntentSourceCount[] {
+  const counts = new Map<string, number>();
+
+  for (const row of rows) {
+    if (eventName && row.event_name !== eventName) {
+      continue;
+    }
+
+    const source = resolveEventSourceLabel(row.src, row.utm_source, row.referrer_domain);
+    counts.set(source, (counts.get(source) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([source, events]) => ({ source, events }))
+    .sort((a, b) => (b.events - a.events) || a.source.localeCompare(b.source))
+    .slice(0, limit);
+}
+
+async function queryLeadSources(
+  db: D1Database,
+  startDay: string,
+  endDay: string,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Promise<OperatorLeadSourceCount[]> {
+  const rows = await db
+    .prepare(
+      "SELECT COALESCE(NULLIF(src, ''), NULLIF(utm_source, ''), NULLIF(referrer_domain, ''), ?) AS source, COUNT(*) AS leads FROM early_access_leads WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) <= ? GROUP BY source ORDER BY leads DESC, source ASC LIMIT ?"
+    )
+    .bind(DIRECT_SOURCE_LABEL, startDay, endDay, limit)
+    .all<OperatorLeadSourceCount>();
+
+  return rows.results ?? [];
+}
+
+async function queryLeadCampaigns(
+  db: D1Database,
+  startDay: string,
+  endDay: string,
+  limit: number = TOP_PAGEVIEW_DIMENSION_LIMIT
+): Promise<OperatorCampaignCount[]> {
+  const rows = await db
+    .prepare(
+      "SELECT utm_campaign, COUNT(*) AS count FROM early_access_leads WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) <= ? AND NULLIF(utm_campaign, '') IS NOT NULL GROUP BY utm_campaign ORDER BY count DESC, utm_campaign ASC LIMIT ?"
+    )
+    .bind(startDay, endDay, limit)
+    .all<OperatorCampaignCount>();
+
+  return rows.results ?? [];
+}
+
+async function queryDirectUnknownLeadCount(db: D1Database, startDay: string, endDay: string): Promise<number> {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM early_access_leads WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) <= ? AND NULLIF(src, '') IS NULL AND NULLIF(utm_source, '') IS NULL AND NULLIF(referrer_domain, '') IS NULL"
+    )
+    .bind(startDay, endDay)
+    .first<{ count: number }>();
+
+  return row?.count ?? 0;
+}
+
+async function buildLeadAttributionSummary(
+  db: D1Database | undefined,
+  startDay: string,
+  endDay: string
+): Promise<{
+  available: boolean;
+  message?: string;
+  topSources: OperatorLeadSourceCount[] | null;
+  topCampaigns: OperatorCampaignCount[] | null;
+  directUnknown: number | null;
+}> {
+  if (!db) {
+    return {
+      available: false,
+      message: "not available: BUSCORE_LEADS_DB binding is not configured",
+      topSources: null,
+      topCampaigns: null,
+      directUnknown: null,
+    };
+  }
+
+  try {
+    const [topSources, topCampaigns, directUnknown] = await Promise.all([
+      queryLeadSources(db, startDay, endDay),
+      queryLeadCampaigns(db, startDay, endDay),
+      queryDirectUnknownLeadCount(db, startDay, endDay),
+    ]);
+
+    return {
+      available: true,
+      message: topSources.length === 0 ? "No attributed leads recorded yet." : undefined,
+      topSources,
+      topCampaigns,
+      directUnknown,
+    };
+  } catch (error) {
+    console.warn("Lead attribution summary unavailable for operator report.", error);
+    return {
+      available: false,
+      message: "not available",
+      topSources: null,
+      topCampaigns: null,
+      directUnknown: null,
+    };
+  }
+}
+
+function buildConversionRows(input: {
+  pageviewsBySource: OperatorPageviewSourceCount[] | null;
+  intentBySource: OperatorIntentSourceCount[];
+  leadsBySource: OperatorLeadSourceCount[] | null;
+}): OperatorConversionSource[] {
+  const sources = new Set<string>();
+  const pageviews = new Map<string, number>();
+  const intents = new Map<string, number>();
+  const leads = new Map<string, number>();
+
+  for (const row of input.pageviewsBySource ?? []) {
+    sources.add(row.source);
+    pageviews.set(row.source, row.pageviews);
+  }
+
+  for (const row of input.intentBySource) {
+    sources.add(row.source);
+    intents.set(row.source, row.events);
+  }
+
+  for (const row of input.leadsBySource ?? []) {
+    sources.add(row.source);
+    leads.set(row.source, row.leads);
+  }
+
+  return Array.from(sources)
+    .map((source) => {
+      const pageviewCount = pageviews.get(source) ?? null;
+      const leadCount = input.leadsBySource === null ? null : (leads.get(source) ?? 0);
+      return {
+        source,
+        pageviews: pageviewCount,
+        counted_intent: intents.get(source) ?? 0,
+        leads: leadCount,
+        lead_conversion_percent: pageviewCount && leadCount !== null ? (leadCount / pageviewCount) * 100 : null,
+      };
+    })
+    .sort((a, b) => ((b.leads ?? 0) - (a.leads ?? 0)) || (b.counted_intent - a.counted_intent) || a.source.localeCompare(b.source));
+}
+
+async function buildOperatorSummary(
+  analyticsDb: D1Database,
+  leadsDb: D1Database | undefined,
+  filter: SiteEventFilter,
+  startDay: string,
+  endDay: string,
+  pageviewsBySource: OperatorPageviewSourceCount[] | null,
+  eventLastReceivedAt: string | null,
+  acceptedEvents: number,
+  droppedRateLimited: number
+): Promise<OperatorSummary> {
+  const [leadSummary, intentRows] = await Promise.all([
+    buildLeadAttributionSummary(leadsDb, startDay, endDay),
+    querySiteIntentSourceRows(analyticsDb, filter, startDay, endDay),
+  ]);
+  const intentBySource = summarizeIntentRowsBySource(intentRows, null);
+  const conversionRows = buildConversionRows({
+    pageviewsBySource,
+    intentBySource,
+    leadsBySource: leadSummary.topSources,
+  });
+  const bestSource = leadSummary.topSources?.[0]?.source ?? intentBySource[0]?.source ?? pageviewsBySource?.[0]?.source ?? "not available";
+  const weakUnknown = leadSummary.directUnknown === null ? "not available" : `${leadSummary.directUnknown} leads`;
+
+  return {
+    window: reportWindow(startDay, endDay),
+    source_to_lead: {
+      available: leadSummary.available,
+      message: leadSummary.message,
+      top_sources_by_early_access_leads: leadSummary.topSources === null
+        ? null
+        : leadSummary.topSources.map((row) => ({ source: row.source, count: row.leads })),
+      top_campaigns_by_early_access_leads: leadSummary.topCampaigns,
+      direct_unknown_leads: leadSummary.directUnknown,
+    },
+    source_to_intent: {
+      top_sources_by_download_click: summarizeIntentRowsBySource(intentRows, "download_click"),
+      top_sources_by_early_access_submit_success: summarizeIntentRowsBySource(intentRows, "early_access_submit_success"),
+      top_sources_by_github_click: summarizeIntentRowsBySource(intentRows, "github_click"),
+      top_sources_by_discord_click: summarizeIntentRowsBySource(intentRows, "discord_click"),
+      top_sources_by_support_click: summarizeIntentRowsBySource(intentRows, "support_click"),
+      top_sources_by_docs_click: summarizeIntentRowsBySource(intentRows, "docs_click"),
+    },
+    conversion_summary: {
+      page_views_by_source: pageviewsBySource,
+      counted_intent_by_source: intentBySource,
+      leads_by_source: leadSummary.topSources,
+      conversion_by_source: conversionRows,
+    },
+    telemetry_health: {
+      last_received_event_timestamp: eventLastReceivedAt,
+      accepted_events_in_window: acceptedEvents,
+      dropped_rate_limited_count: droppedRateLimited,
+      warning: acceptedEvents > 0 ? null : "warning: no recent signal",
+    },
+    operator_note: {
+      best_source_this_period: `Best source this period: ${bestSource}`,
+      weak_unknown_attribution: `Weak/unknown attribution: ${weakUnknown}`,
+    },
+  };
+}
+
 async function buildSiteEventSummary(
   db: D1Database,
   filter: SiteEventFilter,
@@ -2918,6 +3209,7 @@ async function buildFleetReport(db: D1Database, now: Date): Promise<ReturnType<t
 
 async function buildSiteReport(
   db: D1Database,
+  leadsDb: D1Database | undefined,
   now: Date,
   filter: SiteEventFilter
 ): Promise<SiteReportPayload> {
@@ -2932,6 +3224,22 @@ async function buildSiteReport(
 
   const snapshot = await buildSiteSignalSnapshot(db, site, filter, last7StartDay, todayDay);
   const identity = await buildSiteIdentitySection(db, site, todayDay, last7StartDay);
+  const topPageviewSources = siteSupportsLegacyPageviews(site)
+    ? await queryTopPageviewSources(db, last7StartDay, todayDay)
+    : null;
+  const operatorSummary = site.site_key === "buscore"
+    ? await buildOperatorSummary(
+        db,
+        leadsDb,
+        filter,
+        last7StartDay,
+        todayDay,
+        topPageviewSources,
+        snapshot.siteEventSummary.observability.last_received_at,
+        snapshot.siteEventSummary.observability.included_events,
+        snapshot.siteEventSummary.observability.dropped_rate_limited
+      )
+    : undefined;
   const traffic = {
     cloudflare_traffic_enabled: site.cloudflare_traffic_enabled,
     latest_day: latestTrafficWindow(snapshot.latestTraffic),
@@ -2986,6 +3294,7 @@ async function buildSiteReport(
         }
       : null,
     identity,
+    operator_summary: operatorSummary,
     health: {
       last_received_at: snapshot.lastReceivedAt,
       included_events: snapshot.siteEventSummary.observability.included_events,
@@ -3371,7 +3680,7 @@ export default {
             : reportRequest.view === "fleet"
               ? await buildFleetReport(env.DB, now)
               : reportRequest.view === "site"
-                ? await buildSiteReport(env.DB, now, reportRequest.siteEventFilter)
+                ? await buildSiteReport(env.DB, env.BUSCORE_LEADS_DB, now, reportRequest.siteEventFilter)
                 : await buildSourceHealthReport(env.DB, now);
 
         return withCors(
