@@ -19,6 +19,7 @@ import {
   supportsIdentityForSite,
   buildProductionHostClause,
   isValidReleaseArtifactUrl,
+  buildLeadAttributionSummary,
 } from "../dist/index.js";
 
 function emptyReleaseSignals() {
@@ -52,6 +53,116 @@ function emptyReleaseSignals() {
     },
   };
 }
+
+function mockLeadDb({ total = 0, attributed = 0, sources = [], campaigns = [], unknown = 0, fail = false } = {}) {
+  return {
+    prepare(sql) {
+      if (fail) {
+        throw new Error("owner@example.com ip_hash user_agent_hash raw lead failure");
+      }
+
+      return {
+        bind() {
+          return {
+            async first() {
+              if (sql.includes("COUNT(*) AS total")) {
+                return { total, attributed };
+              }
+
+              if (sql.includes("COUNT(*) AS count")) {
+                return { count: unknown };
+              }
+
+              return null;
+            },
+            async all() {
+              if (sql.includes("SELECT COALESCE")) {
+                return { results: sources };
+              }
+
+              if (sql.includes("SELECT utm_campaign")) {
+                return { results: campaigns };
+              }
+
+              return { results: [] };
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+test("buildLeadAttributionSummary reports unavailable when BUSCORE_LEADS_DB is missing", async () => {
+  const summary = await buildLeadAttributionSummary(undefined, "2026-05-27", "2026-06-02");
+
+  assert.equal(summary.available, false);
+  assert.equal(summary.status, "unavailable");
+  assert.equal(summary.errorReason, "binding_not_configured");
+  assert.equal(summary.topSources, null);
+  assert.equal(summary.leadsTotal, null);
+});
+
+test("buildLeadAttributionSummary reports available no-lead state for zero rows", async () => {
+  const summary = await buildLeadAttributionSummary(mockLeadDb(), "2026-05-27", "2026-06-02");
+
+  assert.equal(summary.available, true);
+  assert.equal(summary.status, "no_leads");
+  assert.equal(summary.message, "No leads recorded yet.");
+  assert.equal(summary.leadsTotal, 0);
+  assert.equal(summary.leadsAttributed, 0);
+  assert.equal(summary.leadsUnknown, 0);
+  assert.deepEqual(summary.topSources, []);
+});
+
+test("buildLeadAttributionSummary reports leads with no attributed leads separately", async () => {
+  const summary = await buildLeadAttributionSummary(
+    mockLeadDb({ total: 3, attributed: 0, unknown: 3 }),
+    "2026-05-27",
+    "2026-06-02"
+  );
+
+  assert.equal(summary.available, true);
+  assert.equal(summary.status, "no_attributed_leads");
+  assert.equal(summary.message, "Leads recorded, but no attributed leads yet.");
+  assert.equal(summary.leadsTotal, 3);
+  assert.equal(summary.leadsAttributed, 0);
+  assert.equal(summary.leadsUnknown, 3);
+  assert.deepEqual(summary.topSources, []);
+});
+
+test("buildLeadAttributionSummary returns aggregate top sources and campaigns", async () => {
+  const summary = await buildLeadAttributionSummary(
+    mockLeadDb({
+      total: 6,
+      attributed: 4,
+      unknown: 2,
+      sources: [{ source: "linkedin", leads: 3 }, { source: "github", leads: 1 }],
+      campaigns: [{ utm_campaign: "beta_post", count: 3 }],
+    }),
+    "2026-05-27",
+    "2026-06-02"
+  );
+
+  assert.equal(summary.available, true);
+  assert.equal(summary.status, "available");
+  assert.equal(summary.leadsTotal, 6);
+  assert.equal(summary.leadsAttributed, 4);
+  assert.equal(summary.leadsUnknown, 2);
+  assert.deepEqual(summary.topSources, [{ source: "linkedin", leads: 3 }, { source: "github", leads: 1 }]);
+  assert.deepEqual(summary.topCampaigns, [{ utm_campaign: "beta_post", count: 3 }]);
+});
+
+test("buildLeadAttributionSummary reports query failure without leaking lead data", async () => {
+  const summary = await buildLeadAttributionSummary(mockLeadDb({ fail: true }), "2026-05-27", "2026-06-02");
+
+  assert.equal(summary.available, false);
+  assert.equal(summary.status, "unavailable");
+  assert.equal(summary.errorReason, "query_failed");
+  assert.equal(summary.message, "not available");
+  assert.equal(summary.topSources, null);
+  assert.doesNotMatch(JSON.stringify(summary), /owner@example\.com|ip_hash|user_agent_hash|raw lead/i);
+});
 
 test("normalizeReportView keeps bare /report on the legacy contract", () => {
   assert.equal(normalizeReportView(null), "legacy");

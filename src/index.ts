@@ -210,8 +210,22 @@ type OperatorConversionSource = {
   leads: number | null;
   lead_conversion_percent: number | null;
 };
+type OperatorLeadAttributionStatus = "unavailable" | "no_leads" | "no_attributed_leads" | "available";
+type OperatorLeadAttribution = {
+  status: OperatorLeadAttributionStatus;
+  available: boolean;
+  message: string;
+  leads_7d_total: number | null;
+  leads_7d_attributed: number | null;
+  leads_7d_unknown: number | null;
+  top_sources: OperatorSourceCount[] | null;
+  top_campaigns: OperatorCampaignCount[] | null;
+  attribution_window_days: number;
+  error_reason?: string;
+};
 type OperatorSummary = {
   window: ReportWindow;
+  lead_attribution: OperatorLeadAttribution;
   source_to_lead: {
     available: boolean;
     message?: string;
@@ -1883,9 +1897,9 @@ async function queryLeadSources(
 ): Promise<OperatorLeadSourceCount[]> {
   const rows = await db
     .prepare(
-      "SELECT COALESCE(NULLIF(src, ''), NULLIF(utm_source, ''), NULLIF(referrer_domain, ''), ?) AS source, COUNT(*) AS leads FROM early_access_leads WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) <= ? GROUP BY source ORDER BY leads DESC, source ASC LIMIT ?"
+      "SELECT COALESCE(NULLIF(utm_source, ''), NULLIF(src, ''), NULLIF(referrer_domain, '')) AS source, COUNT(*) AS leads FROM early_access_leads WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) <= ? AND COALESCE(NULLIF(utm_source, ''), NULLIF(src, ''), NULLIF(referrer_domain, '')) IS NOT NULL GROUP BY source ORDER BY leads DESC, source ASC LIMIT ?"
     )
-    .bind(DIRECT_SOURCE_LABEL, startDay, endDay, limit)
+    .bind(startDay, endDay, limit)
     .all<OperatorLeadSourceCount>();
 
   return rows.results ?? [];
@@ -1918,13 +1932,32 @@ async function queryDirectUnknownLeadCount(db: D1Database, startDay: string, end
   return row?.count ?? 0;
 }
 
-async function buildLeadAttributionSummary(
+async function queryLeadAttributionCounts(db: D1Database, startDay: string, endDay: string): Promise<{ total: number; attributed: number }> {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN COALESCE(NULLIF(utm_source, ''), NULLIF(src, ''), NULLIF(referrer_domain, '')) IS NOT NULL THEN 1 ELSE 0 END) AS attributed FROM early_access_leads WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) <= ?"
+    )
+    .bind(startDay, endDay)
+    .first<{ total: number; attributed: number | null }>();
+
+  return {
+    total: row?.total ?? 0,
+    attributed: row?.attributed ?? 0,
+  };
+}
+
+export async function buildLeadAttributionSummary(
   db: D1Database | undefined,
   startDay: string,
   endDay: string
 ): Promise<{
   available: boolean;
-  message?: string;
+  status: OperatorLeadAttributionStatus;
+  message: string;
+  errorReason?: string;
+  leadsTotal: number | null;
+  leadsAttributed: number | null;
+  leadsUnknown: number | null;
   topSources: OperatorLeadSourceCount[] | null;
   topCampaigns: OperatorCampaignCount[] | null;
   directUnknown: number | null;
@@ -1932,7 +1965,12 @@ async function buildLeadAttributionSummary(
   if (!db) {
     return {
       available: false,
+      status: "unavailable",
       message: "not available: BUSCORE_LEADS_DB binding is not configured",
+      errorReason: "binding_not_configured",
+      leadsTotal: null,
+      leadsAttributed: null,
+      leadsUnknown: null,
       topSources: null,
       topCampaigns: null,
       directUnknown: null,
@@ -1940,24 +1978,44 @@ async function buildLeadAttributionSummary(
   }
 
   try {
-    const [topSources, topCampaigns, directUnknown] = await Promise.all([
+    const [counts, topSources, topCampaigns, directUnknown] = await Promise.all([
+      queryLeadAttributionCounts(db, startDay, endDay),
       queryLeadSources(db, startDay, endDay),
       queryLeadCampaigns(db, startDay, endDay),
       queryDirectUnknownLeadCount(db, startDay, endDay),
     ]);
+    const status: OperatorLeadAttributionStatus = counts.total === 0
+      ? "no_leads"
+      : counts.attributed === 0
+        ? "no_attributed_leads"
+        : "available";
+    const message = status === "no_leads"
+      ? "No leads recorded yet."
+      : status === "no_attributed_leads"
+        ? "Leads recorded, but no attributed leads yet."
+        : "Lead attribution available.";
 
     return {
       available: true,
-      message: topSources.length === 0 ? "No attributed leads recorded yet." : undefined,
+      status,
+      message,
+      leadsTotal: counts.total,
+      leadsAttributed: counts.attributed,
+      leadsUnknown: directUnknown,
       topSources,
       topCampaigns,
       directUnknown,
     };
   } catch (error) {
-    console.warn("Lead attribution summary unavailable for operator report.", error);
+    console.warn("Lead attribution summary unavailable for operator report.", error instanceof Error ? error.name : typeof error);
     return {
       available: false,
+      status: "unavailable",
       message: "not available",
+      errorReason: "query_failed",
+      leadsTotal: null,
+      leadsAttributed: null,
+      leadsUnknown: null,
       topSources: null,
       topCampaigns: null,
       directUnknown: null,
@@ -2031,6 +2089,20 @@ async function buildOperatorSummary(
 
   return {
     window: reportWindow(startDay, endDay),
+    lead_attribution: {
+      status: leadSummary.status,
+      available: leadSummary.available,
+      message: leadSummary.message,
+      leads_7d_total: leadSummary.leadsTotal,
+      leads_7d_attributed: leadSummary.leadsAttributed,
+      leads_7d_unknown: leadSummary.leadsUnknown,
+      top_sources: leadSummary.topSources === null
+        ? null
+        : leadSummary.topSources.map((row) => ({ source: row.source, count: row.leads })),
+      top_campaigns: leadSummary.topCampaigns,
+      attribution_window_days: 7,
+      ...(leadSummary.errorReason ? { error_reason: leadSummary.errorReason } : {}),
+    },
     source_to_lead: {
       available: leadSummary.available,
       message: leadSummary.message,

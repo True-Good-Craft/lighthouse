@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.16.1] - 2026-06-02
+
+### Fixed
+- Add explicit BUS Core `operator_summary.lead_attribution` aggregate status output so report consumers can distinguish unavailable lead DB access from available zero-lead and no-attributed-lead states.
+- Count total, attributed, and unknown early-access leads separately over the 7-day report window, while keeping top sources and campaigns aggregate-only and capped at five rows.
+- Sanitize lead attribution query failure reporting to a safe non-PII `query_failed` reason.
+
+### Notes
+- Runtime behavior changed: yes — additive `operator_summary.lead_attribution` fields are now present for BUS Core site reports.
+- Privacy: unchanged. Lighthouse still returns lead aggregates only and does not include lead emails, form answers, user agents, IPs, hashed IPs, `bc_uid`, `bc_sid`, `anon_user_id`, `session_id`, or raw lead rows.
+
 ## [1.16.0] - 2026-06-01
 
 ### Added
