@@ -2993,6 +2993,7 @@ export function assembleLegacyReport(input: {
   identity: IdentitySummary;
   siteEvents: SiteEventSummary | null;
   releaseSignals: ReleaseSignalsSummary;
+  operatorSummary: OperatorSummary | undefined;
 }) {
   const humanTraffic = {
     today: {
@@ -3037,6 +3038,7 @@ export function assembleLegacyReport(input: {
     release_signals: input.releaseSignals,
     identity: input.identity,
     site_events: input.siteEvents,
+    operator_summary: input.operatorSummary,
   };
 }
 
@@ -3171,6 +3173,7 @@ async function buildSiteIdentitySection(
 
 async function buildLegacyReport(
   db: D1Database,
+  leadsDb: D1Database | undefined,
   now: Date,
   siteEventFilter: SiteEventFilter | null
 ): Promise<ReturnType<typeof assembleLegacyReport>> {
@@ -3225,6 +3228,20 @@ async function buildLegacyReport(
 
   const identity = summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, last7StartDay);
 
+  const operatorSummary = siteEventFilter?.siteKey === "buscore"
+    ? await buildOperatorSummary(
+        db,
+        leadsDb,
+        siteEventFilter,
+        last7StartDay,
+        todayDay,
+        topSources,
+        siteEvents?.observability.last_received_at ?? null,
+        siteEvents?.observability.included_events ?? 0,
+        siteEvents?.observability.dropped_rate_limited ?? 0
+      )
+    : undefined;
+
   return assembleLegacyReport({
     today,
     yesterday,
@@ -3247,6 +3264,7 @@ async function buildLegacyReport(
       last_7_days: last7ReleaseSignals,
       last_30_days: last30ReleaseSignals,
     },
+    operatorSummary,
   });
 }
 
@@ -3748,7 +3766,7 @@ export default {
 
         const payload =
           reportRequest.view === "legacy"
-            ? await buildLegacyReport(env.DB, now, reportRequest.siteEventFilter)
+            ? await buildLegacyReport(env.DB, env.BUSCORE_LEADS_DB, now, reportRequest.siteEventFilter)
             : reportRequest.view === "fleet"
               ? await buildFleetReport(env.DB, now)
               : reportRequest.view === "site"

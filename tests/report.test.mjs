@@ -222,6 +222,7 @@ test("assembleLegacyReport preserves the legacy top-level shape", () => {
     },
     siteEvents: null,
     releaseSignals: emptyReleaseSignals(),
+    operatorSummary: undefined,
   });
 
   assert.deepEqual(Object.keys(payload), [
@@ -238,8 +239,76 @@ test("assembleLegacyReport preserves the legacy top-level shape", () => {
     "release_signals",
     "identity",
     "site_events",
+    "operator_summary",
   ]);
   assert.equal("view" in payload, false);
+});
+
+test("assembleLegacyReport can carry BUS Core aggregate operator summary without PII", () => {
+  const payload = assembleLegacyReport({
+    today: { update_checks: 1, downloads: 2, errors: 0 },
+    yesterday: { update_checks: 3, downloads: 4, errors: 0 },
+    last7Days: { update_checks: 5, downloads: 6, errors: 0 },
+    last30Days: { update_checks: 9, downloads: 10, errors: 0 },
+    previous7Days: { update_checks: 2, downloads: 3, errors: 0 },
+    monthToDate: { update_checks: 7, downloads: 8, errors: 0 },
+    latestTraffic: null,
+    last7Traffic: { row_count: 0, visits: 0, requests: 0 },
+    humanToday: { pageviews: 0, last_received_at: null },
+    humanLast7: { pageviews: 0, days_with_data: 0 },
+    humanObservability: { accepted: 0, dropped_rate_limited: 0, dropped_invalid: 0, last_received_at: null },
+    topPaths: [],
+    topReferrers: [],
+    topSources: [],
+    identity: {
+      today: { new_users: 1, returning_users: 2, sessions: 3 },
+      last_7_days: { new_users: 4, returning_users: 5, sessions: 6, return_rate: 0.5 },
+      top_sources_by_returning_users: [],
+    },
+    siteEvents: null,
+    releaseSignals: emptyReleaseSignals(),
+    operatorSummary: {
+      window: { start_day: "2026-05-26", end_day: "2026-06-01", timezone: "UTC", semantics: "current_utc_day_plus_previous_6_days" },
+      lead_attribution: {
+        status: "available",
+        available: true,
+        leads_7d_total: 3,
+        leads_7d_attributed: 2,
+        leads_7d_unknown: 1,
+        top_sources: [{ source: "linkedin", count: 2 }],
+        top_campaigns: [{ utm_campaign: "beta_post", count: 2 }],
+      },
+      source_to_intent: {
+        top_sources_by_download_click: [],
+        top_sources_by_early_access_submit_success: [],
+        top_sources_by_github_click: [],
+        top_sources_by_discord_click: [],
+        top_sources_by_support_click: [],
+        top_sources_by_docs_click: [],
+      },
+      conversion_summary: {
+        page_views_by_source: null,
+        counted_intent_by_source: [],
+        leads_by_source: null,
+        conversion_by_source: [],
+      },
+      telemetry_health: {
+        last_received_event_timestamp: null,
+        accepted_events_in_window: 0,
+        dropped_rate_limited_count: 0,
+        warning: null,
+      },
+      operator_note: {
+        best_source_this_period: "Best source this period: linkedin",
+        weak_unknown_attribution: "Weak/unknown attribution: 1 leads",
+      },
+    },
+  });
+
+  assert.equal(payload.operator_summary.lead_attribution.top_sources[0].source, "linkedin");
+  assert.equal(payload.operator_summary.lead_attribution.leads_7d_total, 3);
+  const serialized = JSON.stringify(payload.operator_summary);
+  assert.doesNotMatch(serialized, /owner@example\.com|bc_uid|bc_sid|anon_user_id|session_id|ip_hash|user_agent_hash/i);
 });
 
 test("assembleFleetReport returns the fleet view shape", () => {
