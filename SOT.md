@@ -23,6 +23,51 @@ Additional constraints:
 - External services may call Lighthouse or consume Lighthouse outputs, but no Lighthouse core feature may require those services to be up.
 - Proposed features that create hard runtime dependencies on external products are out of scope unless reworked to preserve independent operation.
 
+## 1a. Phase 2 Analytics Foundation (v1.17.0)
+
+Phase 2 of `BUS-Core-Analytics-Plan.md`. Additive, aggregate/operator-only, no PII, no new user telemetry. Lighthouse remains the data layer and still does not post to Discord. See `PHASE2_ANALYTICS_NOTES.md`.
+
+Four additive D1 tables and their scheduled writers:
+- `daily_rollup` — one aggregate row per completed UTC day. Writer runs in the daily cron for the **previous completed UTC day** (never partial-day). Reuses existing report query helpers; `wqpi = artifact_downloads + attributed_leads` (same definition as the Phase 1 brief). Missing inputs (e.g. no `BUSCORE_LEADS_DB`) are stored `null`, never faked. `return_rate` is stored `null` (a 7-day windowed metric, not an honest single-day value). Idempotent: `INSERT ... ON CONFLICT(day) DO UPDATE`, `day` is PRIMARY KEY.
+- `campaign_log` — operator-authored community-post annotations. No user data, no lead PII. Indefinite retention. Written via the admin-token-protected `POST /campaign` route; manual `wrangler d1 execute` insert is also supported.
+- `github_snapshots` — daily public GitHub project-health snapshot. Each field fetched under its own guard; unavailable fields stored `null`, never faked. Idempotent per `day`. Stars are a weak signal; cadence/releases/issues/PRs/contributors matter more.
+- `health_checks` — active funnel liveness probes, once per daily cron (low frequency). Each probe is isolated and never throws; a failure records `ok = 0` with a note and cannot break reporting or the rest of the scheduled run. Pruned to ~90 days.
+
+New routes/views:
+- `POST /campaign` — admin-token-protected (same `ADMIN_TOKEN` as `/report`). Operator/aggregate data only. `201 {ok,id}` on success; `401` without token; `400 invalid_json`/`invalid_campaign`; `503 campaign_insert_failed`.
+- `GET /report?view=asset` — admin-protected read of stored Phase 2 aggregates: latest + recent `daily_rollup`, latest `github_snapshots`, latest-per-target `health_checks`, and recent `campaign_log` with downstream event/lead counts joined by `tagged_src`/`utm_campaign`. Skips the best-effort traffic refresh (reads stored aggregates only). Existing `legacy`/`fleet`/`site`/`source_health` views are unchanged.
+
+Scheduling: the existing daily cron `5 0 * * *` now also runs, after traffic capture (so the rollup sees the day's traffic row), the daily-rollup / github-snapshot / health-check / prune writers. Each is independently fail-soft; one failing cannot break the others or core reporting.
+
+Health-probe safety invariants:
+- The update path is validated via the **non-counting manifest read**, never `/update/check` (which would inflate `update_checks`).
+- Artifact reachability uses a **Range `bytes=0-0` GET**, which is excluded from the download counter by design, so probing never inflates `downloads`.
+- The lead endpoint is probed with **GET only** (liveness); Lighthouse never POSTs — no synthetic leads.
+
+Privacy: all four tables are aggregate/operator-authored. No emails, no `bc_uid`/`bc_sid`, no `anon_user_id`/`session_id`, no raw or hashed IPs, no user-agent, no fingerprints. `top_source`/`top_referrer` are channel/domain names, not identities. `view=asset` exposes none of the above.
+
+Configuration additions (both optional): `GITHUB_REPO` (defaults to `True-Good-Craft/TGC-BUS-Core`) and `GITHUB_TOKEN` (optional; raises GitHub API rate limits). Absence degrades GitHub fields to `null`, never fake data.
+
+## 1b. Phase 3 Analytics: Monthly Asset Brief, Scoring, Archival (v1.18.0)
+
+Phase 3 of `BUS-Core-Analytics-Plan.md`. Additive, aggregate-only, no PII, no new telemetry, no AI. Lighthouse remains the data/scoring layer and still does not post to Discord (Agent Smith posts and archives). See `PHASE3_ANALYTICS_NOTES.md`.
+
+Two additive D1 tables (migration `0011_add_phase3_report_and_notes.sql`):
+- `report_snapshots(id, generated_at, kind, status, wqpi, summary_json, narrative)` — dated archive of each generated brief. Aggregate only, indefinite retention.
+- `operator_notes(id, created_at, note, tag)` — operator annotations feeding the monthly narrative.
+
+Deterministic scoring (pure, exported functions; documented weights):
+- `computeProductIntentScore`, `computeCommunityResponseScore`, `computeGithubTrustScore`, `computeReliabilityScore`, `computeLeadQualityScore`, and the composite `computeAcquisitionReadinessScore`.
+- Each returns `{ score: number|null, available, reason, weight, inputs }`.
+- **Honesty invariants (non-negotiable):** a score is `null` (never faked) when its primary input is missing, with a reason such as `awaiting first scheduled rollup` / `insufficient data`; every score carries its raw `inputs` (raw numbers are never hidden); a score is explicitly **not a valuation**; Acquisition Readiness is **capped by Reliability** and returns `null` if Reliability is unavailable; **stars are weighted ≤10%** of GitHub Trust. Downloads are not users; update checks are not active users.
+
+New routes/views (all admin-token-protected, same `ADMIN_TOKEN` as `/report`):
+- `GET /report?view=monthly` — previous completed calendar month's structured asset data: wQPI MoM, downloads, attributed leads + lead quality, known-version check-in average + adoption (labelled proxy), community posts → downstream (per channel), reliability (uptime/errors/freshness), GitHub health, the five scores with inputs, previous-month Acquisition Readiness for the delta, and recent operator notes. Skips the traffic refresh (reads stored aggregates). Missing pieces are `null`/`awaiting first scheduled rollup`, never faked.
+- `POST /notes` — insert an operator note `{ note, tag? }`.
+- `POST /report/snapshot` — archive a generated brief `{ kind (daily|weekly|monthly), status?, wqpi?, summary_json?, narrative? }`.
+
+Privacy: `report_snapshots`, `operator_notes`, and `view=monthly` are aggregate/operator-authored. No emails, `bc_uid`/`bc_sid`, `anon_user_id`/`session_id`, raw or hashed IPs, user-agent, or fingerprints. `summary_json` carries compact aggregate numbers only.
+
 ## 2. Architecture Invariants
 
 The following rules are non-negotiable unless this SOT is explicitly revised:

@@ -6,6 +6,9 @@ export interface Env {
   IGNORED_IP: string;
   CF_API_TOKEN: string;
   CF_ZONE_TAG: string;
+  // Phase 2 (optional, additive). Missing values degrade to null data, never fake.
+  GITHUB_REPO?: string; // defaults to True-Good-Craft/TGC-BUS-Core
+  GITHUB_TOKEN?: string; // optional; raises rate limit and unlocks private fields if ever needed
 }
 
 type CounterColumn = "update_checks" | "downloads" | "errors";
@@ -270,7 +273,7 @@ type SiteSectionAvailability = {
   identity: boolean;
   read: boolean;
 };
-type ReportView = "legacy" | "fleet" | "site" | "source_health";
+type ReportView = "legacy" | "fleet" | "site" | "source_health" | "asset" | "monthly";
 type ReportWindow = {
   start_day: string;
   end_day: string;
@@ -359,6 +362,8 @@ type ReportRequestResolution =
   | { ok: true; view: "fleet" }
   | { ok: true; view: "site"; siteEventFilter: SiteEventFilter }
   | { ok: true; view: "source_health" }
+  | { ok: true; view: "asset" }
+  | { ok: true; view: "monthly" }
   | { ok: false; error: "invalid_view" | "missing_site_key" | "invalid_site_key" };
 type CloudflareGraphQLResponse = {
   data?: {
@@ -801,7 +806,13 @@ export function normalizeReportView(value: string | null): ReportView | null {
     return "legacy";
   }
 
-  if (normalized === "fleet" || normalized === "site" || normalized === "source_health") {
+  if (
+    normalized === "fleet" ||
+    normalized === "site" ||
+    normalized === "source_health" ||
+    normalized === "asset" ||
+    normalized === "monthly"
+  ) {
     return normalized;
   }
 
@@ -3558,17 +3569,1310 @@ function withCors(request: Request, response: Response, allowMethods: string = "
   });
 }
 
+/* =========================================================================
+ * Phase 2 analytics foundation (aggregate/operator only; no PII).
+ * daily_rollup, campaign_log, github_snapshots, health_checks.
+ * All writers are idempotent and independently fail-soft. Lighthouse does
+ * not post to Discord and does not introduce any user telemetry here.
+ * ========================================================================= */
+
+type DailyRollupRow = {
+  day: string;
+  wqpi: number | null;
+  artifact_downloads: number | null;
+  attributed_leads: number | null;
+  leads_total: number | null;
+  update_checks_known: number | null;
+  latest_checkins: number | null;
+  download_clicks: number | null;
+  page_views: number | null;
+  return_rate: number | null;
+  cf_requests: number | null;
+  cf_visits: number | null;
+  errors: number | null;
+  top_source: string | null;
+  top_referrer: string | null;
+  captured_at: string;
+};
+
+type DailyRollupInputs = Omit<DailyRollupRow, "wqpi">;
+
+// wQPI mirrors the Phase 1 brief: artifact_downloads + attributed_leads.
+// Only totalled when BOTH components are available; otherwise null (never faked).
+export function computeDailyRollupRow(inputs: DailyRollupInputs): DailyRollupRow {
+  const wqpi =
+    inputs.artifact_downloads !== null && inputs.attributed_leads !== null
+      ? inputs.artifact_downloads + inputs.attributed_leads
+      : null;
+  return { ...inputs, wqpi };
+}
+
+export const DAILY_ROLLUP_UPSERT_SQL =
+  "INSERT INTO daily_rollup(day, wqpi, artifact_downloads, attributed_leads, leads_total, update_checks_known, latest_checkins, download_clicks, page_views, return_rate, cf_requests, cf_visits, errors, top_source, top_referrer, captured_at) " +
+  "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) " +
+  "ON CONFLICT(day) DO UPDATE SET wqpi=excluded.wqpi, artifact_downloads=excluded.artifact_downloads, attributed_leads=excluded.attributed_leads, leads_total=excluded.leads_total, update_checks_known=excluded.update_checks_known, latest_checkins=excluded.latest_checkins, download_clicks=excluded.download_clicks, page_views=excluded.page_views, return_rate=excluded.return_rate, cf_requests=excluded.cf_requests, cf_visits=excluded.cf_visits, errors=excluded.errors, top_source=excluded.top_source, top_referrer=excluded.top_referrer, captured_at=excluded.captured_at";
+
+async function upsertDailyRollup(db: D1Database, row: DailyRollupRow): Promise<void> {
+  await db
+    .prepare(DAILY_ROLLUP_UPSERT_SQL)
+    .bind(
+      row.day,
+      row.wqpi,
+      row.artifact_downloads,
+      row.attributed_leads,
+      row.leads_total,
+      row.update_checks_known,
+      row.latest_checkins,
+      row.download_clicks,
+      row.page_views,
+      row.return_rate,
+      row.cf_requests,
+      row.cf_visits,
+      row.errors,
+      row.top_source,
+      row.top_referrer,
+      row.captured_at
+    )
+    .run();
+}
+
+async function captureDailyRollup(env: Env, day: string): Promise<void> {
+  const db = env.DB;
+  const [totals, artifactDownloads, updateSignals, traffic, leadCounts] = await Promise.all([
+    queryTotalsInRange(db, day, day),
+    queryReleaseDownloadTotalsInRange(db, day, day),
+    queryReleaseUpdateSignalsInRange(db, day, day),
+    queryTrafficTotalsInRange(db, day, day),
+    env.BUSCORE_LEADS_DB
+      ? queryLeadAttributionCounts(env.BUSCORE_LEADS_DB, day, day).catch(() => null)
+      : Promise.resolve<{ total: number; attributed: number } | null>(null),
+  ]);
+
+  let pageViews: number | null = null;
+  let downloadClicks: number | null = null;
+  let topSource: string | null = null;
+  let topReferrer: string | null = null;
+  const buscore = getSiteByKey("buscore");
+  if (buscore) {
+    try {
+      const events = await buildSiteEventSummary(db, defaultSiteEventFilter(buscore), day, day);
+      pageViews = events.by_event_name.find((entry) => entry.event_name === "page_view")?.events ?? 0;
+      downloadClicks = events.by_event_name.find((entry) => entry.event_name === "download_click")?.events ?? 0;
+      topSource = events.top_sources[0]?.source ?? null;
+      topReferrer = events.top_referrers[0]?.referrer_domain ?? null;
+    } catch (error) {
+      console.warn("daily_rollup site-event aggregation unavailable; storing null event fields.", error);
+    }
+  }
+
+  const row = computeDailyRollupRow({
+    day,
+    artifact_downloads: artifactDownloads,
+    attributed_leads: leadCounts ? leadCounts.attributed : null,
+    leads_total: leadCounts ? leadCounts.total : null,
+    update_checks_known: updateSignals.update_checks_with_known_client_version,
+    latest_checkins: updateSignals.latest_version_checkins,
+    download_clicks: downloadClicks,
+    page_views: pageViews,
+    // return_rate is a 7-day windowed identity metric, not an honest single-day
+    // value with current helpers. Stored null rather than faked.
+    return_rate: null,
+    cf_requests: traffic.requests,
+    cf_visits: traffic.visits,
+    errors: totals.errors,
+    top_source: topSource,
+    top_referrer: topReferrer,
+    captured_at: new Date().toISOString(),
+  });
+
+  await upsertDailyRollup(db, row);
+}
+
+async function capturePreviousCompletedDailyRollup(env: Env): Promise<void> {
+  await captureDailyRollup(env, utcDay(addUtcDays(new Date(), -1)));
+}
+
+// ---- campaign_log -------------------------------------------------------
+
+type CampaignRow = {
+  id: string;
+  created_at: string;
+  posted_at: string | null;
+  channel: string | null;
+  community: string | null;
+  angle: string | null;
+  tagged_src: string | null;
+  utm_campaign: string | null;
+  tagged_url: string | null;
+  notes: string | null;
+};
+
+export function parseCampaignInsertBody(
+  body: unknown,
+  opts: { id?: string; now?: string } = {}
+): CampaignRow | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return null;
+  }
+  const record = body as Record<string, unknown>;
+  const capped = (value: unknown, max: number): string | null => {
+    const trimmed = nullIfBlank(typeof value === "string" ? value : null);
+    return trimmed === null ? null : trimmed.slice(0, max);
+  };
+
+  const row: CampaignRow = {
+    id: opts.id ?? crypto.randomUUID(),
+    created_at: opts.now ?? new Date().toISOString(),
+    posted_at: capped(record.posted_at, 40),
+    channel: capped(record.channel, 80),
+    community: capped(record.community, 120),
+    angle: capped(record.angle, 200),
+    tagged_src: capped(record.tagged_src, 120),
+    utm_campaign: capped(record.utm_campaign, 120),
+    tagged_url: capped(record.tagged_url, 500),
+    notes: capped(record.notes, 1000),
+  };
+
+  const meaningful =
+    row.channel || row.community || row.angle || row.tagged_src || row.utm_campaign || row.tagged_url || row.notes;
+  if (!meaningful) {
+    return null;
+  }
+  return row;
+}
+
+async function insertCampaignLog(db: D1Database, row: CampaignRow): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO campaign_log(id, created_at, posted_at, channel, community, angle, tagged_src, utm_campaign, tagged_url, notes) VALUES (?,?,?,?,?,?,?,?,?,?)"
+    )
+    .bind(
+      row.id,
+      row.created_at,
+      row.posted_at,
+      row.channel,
+      row.community,
+      row.angle,
+      row.tagged_src,
+      row.utm_campaign,
+      row.tagged_url,
+      row.notes
+    )
+    .run();
+}
+
+// Downstream attribution: join a logged campaign to BUS Core events/leads by
+// tagged_src OR utm_campaign, on/after the post day. Pure so it is testable
+// that it references src/utm_campaign.
+export function buildCampaignDownstreamQuery(campaign: {
+  posted_at?: string | null;
+  created_at?: string | null;
+  tagged_src?: string | null;
+  utm_campaign?: string | null;
+}): {
+  postedDay: string;
+  eventsSql: string;
+  eventsBinds: (string | null)[];
+  leadsSql: string;
+  leadsBinds: (string | null)[];
+} {
+  const postedDay = (campaign.posted_at ?? campaign.created_at ?? "").slice(0, 10) || EARLIEST_REPORT_DAY;
+  const src = campaign.tagged_src ?? null;
+  const camp = campaign.utm_campaign ?? null;
+  const eventsSql =
+    "SELECT COUNT(*) AS c FROM site_events_raw WHERE site_key='buscore' AND accepted=1 AND received_day >= ? AND ((? IS NOT NULL AND src = ?) OR (? IS NOT NULL AND utm_campaign = ?))";
+  const leadsSql =
+    "SELECT COUNT(*) AS c FROM early_access_leads WHERE substr(created_at,1,10) >= ? AND ((? IS NOT NULL AND src = ?) OR (? IS NOT NULL AND utm_campaign = ?))";
+  return {
+    postedDay,
+    eventsSql,
+    eventsBinds: [postedDay, src, src, camp, camp],
+    leadsSql,
+    leadsBinds: [postedDay, src, src, camp, camp],
+  };
+}
+
+async function queryCampaignDownstream(
+  db: D1Database,
+  leadsDb: D1Database | undefined,
+  campaign: CampaignRow
+): Promise<{ events: number; leads: number | null }> {
+  const query = buildCampaignDownstreamQuery(campaign);
+  let events = 0;
+  try {
+    const row = await db.prepare(query.eventsSql).bind(...query.eventsBinds).first<{ c: number }>();
+    events = row?.c ?? 0;
+  } catch (error) {
+    console.warn("Campaign downstream event count unavailable.", error);
+  }
+  let leads: number | null = null;
+  if (leadsDb) {
+    try {
+      const row = await leadsDb.prepare(query.leadsSql).bind(...query.leadsBinds).first<{ c: number }>();
+      leads = row?.c ?? 0;
+    } catch (error) {
+      console.warn("Campaign downstream lead count unavailable.", error);
+    }
+  }
+  return { events, leads };
+}
+
+// ---- github_snapshots ---------------------------------------------------
+
+const DEFAULT_GITHUB_REPO = "True-Good-Craft/TGC-BUS-Core";
+
+function githubRepoSlug(env: Env): string {
+  return nullIfBlank(env.GITHUB_REPO ?? null) ?? DEFAULT_GITHUB_REPO;
+}
+
+function githubHeaders(env: Env): Record<string, string> {
+  const headers: Record<string, string> = {
+    "User-Agent": "buscore-lighthouse",
+    Accept: "application/vnd.github+json",
+  };
+  const token = nullIfBlank(env.GITHUB_TOKEN ?? null);
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+// Extract the total page count from a GitHub `Link` header rel="last".
+// Returns null when absent (e.g. <=1 page) so callers can fall back or store null.
+export function parseGithubLastPageFromLinkHeader(link: string | null | undefined): number | null {
+  if (!link) {
+    return null;
+  }
+  const lastSegment = link
+    .split(",")
+    .map((segment) => segment.trim())
+    .find((segment) => /rel="last"/.test(segment));
+  if (!lastSegment) {
+    return null;
+  }
+  const match = lastSegment.match(/[?&]page=(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+type GithubSnapshotRow = {
+  day: string;
+  stars: number | null;
+  forks: number | null;
+  watchers: number | null;
+  open_issues: number | null;
+  closed_issues: number | null;
+  open_prs: number | null;
+  merged_prs: number | null;
+  contributors: number | null;
+  latest_release: string | null;
+  latest_release_at: string | null;
+  commits_total: number | null;
+  release_asset_downloads: number | null;
+  captured_at: string;
+};
+
+// Pure mapper: tolerates any missing/failed input by storing null. Never throws.
+export function mapGithubApiToSnapshotRow(
+  day: string,
+  parts: {
+    repo?: unknown;
+    releaseLatest?: unknown;
+    commitsLastPage?: number | null;
+    contributorsLastPage?: number | null;
+    openIssues?: number | null;
+    closedIssues?: number | null;
+    openPrs?: number | null;
+    mergedPrs?: number | null;
+  },
+  capturedAt: string
+): GithubSnapshotRow {
+  const num = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  const repo = parts.repo && typeof parts.repo === "object" ? (parts.repo as Record<string, unknown>) : null;
+  const release =
+    parts.releaseLatest && typeof parts.releaseLatest === "object"
+      ? (parts.releaseLatest as Record<string, unknown>)
+      : null;
+  const assets = release && Array.isArray(release.assets) ? (release.assets as Array<Record<string, unknown>>) : null;
+  const assetDownloads = assets
+    ? assets.reduce((sum, asset) => sum + (num(asset?.download_count) ?? 0), 0)
+    : null;
+
+  return {
+    day,
+    stars: num(repo?.stargazers_count),
+    forks: num(repo?.forks_count),
+    watchers: num(repo?.subscribers_count),
+    open_issues: parts.openIssues ?? null,
+    closed_issues: parts.closedIssues ?? null,
+    open_prs: parts.openPrs ?? null,
+    merged_prs: parts.mergedPrs ?? null,
+    contributors: parts.contributorsLastPage ?? null,
+    latest_release: release && typeof release.tag_name === "string" ? release.tag_name : null,
+    latest_release_at: release && typeof release.published_at === "string" ? release.published_at : null,
+    commits_total: parts.commitsLastPage ?? null,
+    release_asset_downloads: assetDownloads,
+    captured_at: capturedAt,
+  };
+}
+
+export const GITHUB_SNAPSHOT_UPSERT_SQL =
+  "INSERT INTO github_snapshots(day, stars, forks, watchers, open_issues, closed_issues, open_prs, merged_prs, contributors, latest_release, latest_release_at, commits_total, release_asset_downloads, captured_at) " +
+  "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) " +
+  "ON CONFLICT(day) DO UPDATE SET stars=excluded.stars, forks=excluded.forks, watchers=excluded.watchers, open_issues=excluded.open_issues, closed_issues=excluded.closed_issues, open_prs=excluded.open_prs, merged_prs=excluded.merged_prs, contributors=excluded.contributors, latest_release=excluded.latest_release, latest_release_at=excluded.latest_release_at, commits_total=excluded.commits_total, release_asset_downloads=excluded.release_asset_downloads, captured_at=excluded.captured_at";
+
+async function upsertGithubSnapshot(db: D1Database, row: GithubSnapshotRow): Promise<void> {
+  await db
+    .prepare(GITHUB_SNAPSHOT_UPSERT_SQL)
+    .bind(
+      row.day,
+      row.stars,
+      row.forks,
+      row.watchers,
+      row.open_issues,
+      row.closed_issues,
+      row.open_prs,
+      row.merged_prs,
+      row.contributors,
+      row.latest_release,
+      row.latest_release_at,
+      row.commits_total,
+      row.release_asset_downloads,
+      row.captured_at
+    )
+    .run();
+}
+
+async function captureGithubSnapshot(env: Env, day: string): Promise<void> {
+  const repo = githubRepoSlug(env);
+  const headers = githubHeaders(env);
+
+  const safeJson = async (path: string): Promise<unknown> => {
+    try {
+      const response = await fetch(`https://api.github.com/repos/${repo}${path}`, { headers });
+      if (!response.ok) {
+        return null;
+      }
+      return await response.json();
+    } catch {
+      return null;
+    }
+  };
+  const safeLastPage = async (path: string): Promise<number | null> => {
+    try {
+      const response = await fetch(`https://api.github.com/repos/${repo}${path}`, { headers });
+      if (!response.ok) {
+        return null;
+      }
+      const fromHeader = parseGithubLastPageFromLinkHeader(response.headers.get("Link"));
+      if (fromHeader !== null) {
+        return fromHeader;
+      }
+      const body = await response.json();
+      return Array.isArray(body) ? body.length : null;
+    } catch {
+      return null;
+    }
+  };
+  const searchCount = async (queryString: string): Promise<number | null> => {
+    try {
+      const response = await fetch(
+        `https://api.github.com/search/issues?q=${encodeURIComponent(queryString)}&per_page=1`,
+        { headers }
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const body = (await response.json()) as { total_count?: unknown };
+      return typeof body.total_count === "number" ? body.total_count : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const [repoJson, releaseLatest, commitsLastPage, contributorsLastPage, openIssues, closedIssues, openPrs, mergedPrs] =
+    await Promise.all([
+      safeJson(""),
+      safeJson("/releases/latest"),
+      safeLastPage("/commits?per_page=1"),
+      safeLastPage("/contributors?per_page=1&anon=true"),
+      searchCount(`repo:${repo} type:issue state:open`),
+      searchCount(`repo:${repo} type:issue state:closed`),
+      searchCount(`repo:${repo} type:pr state:open`),
+      searchCount(`repo:${repo} type:pr is:merged`),
+    ]);
+
+  const row = mapGithubApiToSnapshotRow(
+    day,
+    { repo: repoJson, releaseLatest, commitsLastPage, contributorsLastPage, openIssues, closedIssues, openPrs, mergedPrs },
+    new Date().toISOString()
+  );
+  await upsertGithubSnapshot(env.DB, row);
+}
+
+// ---- health_checks ------------------------------------------------------
+
+type HealthCheckResult = {
+  id: string;
+  checked_at: string;
+  target: string;
+  ok: number; // 0 | 1
+  status_code: number | null;
+  latency_ms: number | null;
+  note: string | null;
+};
+
+// Never throws. A probe that throws records ok=0 with the error note.
+export async function probeHealthTarget(
+  target: string,
+  run: () => Promise<{ status: number; ok: boolean; note?: string | null }>
+): Promise<HealthCheckResult> {
+  const started = Date.now();
+  try {
+    const result = await run();
+    return {
+      id: crypto.randomUUID(),
+      checked_at: new Date().toISOString(),
+      target,
+      ok: result.ok ? 1 : 0,
+      status_code: result.status,
+      latency_ms: Date.now() - started,
+      note: result.note ?? null,
+    };
+  } catch (error) {
+    return {
+      id: crypto.randomUUID(),
+      checked_at: new Date().toISOString(),
+      target,
+      ok: 0,
+      status_code: null,
+      latency_ms: Date.now() - started,
+      note: errorToMessage(error).slice(0, 200),
+    };
+  }
+}
+
+async function insertHealthCheck(db: D1Database, result: HealthCheckResult): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO health_checks(id, checked_at, target, ok, status_code, latency_ms, note) VALUES (?,?,?,?,?,?,?)"
+    )
+    .bind(result.id, result.checked_at, result.target, result.ok, result.status_code, result.latency_ms, result.note)
+    .run();
+}
+
+async function pruneHealthChecks(db: D1Database, now: Date = new Date(), days: number = 90): Promise<void> {
+  const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+  await db.prepare("DELETE FROM health_checks WHERE checked_at < ?").bind(cutoff).run();
+}
+
+async function runHealthChecks(env: Env): Promise<void> {
+  const results: HealthCheckResult[] = [];
+  const push = async (
+    target: string,
+    run: () => Promise<{ status: number; ok: boolean; note?: string | null }>
+  ): Promise<void> => {
+    results.push(await probeHealthTarget(target, run));
+  };
+
+  // Site pages: 2xx/3xx acceptable (canonicalization redirects are fine).
+  await push("site_home", async () => {
+    const response = await fetch("https://buscore.ca/", { redirect: "manual" });
+    return { status: response.status, ok: response.status >= 200 && response.status < 400 };
+  });
+  await push("site_downloads", async () => {
+    const response = await fetch("https://buscore.ca/downloads", { redirect: "manual" });
+    return { status: response.status, ok: response.status >= 200 && response.status < 400 };
+  });
+  // Update path validated via the NON-COUNTING manifest read (never /update/check,
+  // which would inflate update_checks).
+  await push("manifest", async () => {
+    const response = await fetch("https://lighthouse.buscore.ca/manifest/core/stable.json");
+    return { status: response.status, ok: response.status === 200 };
+  });
+  await push("download_latest_redirect", async () => {
+    const response = await fetch("https://lighthouse.buscore.ca/download/latest", { redirect: "manual" });
+    return { status: response.status, ok: response.status === 302 };
+  });
+  // Artifact reachability via a Range bytes=0-0 GET, which is excluded from the
+  // download counter by design, so probing never inflates `downloads`.
+  await push("release_artifact_range", async () => {
+    const redirect = await fetch("https://lighthouse.buscore.ca/download/latest", { redirect: "manual" });
+    const location = redirect.headers.get("Location");
+    if (redirect.status !== 302 || !location) {
+      return { status: redirect.status, ok: false, note: "no redirect location" };
+    }
+    const artifactUrl = location.startsWith("http") ? location : `https://lighthouse.buscore.ca${location}`;
+    const artifact = await fetch(artifactUrl, { headers: { Range: "bytes=0-0" } });
+    return { status: artifact.status, ok: artifact.status === 206 || artifact.status === 200, note: "range probe" };
+  });
+  // Lead endpoint liveness via GET only (never POST — no synthetic leads).
+  await push("lead_endpoint", async () => {
+    const response = await fetch("https://buscore.ca/api/early-access", { method: "GET", redirect: "manual" });
+    return { status: response.status, ok: response.status > 0 && response.status < 500, note: "GET liveness only; no POST" };
+  });
+  await push("github_release", async () => {
+    const response = await fetch(`https://api.github.com/repos/${githubRepoSlug(env)}/releases/latest`, {
+      headers: githubHeaders(env),
+      redirect: "manual",
+    });
+    return { status: response.status, ok: response.status === 200 };
+  });
+
+  for (const result of results) {
+    await insertHealthCheck(env.DB, result).catch((error) => {
+      console.warn("health_checks row insert failed; continuing.", error);
+    });
+  }
+}
+
+// ---- view=asset read path ----------------------------------------------
+
+async function queryDailyRollupLatest(db: D1Database): Promise<DailyRollupRow | null> {
+  const row = await db.prepare("SELECT * FROM daily_rollup ORDER BY day DESC LIMIT 1").first<DailyRollupRow>();
+  return row ?? null;
+}
+
+async function queryDailyRollupRecent(db: D1Database, limit: number): Promise<DailyRollupRow[]> {
+  const rows = await db
+    .prepare("SELECT * FROM daily_rollup ORDER BY day DESC LIMIT ?")
+    .bind(limit)
+    .all<DailyRollupRow>();
+  return (rows.results ?? []).slice().reverse();
+}
+
+async function queryGithubSnapshotLatest(db: D1Database): Promise<GithubSnapshotRow | null> {
+  const row = await db.prepare("SELECT * FROM github_snapshots ORDER BY day DESC LIMIT 1").first<GithubSnapshotRow>();
+  return row ?? null;
+}
+
+async function queryHealthLatestPerTarget(db: D1Database): Promise<
+  Array<{ target: string; ok: number; status_code: number | null; latency_ms: number | null; checked_at: string; note: string | null }>
+> {
+  const rows = await db
+    .prepare(
+      "SELECT h.target, h.ok, h.status_code, h.latency_ms, h.checked_at, h.note FROM health_checks h JOIN (SELECT target, MAX(checked_at) AS max_checked FROM health_checks GROUP BY target) latest ON h.target = latest.target AND h.checked_at = latest.max_checked ORDER BY h.target ASC"
+    )
+    .all<{ target: string; ok: number; status_code: number | null; latency_ms: number | null; checked_at: string; note: string | null }>();
+  return rows.results ?? [];
+}
+
+async function queryRecentCampaigns(db: D1Database, limit: number): Promise<CampaignRow[]> {
+  const rows = await db
+    .prepare(
+      "SELECT id, created_at, posted_at, channel, community, angle, tagged_src, utm_campaign, tagged_url, notes FROM campaign_log ORDER BY COALESCE(posted_at, created_at) DESC LIMIT ?"
+    )
+    .bind(limit)
+    .all<CampaignRow>();
+  return rows.results ?? [];
+}
+
+export function assembleAssetReport(input: {
+  generated_at: string;
+  rollup: { latest: DailyRollupRow | null; last_14_days: DailyRollupRow[] };
+  github: GithubSnapshotRow | null;
+  health: Array<{ target: string; ok: number; status_code: number | null; latency_ms: number | null; checked_at: string; note: string | null }>;
+  campaigns: Array<CampaignRow & { downstream: { events: number; leads: number | null } }>;
+}): {
+  view: "asset";
+  generated_at: string;
+  rollup: { latest: DailyRollupRow | null; last_14_days: DailyRollupRow[] };
+  github: GithubSnapshotRow | null;
+  health: Array<{ target: string; ok: number; status_code: number | null; latency_ms: number | null; checked_at: string; note: string | null }>;
+  campaigns: Array<CampaignRow & { downstream: { events: number; leads: number | null } }>;
+} {
+  return { view: "asset", ...input };
+}
+
+async function buildAssetReport(
+  db: D1Database,
+  leadsDb: D1Database | undefined,
+  now: Date
+): Promise<ReturnType<typeof assembleAssetReport>> {
+  const [rollupLatest, rollupRecent, github, health, campaigns] = await Promise.all([
+    queryDailyRollupLatest(db),
+    queryDailyRollupRecent(db, 14),
+    queryGithubSnapshotLatest(db),
+    queryHealthLatestPerTarget(db),
+    queryRecentCampaigns(db, 10),
+  ]);
+
+  const campaignsWithDownstream = await Promise.all(
+    campaigns.map(async (campaign) => ({
+      ...campaign,
+      downstream: await queryCampaignDownstream(db, leadsDb, campaign),
+    }))
+  );
+
+  return assembleAssetReport({
+    generated_at: now.toISOString(),
+    rollup: { latest: rollupLatest, last_14_days: rollupRecent },
+    github,
+    health,
+    campaigns: campaignsWithDownstream,
+  });
+}
+
+/* =========================================================================
+ * Phase 3: deterministic scoring + Monthly Asset Brief data + archival.
+ * Scores are honest: null on insufficient data (never faked), always carry
+ * their raw inputs (raw numbers never hidden), and never claim a valuation.
+ * Downloads are not users; update checks are not active users; stars are
+ * weighted <=10% of GitHub Trust.
+ * ========================================================================= */
+
+export type ScoreResult = {
+  score: number | null; // 0..100, or null when insufficient data
+  available: boolean;
+  reason: string | null; // e.g. "awaiting first scheduled rollup"
+  weight: number; // suggested weight in the composite (documentation)
+  inputs: Record<string, number | string | boolean | null>;
+};
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+// Map a value in [lo..hi] to [0..100], clamped. Supports descending ranges (lo>hi).
+function linMap(value: number, lo: number, hi: number): number {
+  if (lo === hi) {
+    return value >= hi ? 100 : 0;
+  }
+  return clampScore(((value - lo) / (hi - lo)) * 100);
+}
+
+// Weighted average over ONLY the available components, re-normalizing weights.
+function weightedAvailable(components: Array<{ score: number; weight: number }>): number | null {
+  const totalWeight = components.reduce((sum, c) => sum + c.weight, 0);
+  if (components.length === 0 || totalWeight <= 0) {
+    return null;
+  }
+  const weighted = components.reduce((sum, c) => sum + c.score * c.weight, 0);
+  return clampScore(weighted / totalWeight);
+}
+
+export function computeProductIntentScore(inputs: {
+  wqpiThis: number | null;
+  wqpiPrev: number | null;
+  attributedLeads: number | null;
+  leadsTotal: number | null;
+  downloadClicks: number | null;
+  artifactDownloads: number | null;
+}): ScoreResult {
+  const trendPct =
+    inputs.wqpiThis !== null && inputs.wqpiPrev !== null
+      ? ((inputs.wqpiThis - inputs.wqpiPrev) / Math.max(1, inputs.wqpiPrev)) * 100
+      : null;
+  const attributedRatio =
+    inputs.leadsTotal !== null && inputs.leadsTotal > 0 && inputs.attributedLeads !== null
+      ? inputs.attributedLeads / inputs.leadsTotal
+      : null;
+  const completion =
+    inputs.downloadClicks !== null && inputs.downloadClicks > 0 && inputs.artifactDownloads !== null
+      ? Math.min(inputs.artifactDownloads / inputs.downloadClicks, 1)
+      : null;
+
+  const rawInputs = {
+    wqpi_this: inputs.wqpiThis,
+    wqpi_prev: inputs.wqpiPrev,
+    trend_pct: trendPct === null ? null : Math.round(trendPct),
+    attributed_leads: inputs.attributedLeads,
+    leads_total: inputs.leadsTotal,
+    attributed_ratio: attributedRatio === null ? null : Number(attributedRatio.toFixed(2)),
+    download_clicks: inputs.downloadClicks,
+    artifact_downloads: inputs.artifactDownloads,
+    click_to_download: completion === null ? null : Number(completion.toFixed(2)),
+  };
+
+  const components: Array<{ score: number; weight: number }> = [];
+  if (trendPct !== null) components.push({ score: linMap(trendPct, -50, 50), weight: 60 });
+  if (attributedRatio !== null) components.push({ score: clampScore(attributedRatio * 100), weight: 25 });
+  if (completion !== null) components.push({ score: clampScore(completion * 100), weight: 15 });
+
+  const score = weightedAvailable(components);
+  return {
+    score,
+    available: score !== null,
+    reason: score === null ? "insufficient data (need a prior month plus lead/click data)" : null,
+    weight: 30,
+    inputs: rawInputs,
+  };
+}
+
+export function computeCommunityResponseScore(inputs: {
+  posts: number;
+  cappedDownstreamActions: number;
+  channels: number;
+}): ScoreResult {
+  const rawInputs = {
+    posts: inputs.posts,
+    downstream_actions: inputs.cappedDownstreamActions,
+    actions_per_post: inputs.posts > 0 ? Number((inputs.cappedDownstreamActions / inputs.posts).toFixed(2)) : null,
+    channels: inputs.channels,
+  };
+  if (inputs.posts <= 0) {
+    return { score: null, available: false, reason: "insufficient data (no campaigns logged)", weight: 15, inputs: rawInputs };
+  }
+  const actionsPerPost = inputs.cappedDownstreamActions / inputs.posts;
+  const apScore = linMap(actionsPerPost, 0, 5);
+  const diversity = (Math.min(inputs.channels, 4) / 4) * 100;
+  const score = clampScore(0.8 * apScore + 0.2 * diversity);
+  return { score, available: true, reason: null, weight: 15, inputs: rawInputs };
+}
+
+export function computeGithubTrustScore(inputs: {
+  latestReleaseAgeDays: number | null;
+  mergedPrs: number | null;
+  closedIssues: number | null;
+  contributors: number | null;
+  stars: number | null;
+}): ScoreResult {
+  const rawInputs = {
+    latest_release_age_days: inputs.latestReleaseAgeDays,
+    merged_prs: inputs.mergedPrs,
+    closed_issues: inputs.closedIssues,
+    contributors: inputs.contributors,
+    stars: inputs.stars,
+  };
+  const components: Array<{ score: number; weight: number }> = [];
+  if (inputs.latestReleaseAgeDays !== null) components.push({ score: linMap(inputs.latestReleaseAgeDays, 90, 0), weight: 40 });
+  if (inputs.mergedPrs !== null || inputs.closedIssues !== null) {
+    const activity = (inputs.mergedPrs ?? 0) + (inputs.closedIssues ?? 0);
+    components.push({ score: linMap(activity, 0, 20), weight: 30 });
+  }
+  if (inputs.contributors !== null) components.push({ score: linMap(inputs.contributors, 1, 5), weight: 20 });
+  // Stars are a weak signal: capped at 10% of the score.
+  if (inputs.stars !== null) components.push({ score: linMap(inputs.stars, 0, 100), weight: 10 });
+
+  const score = weightedAvailable(components);
+  return {
+    score,
+    available: score !== null,
+    reason: score === null ? "awaiting first github snapshot" : null,
+    weight: 10,
+    inputs: rawInputs,
+  };
+}
+
+export function computeReliabilityScore(inputs: {
+  healthOk: number | null;
+  healthTotal: number | null;
+  latestRollupAgeHours: number | null;
+  errors: number | null;
+  downloads: number | null;
+}): ScoreResult {
+  const uptimePct =
+    inputs.healthTotal !== null && inputs.healthTotal > 0 && inputs.healthOk !== null
+      ? (inputs.healthOk / inputs.healthTotal) * 100
+      : null;
+  const errorRate =
+    inputs.errors !== null && inputs.downloads !== null && inputs.downloads > 0
+      ? inputs.errors / inputs.downloads
+      : null;
+
+  const rawInputs = {
+    uptime_pct: uptimePct === null ? null : Math.round(uptimePct),
+    health_ok: inputs.healthOk,
+    health_total: inputs.healthTotal,
+    latest_rollup_age_hours: inputs.latestRollupAgeHours,
+    errors: inputs.errors,
+    downloads: inputs.downloads,
+    error_rate: errorRate === null ? null : Number(errorRate.toFixed(3)),
+  };
+
+  if (uptimePct === null) {
+    return { score: null, available: false, reason: "awaiting first scheduled health checks", weight: 20, inputs: rawInputs };
+  }
+
+  const components: Array<{ score: number; weight: number }> = [{ score: clampScore(uptimePct), weight: 60 }];
+  if (inputs.latestRollupAgeHours !== null) {
+    components.push({ score: inputs.latestRollupAgeHours <= 36 ? 100 : linMap(inputs.latestRollupAgeHours, 96, 36), weight: 20 });
+  }
+  if (errorRate !== null) {
+    components.push({ score: linMap(errorRate, 0.1, 0), weight: 20 });
+  } else if (inputs.errors !== null) {
+    components.push({ score: inputs.errors === 0 ? 100 : 0, weight: 20 });
+  }
+
+  const score = weightedAvailable(components);
+  return { score, available: score !== null, reason: null, weight: 20, inputs: rawInputs };
+}
+
+export function computeLeadQualityScore(inputs: {
+  total: number | null;
+  attributed: number | null;
+  withPainPoint: number | null;
+  withConsent: number | null;
+}): ScoreResult {
+  const rawInputs = {
+    leads_total: inputs.total,
+    attributed: inputs.attributed,
+    with_pain_point: inputs.withPainPoint,
+    with_consent: inputs.withConsent,
+    attributed_pct: inputs.total && inputs.attributed !== null ? Math.round((inputs.attributed / inputs.total) * 100) : null,
+    pain_point_pct: inputs.total && inputs.withPainPoint !== null ? Math.round((inputs.withPainPoint / inputs.total) * 100) : null,
+    consent_pct: inputs.total && inputs.withConsent !== null ? Math.round((inputs.withConsent / inputs.total) * 100) : null,
+  };
+  if (inputs.total === null) {
+    return { score: null, available: false, reason: "lead attribution unavailable", weight: 15, inputs: rawInputs };
+  }
+  if (inputs.total === 0) {
+    return { score: null, available: false, reason: "insufficient data (no leads this month)", weight: 15, inputs: rawInputs };
+  }
+  const attributedRatio = (inputs.attributed ?? 0) / inputs.total;
+  const painRatio = (inputs.withPainPoint ?? 0) / inputs.total;
+  const consentRatio = (inputs.withConsent ?? 0) / inputs.total;
+  const score = clampScore(100 * (0.5 * attributedRatio + 0.3 * painRatio + 0.2 * consentRatio));
+  return { score, available: true, reason: null, weight: 15, inputs: rawInputs };
+}
+
+// Composite. Capped by Reliability; null if Reliability is unavailable. Always
+// carries the five sub-scores so raw component scores are never hidden.
+export function computeAcquisitionReadinessScore(subs: {
+  productIntent: ScoreResult;
+  reliability: ScoreResult;
+  community: ScoreResult;
+  githubTrust: ScoreResult;
+  leadQuality: ScoreResult;
+  positioning?: ScoreResult | null;
+}): ScoreResult {
+  const positioning = subs.positioning ?? {
+    score: null,
+    available: false,
+    reason: "manual assessment unavailable (no data source)",
+    weight: 10,
+    inputs: {},
+  };
+
+  const subScoreInputs = {
+    product_intent: subs.productIntent.score,
+    reliability: subs.reliability.score,
+    community_response: subs.community.score,
+    github_trust: subs.githubTrust.score,
+    lead_quality: subs.leadQuality.score,
+    positioning: positioning.score,
+    note: "score is not a valuation",
+  };
+
+  if (subs.reliability.score === null) {
+    return {
+      score: null,
+      available: false,
+      reason: "cannot assess readiness without reliability data",
+      weight: 100,
+      inputs: subScoreInputs,
+    };
+  }
+
+  const components: Array<{ score: number; weight: number }> = [];
+  const add = (result: ScoreResult, weight: number) => {
+    if (result.score !== null) components.push({ score: result.score, weight });
+  };
+  add(subs.productIntent, 30);
+  add(subs.reliability, 20);
+  add(subs.community, 15);
+  add(subs.githubTrust, 10);
+  add(subs.leadQuality, 15);
+  add(positioning, 10);
+
+  // Require reliability plus at least one other component.
+  if (components.length < 2) {
+    return { score: null, available: false, reason: "insufficient data (too few components)", weight: 100, inputs: subScoreInputs };
+  }
+
+  const raw = weightedAvailable(components);
+  const capped = raw === null ? null : Math.min(raw, subs.reliability.score + 10);
+  return { score: capped, available: capped !== null, reason: null, weight: 100, inputs: subScoreInputs };
+}
+
+// ---- monthly asset data assembly ----------------------------------------
+
+function previousCalendarMonthBounds(now: Date): { startDay: string; endDay: string; label: string } {
+  const firstOfThisMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const lastOfPrev = new Date(firstOfThisMonth.getTime() - 24 * 60 * 60 * 1000);
+  const startOfPrev = new Date(Date.UTC(lastOfPrev.getUTCFullYear(), lastOfPrev.getUTCMonth(), 1));
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  return {
+    startDay: utcDay(startOfPrev),
+    endDay: utcDay(lastOfPrev),
+    label: `${monthNames[lastOfPrev.getUTCMonth()]} ${lastOfPrev.getUTCFullYear()}`,
+  };
+}
+
+function monthBeforeBounds(monthStartDay: string): { startDay: string; endDay: string } {
+  const monthStart = new Date(`${monthStartDay}T00:00:00Z`);
+  const lastOfPrev = new Date(monthStart.getTime() - 24 * 60 * 60 * 1000);
+  const startOfPrev = new Date(Date.UTC(lastOfPrev.getUTCFullYear(), lastOfPrev.getUTCMonth(), 1));
+  return { startDay: utcDay(startOfPrev), endDay: utcDay(lastOfPrev) };
+}
+
+function sumNullable(values: Array<number | null>): number | null {
+  const present = values.filter((value): value is number => typeof value === "number");
+  return present.length === 0 ? null : present.reduce((sum, value) => sum + value, 0);
+}
+
+function avgNullable(values: Array<number | null>): number | null {
+  const present = values.filter((value): value is number => typeof value === "number");
+  return present.length === 0 ? null : Math.round(present.reduce((sum, value) => sum + value, 0) / present.length);
+}
+
+type MonthlyRollupAggregate = {
+  days_with_data: number;
+  wqpi: number | null;
+  artifact_downloads: number | null;
+  attributed_leads: number | null;
+  leads_total: number | null;
+  download_clicks: number | null;
+  known_checks_avg: number | null;
+  latest_checkins: number | null;
+  adoption_pct: number | null;
+  errors: number | null;
+  top_source: string | null;
+};
+
+export function aggregateMonthlyRollup(rows: DailyRollupRow[]): MonthlyRollupAggregate {
+  const latestCheckins = sumNullable(rows.map((r) => r.latest_checkins));
+  const knownTotal = sumNullable(rows.map((r) => r.update_checks_known));
+  const sourceCounts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.top_source) sourceCounts.set(row.top_source, (sourceCounts.get(row.top_source) ?? 0) + 1);
+  }
+  const topSource = [...sourceCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  return {
+    days_with_data: rows.length,
+    wqpi: sumNullable(rows.map((r) => r.wqpi)),
+    artifact_downloads: sumNullable(rows.map((r) => r.artifact_downloads)),
+    attributed_leads: sumNullable(rows.map((r) => r.attributed_leads)),
+    leads_total: sumNullable(rows.map((r) => r.leads_total)),
+    download_clicks: sumNullable(rows.map((r) => r.download_clicks)),
+    known_checks_avg: avgNullable(rows.map((r) => r.update_checks_known)),
+    latest_checkins: latestCheckins,
+    adoption_pct: knownTotal && knownTotal > 0 && latestCheckins !== null ? Math.round((latestCheckins / knownTotal) * 100) : null,
+    errors: sumNullable(rows.map((r) => r.errors)),
+    top_source: topSource,
+  };
+}
+
+async function queryRollupRange(db: D1Database, startDay: string, endDay: string): Promise<DailyRollupRow[]> {
+  const rows = await db
+    .prepare("SELECT * FROM daily_rollup WHERE day >= ? AND day <= ? ORDER BY day ASC")
+    .bind(startDay, endDay)
+    .all<DailyRollupRow>();
+  return rows.results ?? [];
+}
+
+async function queryHealthUptimeInRange(db: D1Database, startDay: string, endDay: string): Promise<{ ok: number; total: number }> {
+  const row = await db
+    .prepare("SELECT COALESCE(SUM(ok),0) AS ok, COUNT(*) AS total FROM health_checks WHERE checked_at >= ? AND checked_at <= ?")
+    .bind(`${startDay}T00:00:00.000Z`, `${endDay}T23:59:59.999Z`)
+    .first<{ ok: number; total: number }>();
+  return { ok: row?.ok ?? 0, total: row?.total ?? 0 };
+}
+
+async function queryCampaignsInRange(db: D1Database, startDay: string, endDay: string): Promise<CampaignRow[]> {
+  const rows = await db
+    .prepare(
+      "SELECT id, created_at, posted_at, channel, community, angle, tagged_src, utm_campaign, tagged_url, notes FROM campaign_log WHERE substr(COALESCE(posted_at, created_at),1,10) >= ? AND substr(COALESCE(posted_at, created_at),1,10) <= ? ORDER BY COALESCE(posted_at, created_at) ASC"
+    )
+    .bind(startDay, endDay)
+    .all<CampaignRow>();
+  return rows.results ?? [];
+}
+
+async function queryLeadQuality(
+  leadsDb: D1Database | undefined,
+  startDay: string,
+  endDay: string
+): Promise<{ total: number; attributed: number; withPainPoint: number; withConsent: number } | null> {
+  if (!leadsDb) return null;
+  try {
+    const row = await leadsDb
+      .prepare(
+        "SELECT COUNT(*) AS total, SUM(CASE WHEN COALESCE(NULLIF(utm_source,''),NULLIF(src,''),NULLIF(referrer_domain,'')) IS NOT NULL THEN 1 ELSE 0 END) AS attributed, SUM(CASE WHEN NULLIF(pain_point,'') IS NOT NULL THEN 1 ELSE 0 END) AS with_pain, SUM(CASE WHEN consent_updates = 1 THEN 1 ELSE 0 END) AS with_consent FROM early_access_leads WHERE substr(created_at,1,10) >= ? AND substr(created_at,1,10) <= ?"
+      )
+      .bind(startDay, endDay)
+      .first<{ total: number; attributed: number | null; with_pain: number | null; with_consent: number | null }>();
+    return {
+      total: row?.total ?? 0,
+      attributed: row?.attributed ?? 0,
+      withPainPoint: row?.with_pain ?? 0,
+      withConsent: row?.with_consent ?? 0,
+    };
+  } catch (error) {
+    console.warn("Monthly lead-quality query unavailable.", error);
+    return null;
+  }
+}
+
+async function queryRecentOperatorNotes(db: D1Database, limit: number): Promise<Array<{ id: string; created_at: string; note: string; tag: string | null }>> {
+  const rows = await db
+    .prepare("SELECT id, created_at, note, tag FROM operator_notes ORDER BY created_at DESC LIMIT ?")
+    .bind(limit)
+    .all<{ id: string; created_at: string; note: string; tag: string | null }>();
+  return rows.results ?? [];
+}
+
+async function queryPreviousMonthlyAcquisitionScore(db: D1Database): Promise<number | null> {
+  try {
+    const row = await db
+      .prepare("SELECT summary_json FROM report_snapshots WHERE kind = 'monthly' ORDER BY generated_at DESC LIMIT 1")
+      .first<{ summary_json: string | null }>();
+    if (!row?.summary_json) return null;
+    const parsed = JSON.parse(row.summary_json) as { acquisition_readiness?: number | null };
+    return typeof parsed.acquisition_readiness === "number" ? parsed.acquisition_readiness : null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildMonthlyAssetReport(db: D1Database, leadsDb: D1Database | undefined, now: Date): Promise<Record<string, unknown>> {
+  const month = previousCalendarMonthBounds(now);
+  const prior = monthBeforeBounds(month.startDay);
+
+  const [monthRows, priorRows, github, health, campaignsRaw, leadQualityRaw, notes, prevAcqScore] = await Promise.all([
+    queryRollupRange(db, month.startDay, month.endDay),
+    queryRollupRange(db, prior.startDay, prior.endDay),
+    queryGithubSnapshotLatest(db),
+    queryHealthUptimeInRange(db, month.startDay, month.endDay),
+    queryCampaignsInRange(db, month.startDay, month.endDay),
+    queryLeadQuality(leadsDb, month.startDay, month.endDay),
+    queryRecentOperatorNotes(db, 10),
+    queryPreviousMonthlyAcquisitionScore(db),
+  ]);
+
+  const agg = aggregateMonthlyRollup(monthRows);
+  const priorAgg = aggregateMonthlyRollup(priorRows);
+
+  // Community downstream (per-post capped at 20 to stop one viral post dominating).
+  let cappedDownstream = 0;
+  const perChannel = new Map<string, { posts: number; actions: number }>();
+  const campaigns = await Promise.all(
+    campaignsRaw.map(async (campaign) => {
+      const downstream = await queryCampaignDownstream(db, leadsDb, campaign);
+      const actions = downstream.events + (downstream.leads ?? 0);
+      cappedDownstream += Math.min(actions, 20);
+      const channelKey = campaign.channel ?? "(unknown)";
+      const entry = perChannel.get(channelKey) ?? { posts: 0, actions: 0 };
+      entry.posts += 1;
+      entry.actions += actions;
+      perChannel.set(channelKey, entry);
+      return { channel: campaign.channel, community: campaign.community, utm_campaign: campaign.utm_campaign, downstream };
+    })
+  );
+  const channels = perChannel.size;
+
+  // GitHub latest-release age in days.
+  let latestReleaseAgeDays: number | null = null;
+  if (github?.latest_release_at) {
+    const releaseTime = new Date(github.latest_release_at).getTime();
+    if (Number.isFinite(releaseTime)) {
+      latestReleaseAgeDays = Math.round((now.getTime() - releaseTime) / (24 * 60 * 60 * 1000));
+    }
+  }
+
+  // Freshness: age of the most recent rollup row we have.
+  const latestRollupDay = monthRows.length > 0 ? monthRows[monthRows.length - 1].day : null;
+  const latestRollupAgeHours = latestRollupDay
+    ? Math.round((now.getTime() - new Date(`${latestRollupDay}T00:00:00Z`).getTime()) / (60 * 60 * 1000))
+    : null;
+
+  const productIntent = computeProductIntentScore({
+    wqpiThis: agg.wqpi,
+    wqpiPrev: priorAgg.wqpi,
+    attributedLeads: agg.attributed_leads,
+    leadsTotal: agg.leads_total,
+    downloadClicks: agg.download_clicks,
+    artifactDownloads: agg.artifact_downloads,
+  });
+  const community = computeCommunityResponseScore({ posts: campaigns.length, cappedDownstreamActions: cappedDownstream, channels });
+  const githubTrust = computeGithubTrustScore({
+    latestReleaseAgeDays,
+    mergedPrs: github?.merged_prs ?? null,
+    closedIssues: github?.closed_issues ?? null,
+    contributors: github?.contributors ?? null,
+    stars: github?.stars ?? null,
+  });
+  const reliability = computeReliabilityScore({
+    healthOk: health.total > 0 ? health.ok : null,
+    healthTotal: health.total > 0 ? health.total : null,
+    latestRollupAgeHours,
+    errors: agg.errors,
+    downloads: agg.artifact_downloads,
+  });
+  const leadQuality = computeLeadQualityScore({
+    total: leadQualityRaw ? leadQualityRaw.total : null,
+    attributed: leadQualityRaw ? leadQualityRaw.attributed : null,
+    withPainPoint: leadQualityRaw ? leadQualityRaw.withPainPoint : null,
+    withConsent: leadQualityRaw ? leadQualityRaw.withConsent : null,
+  });
+  const acquisitionReadiness = computeAcquisitionReadinessScore({ productIntent, reliability, community, githubTrust, leadQuality });
+
+  const wqpiTrendPct =
+    agg.wqpi !== null && priorAgg.wqpi !== null ? Math.round(((agg.wqpi - priorAgg.wqpi) / Math.max(1, priorAgg.wqpi)) * 100) : null;
+
+  return {
+    view: "monthly",
+    generated_at: now.toISOString(),
+    month: month.label,
+    window: { start_day: month.startDay, end_day: month.endDay, timezone: "UTC" },
+    data_status: monthRows.length === 0 ? "awaiting first scheduled rollup" : "available",
+    organic_demand: {
+      wqpi: agg.wqpi,
+      wqpi_prev_month: priorAgg.wqpi,
+      wqpi_mom_pct: wqpiTrendPct,
+      artifact_downloads: agg.artifact_downloads,
+      attributed_leads: agg.attributed_leads,
+      leads_total: agg.leads_total,
+      days_with_data: agg.days_with_data,
+    },
+    repeat_interest: {
+      known_version_checks_avg_per_day: agg.known_checks_avg,
+      latest_version_checkins: agg.latest_checkins,
+      latest_version_adoption_pct: agg.adoption_pct,
+      note: "update checks are a proxy, not active users",
+    },
+    community: {
+      posts: campaigns.length,
+      downstream_actions_capped: cappedDownstream,
+      channels,
+      per_channel: [...perChannel.entries()].map(([channel, v]) => ({
+        channel,
+        posts: v.posts,
+        actions: v.actions,
+        actions_per_post: Number((v.actions / Math.max(1, v.posts)).toFixed(2)),
+      })),
+    },
+    reliability: {
+      uptime_pct: health.total > 0 ? Math.round((health.ok / health.total) * 100) : null,
+      health_checks: health.total,
+      errors: agg.errors,
+      latest_rollup_age_hours: latestRollupAgeHours,
+    },
+    github: github
+      ? {
+          stars: github.stars,
+          forks: github.forks,
+          watchers: github.watchers,
+          open_issues: github.open_issues,
+          closed_issues: github.closed_issues,
+          merged_prs: github.merged_prs,
+          contributors: github.contributors,
+          latest_release: github.latest_release,
+          latest_release_age_days: latestReleaseAgeDays,
+          license: "AGPL-3.0 (+ commercial)",
+          note: "stars are a weak signal",
+        }
+      : null,
+    lead_quality: leadQuality.inputs,
+    scores: {
+      product_intent: productIntent,
+      community_response: community,
+      github_trust: githubTrust,
+      reliability,
+      lead_quality: leadQuality,
+      acquisition_readiness: acquisitionReadiness,
+      previous_acquisition_readiness: prevAcqScore,
+      disclaimer: "Scores are trend/triage indicators, not a valuation. Raw inputs are shown with each score.",
+    },
+    operator_notes: notes,
+  };
+}
+
+// ---- Phase 3 write-route bodies -----------------------------------------
+
+type OperatorNoteRow = { id: string; created_at: string; note: string; tag: string | null };
+
+export function parseOperatorNoteBody(body: unknown, opts: { id?: string; now?: string } = {}): OperatorNoteRow | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  const note = nullIfBlank(typeof record.note === "string" ? record.note : null);
+  if (!note) return null;
+  const tag = nullIfBlank(typeof record.tag === "string" ? record.tag : null);
+  return { id: opts.id ?? crypto.randomUUID(), created_at: opts.now ?? new Date().toISOString(), note: note.slice(0, 1000), tag: tag ? tag.slice(0, 40) : null };
+}
+
+async function insertOperatorNote(db: D1Database, row: OperatorNoteRow): Promise<void> {
+  await db
+    .prepare("INSERT INTO operator_notes(id, created_at, note, tag) VALUES (?,?,?,?)")
+    .bind(row.id, row.created_at, row.note, row.tag)
+    .run();
+}
+
+type ReportSnapshotRow = {
+  id: string;
+  generated_at: string;
+  kind: string;
+  status: string | null;
+  wqpi: number | null;
+  summary_json: string | null;
+  narrative: string | null;
+};
+
+const REPORT_SNAPSHOT_KINDS = new Set(["daily", "weekly", "monthly"]);
+
+export function parseReportSnapshotBody(body: unknown, opts: { id?: string; now?: string } = {}): ReportSnapshotRow | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  const kind = nullIfBlank(typeof record.kind === "string" ? record.kind : null);
+  if (!kind || !REPORT_SNAPSHOT_KINDS.has(kind)) return null;
+
+  const status = nullIfBlank(typeof record.status === "string" ? record.status : null);
+  const wqpi = typeof record.wqpi === "number" && Number.isFinite(record.wqpi) ? record.wqpi : null;
+  let summaryJson: string | null = null;
+  if (typeof record.summary_json === "string") {
+    summaryJson = record.summary_json.slice(0, 20000);
+  } else if (record.summary_json && typeof record.summary_json === "object") {
+    summaryJson = JSON.stringify(record.summary_json).slice(0, 20000);
+  }
+  const narrative = nullIfBlank(typeof record.narrative === "string" ? record.narrative : null);
+
+  return {
+    id: opts.id ?? crypto.randomUUID(),
+    generated_at: opts.now ?? new Date().toISOString(),
+    kind,
+    status: status ? status.slice(0, 20) : null,
+    wqpi,
+    summary_json: summaryJson,
+    narrative: narrative ? narrative.slice(0, 8000) : null,
+  };
+}
+
+async function insertReportSnapshot(db: D1Database, row: ReportSnapshotRow): Promise<void> {
+  await db
+    .prepare("INSERT INTO report_snapshots(id, generated_at, kind, status, wqpi, summary_json, narrative) VALUES (?,?,?,?,?,?,?)")
+    .bind(row.id, row.generated_at, row.kind, row.status, row.wqpi, row.summary_json, row.narrative)
+    .run();
+}
+
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
-      Promise.all([
-        capturePreviousCompletedBuscoreTraffic(env).catch((error) => {
+      (async () => {
+        // Capture the previous completed day's traffic FIRST so the daily rollup
+        // can read the traffic row for the same day.
+        await capturePreviousCompletedBuscoreTraffic(env).catch((error) => {
           console.warn("Buscore traffic capture skipped after Cloudflare GraphQL failure.", error);
-        }),
-        prunePageviewData(env.DB).catch((error) => {
-          console.warn("Pageview retention cleanup skipped after D1 failure.", error);
-        }),
-      ]).then(() => undefined)
+        });
+
+        // Independent, fail-soft writers. One failing cannot break the others.
+        await Promise.all([
+          prunePageviewData(env.DB).catch((error) => {
+            console.warn("Pageview retention cleanup skipped after D1 failure.", error);
+          }),
+          capturePreviousCompletedDailyRollup(env).catch((error) => {
+            console.warn("Daily rollup capture skipped after failure.", error);
+          }),
+          captureGithubSnapshot(env, utcDay()).catch((error) => {
+            console.warn("GitHub snapshot capture skipped after failure.", error);
+          }),
+          runHealthChecks(env).catch((error) => {
+            console.warn("Health checks skipped after failure.", error);
+          }),
+          pruneHealthChecks(env.DB).catch((error) => {
+            console.warn("Health check retention cleanup skipped after failure.", error);
+          }),
+        ]);
+      })()
     );
   },
 
@@ -3606,6 +4910,83 @@ export default {
           })
       );
       return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
+    }
+
+    // Admin-token-protected operator route for logging community posts.
+    // Operator-authored aggregate/annotation data only; no user data, no PII.
+    if (url.pathname === "/campaign" && request.method === "POST") {
+      const token = request.headers.get("X-Admin-Token");
+      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+        return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
+      }
+
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return withCors(request, Response.json({ ok: false, error: "invalid_json" }, { status: 400 }));
+      }
+
+      const row = parseCampaignInsertBody(body);
+      if (!row) {
+        return withCors(request, Response.json({ ok: false, error: "invalid_campaign" }, { status: 400 }));
+      }
+
+      try {
+        await insertCampaignLog(env.DB, row);
+      } catch {
+        return withCors(request, Response.json({ ok: false, error: "campaign_insert_failed" }, { status: 503 }));
+      }
+
+      return withCors(request, Response.json({ ok: true, id: row.id }, { status: 201 }), "POST, OPTIONS");
+    }
+
+    // Admin-token-protected operator note insert (feeds the monthly narrative).
+    if (url.pathname === "/notes" && request.method === "POST") {
+      const token = request.headers.get("X-Admin-Token");
+      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+        return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return withCors(request, Response.json({ ok: false, error: "invalid_json" }, { status: 400 }));
+      }
+      const row = parseOperatorNoteBody(body);
+      if (!row) {
+        return withCors(request, Response.json({ ok: false, error: "invalid_note" }, { status: 400 }));
+      }
+      try {
+        await insertOperatorNote(env.DB, row);
+      } catch {
+        return withCors(request, Response.json({ ok: false, error: "note_insert_failed" }, { status: 503 }));
+      }
+      return withCors(request, Response.json({ ok: true, id: row.id }, { status: 201 }), "POST, OPTIONS");
+    }
+
+    // Admin-token-protected report archival (Agent Smith archives what it posts).
+    if (url.pathname === "/report/snapshot" && request.method === "POST") {
+      const token = request.headers.get("X-Admin-Token");
+      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+        return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return withCors(request, Response.json({ ok: false, error: "invalid_json" }, { status: 400 }));
+      }
+      const row = parseReportSnapshotBody(body);
+      if (!row) {
+        return withCors(request, Response.json({ ok: false, error: "invalid_snapshot" }, { status: 400 }));
+      }
+      try {
+        await insertReportSnapshot(env.DB, row);
+      } catch {
+        return withCors(request, Response.json({ ok: false, error: "snapshot_insert_failed" }, { status: 503 }));
+      }
+      return withCors(request, Response.json({ ok: true, id: row.id }, { status: 201 }), "POST, OPTIONS");
     }
 
     if (request.method !== "GET") {
@@ -3760,7 +5141,12 @@ export default {
 
       try {
         const now = new Date();
-        if (reportRequest.view !== "source_health") {
+        // asset/monthly/source_health read only stored aggregates; skip the traffic refresh.
+        if (
+          reportRequest.view !== "source_health" &&
+          reportRequest.view !== "asset" &&
+          reportRequest.view !== "monthly"
+        ) {
           await refreshPreviousCompletedTrafficBestEffort(env, now);
         }
 
@@ -3771,7 +5157,11 @@ export default {
               ? await buildFleetReport(env.DB, now)
               : reportRequest.view === "site"
                 ? await buildSiteReport(env.DB, env.BUSCORE_LEADS_DB, now, reportRequest.siteEventFilter)
-                : await buildSourceHealthReport(env.DB, now);
+                : reportRequest.view === "asset"
+                  ? await buildAssetReport(env.DB, env.BUSCORE_LEADS_DB, now)
+                  : reportRequest.view === "monthly"
+                    ? await buildMonthlyAssetReport(env.DB, env.BUSCORE_LEADS_DB, now)
+                    : await buildSourceHealthReport(env.DB, now);
 
         return withCors(
           request,

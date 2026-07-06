@@ -1,5 +1,70 @@
 # Changelog
 
+## [1.18.0] - 2026-07-06
+
+Phase 3 analytics (`BUS-Core-Analytics-Plan.md`): Monthly Asset Brief data + deterministic
+scoring + report archival + operator notes. Additive, aggregate-only, no PII, no new telemetry,
+no AI. Lighthouse remains the data/scoring layer and does not post to Discord.
+
+### Added
+- **Two additive D1 tables** (migration `0011_add_phase3_report_and_notes.sql`):
+  `report_snapshots` (dated archive of generated briefs) and `operator_notes`.
+- **Deterministic scoring** (pure, exported): `computeProductIntentScore`,
+  `computeCommunityResponseScore`, `computeGithubTrustScore`, `computeReliabilityScore`,
+  `computeLeadQualityScore`, `computeAcquisitionReadinessScore`. Each returns
+  `{ score|null, available, reason, weight, inputs }`. Scores are `null` (never faked) on
+  insufficient data; every score carries its raw inputs (raw numbers never hidden); a score is
+  explicitly not a valuation; Acquisition Readiness is capped by Reliability and `null` without it;
+  stars are weighted ≤10% of GitHub Trust.
+- **`GET /report?view=monthly`** (admin-protected): previous completed calendar month's structured
+  asset data + the five scores (with inputs) + previous-month Acquisition Readiness for the delta +
+  recent operator notes. Missing pieces are `null`/`awaiting first scheduled rollup`, never faked.
+  Skips the traffic refresh.
+- **`POST /notes`** and **`POST /report/snapshot`** (admin-token, like `/report` and `/campaign`).
+
+### Changed
+- Report view routing and `resolveReportRequest` accept `monthly`. Existing views unchanged.
+
+### Notes
+- No Phase 4, no BUS Core Core change, no public dashboard, no AI, no scoring that hides raw numbers.
+
+## [1.17.0] - 2026-07-06
+
+Phase 2 analytics foundation (`BUS-Core-Analytics-Plan.md`). Additive, aggregate/operator-only,
+no PII, no new user telemetry. Lighthouse remains the data layer and does not post to Discord.
+
+### Added
+- **Four additive D1 tables** (migration `0010_add_phase2_analytics_foundation.sql`):
+  `daily_rollup`, `campaign_log`, `github_snapshots`, `health_checks`.
+- **`daily_rollup` writer**: one aggregate row per completed UTC day (previous completed day,
+  never partial). Reuses existing report query helpers; `wqpi = artifact_downloads + attributed_leads`.
+  Idempotent `ON CONFLICT(day) DO UPDATE`. Missing inputs stored `null`; `return_rate` stored `null`
+  (windowed metric, not faked as a single-day value).
+- **`github_snapshots` writer**: daily public GitHub API snapshot (stars/forks/watchers/open+closed
+  issues/open+merged PRs/contributors/latest release/commits/release asset downloads). Each field
+  guarded; unavailable fields stored `null`, never faked. Idempotent per `day`.
+- **`health_checks` writer**: low-frequency active liveness probes of site home, `/downloads`,
+  manifest read, `/download/latest` redirect, release artifact (Range `bytes=0-0` GET — never counted),
+  lead endpoint (GET-only liveness — never POST), and GitHub releases. Each probe isolated; a failure
+  records `ok=0` and never breaks reporting or the scheduled run. Pruned to ~90 days.
+- **`POST /campaign`**: admin-token-protected operator route to log community posts into
+  `campaign_log`. `201 {ok,id}` on success. Manual `wrangler d1 execute` insert also supported.
+- **`GET /report?view=asset`**: admin-protected read of the Phase 2 aggregates — latest + recent
+  `daily_rollup`, latest `github_snapshots`, latest-per-target `health_checks`, and recent
+  `campaign_log` with downstream event/lead counts joined by `tagged_src`/`utm_campaign`. Skips the
+  best-effort traffic refresh.
+- **Config**: optional `GITHUB_REPO` (default `True-Good-Craft/TGC-BUS-Core`) and `GITHUB_TOKEN`.
+
+### Changed
+- **Scheduled handler**: after traffic capture, runs the rollup / GitHub snapshot / health checks /
+  prunes as independently fail-soft writers. Cron unchanged (`5 0 * * *`).
+- Existing `legacy`/`fleet`/`site`/`source_health` report views and all existing counters are
+  unchanged.
+
+### Notes
+- No BUS Core Core change, no scoring, no monthly asset brief, no AI, no Agent Smith outbound change,
+  no new site telemetry. Those are Phase 3+.
+
 ## [1.16.1] - 2026-06-02
 
 ### Fixed

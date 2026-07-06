@@ -2,6 +2,11 @@ name = "buscore-lighthouse"
 main = "src/index.ts"
 compatibility_date = "2026-02-26"
 
+[vars]
+# Phase 2 (optional). Code defaults to True-Good-Craft/TGC-BUS-Core if unset.
+# GITHUB_TOKEN is a secret (set via `wrangler secret put GITHUB_TOKEN`), not a var.
+GITHUB_REPO = "True-Good-Craft/TGC-BUS-Core"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "buscore-lighthouse"
