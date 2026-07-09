@@ -107,9 +107,19 @@ class FakeD1Database {
   }
 
   releaseUpdateCheckRows() {
-    return Array.from(this.releaseUpdateChecksDaily.entries()).map(([key, checks]) => {
+    return Array.from(this.releaseUpdateChecksDaily.entries()).map(([key, counters]) => {
       const [day, channel, client_version, latest_version, update_available] = key.split("|");
-      return { day, channel, client_version, latest_version, update_available, checks };
+      return {
+        day,
+        channel,
+        client_version,
+        latest_version,
+        update_available,
+        checks: counters.checks,
+        first_check_true: counters.first_check_true,
+        first_check_false: counters.first_check_false,
+        first_check_unknown: counters.first_check_unknown,
+      };
     });
   }
 
@@ -145,9 +155,19 @@ class FakeD1Database {
       if (this.failReleaseSignalWrites) {
         throw new Error("no such table: release_update_checks_daily");
       }
-      const [day, channel, clientVersion, latestVersion, updateAvailable] = args;
+      const [day, channel, clientVersion, latestVersion, updateAvailable, firstCheckTrue, firstCheckFalse, firstCheckUnknown] = args;
       const key = `${day}|${channel}|${clientVersion}|${latestVersion}|${updateAvailable}`;
-      this.releaseUpdateChecksDaily.set(key, (this.releaseUpdateChecksDaily.get(key) ?? 0) + 1);
+      const existing = this.releaseUpdateChecksDaily.get(key) ?? {
+        checks: 0,
+        first_check_true: 0,
+        first_check_false: 0,
+        first_check_unknown: 0,
+      };
+      existing.checks += 1;
+      existing.first_check_true += firstCheckTrue ?? 0;
+      existing.first_check_false += firstCheckFalse ?? 0;
+      existing.first_check_unknown += firstCheckUnknown ?? 0;
+      this.releaseUpdateChecksDaily.set(key, existing);
       return { success: true };
     }
 
@@ -195,6 +215,9 @@ class FakeD1Database {
         update_checks_unknown_client_version: 0,
         update_available_impressions: 0,
         latest_version_checkins: 0,
+        first_seen_checkins: 0,
+        repeat_checkins: 0,
+        unknown_first_checkins: 0,
       };
 
       for (const row of this.releaseUpdateCheckRows()) {
@@ -218,6 +241,9 @@ class FakeD1Database {
         ) {
           summary.latest_version_checkins += row.checks;
         }
+        summary.first_seen_checkins += row.first_check_true;
+        summary.repeat_checkins += row.first_check_false;
+        summary.unknown_first_checkins += row.first_check_unknown;
       }
 
       return summary;
@@ -450,6 +476,9 @@ test("GET /update/check without client version records an unknown client-version
       latest_version: "1.1.0",
       update_available: "unknown",
       checks: 1,
+      first_check_true: 0,
+      first_check_false: 0,
+      first_check_unknown: 1,
     },
   ]);
 });
@@ -467,6 +496,9 @@ test("GET /update/check?current_version=1.0.4 records update_available = true", 
       latest_version: "1.1.0",
       update_available: "true",
       checks: 1,
+      first_check_true: 0,
+      first_check_false: 0,
+      first_check_unknown: 1,
     },
   ]);
 });
@@ -490,6 +522,9 @@ test("GET /update/check?current_version=1.1.0 records update_available = false a
         latest_version: "1.1.0",
         update_available: "false",
         checks: 1,
+        first_check_true: 0,
+        first_check_false: 0,
+        first_check_unknown: 1,
       },
     ]);
 
@@ -519,6 +554,10 @@ test("GET /update/check?current_version=1.1.0 records update_available = false a
       update_checks_unknown_client_version: 0,
       update_available_impressions: 0,
       latest_version_checkins: 1,
+      first_seen_checkins: 0,
+      repeat_checkins: 0,
+      unknown_first_checkins: 1,
+      first_seen_share: 0,
     });
   } finally {
     global.fetch = originalFetch;
@@ -550,7 +589,208 @@ test("/report remains available when additive release-signal aggregate reads fai
       update_checks_unknown_client_version: 0,
       update_available_impressions: 0,
       latest_version_checkins: 0,
+      first_seen_checkins: 0,
+      repeat_checkins: 0,
+      unknown_first_checkins: 0,
+      first_seen_share: 0,
     });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+// --- Ticket 3: first_check aggregate contract ---------------------------------
+
+test("new client first_check=true records client_version, channel, and first_check_true", async () => {
+  const { db, env } = createHarness();
+
+  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=true");
+
+  assert.deepEqual(db.releaseUpdateCheckRows(), [
+    {
+      day: todayDay(),
+      channel: "stable",
+      client_version: "1.3.3",
+      latest_version: "1.1.0",
+      update_available: "false",
+      checks: 1,
+      first_check_true: 1,
+      first_check_false: 0,
+      first_check_unknown: 0,
+    },
+  ]);
+});
+
+test("repeat check first_check=false records first_check_false", async () => {
+  const { db, env } = createHarness();
+
+  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=false");
+
+  const [row] = db.releaseUpdateCheckRows();
+  assert.equal(row.channel, "stable");
+  assert.equal(row.client_version, "1.3.3");
+  assert.equal(row.first_check_true, 0);
+  assert.equal(row.first_check_false, 1);
+  assert.equal(row.first_check_unknown, 0);
+});
+
+test("old client with no query params records unknown client/channel/first-check", async () => {
+  const { db, env } = createHarness();
+
+  await dispatch(env, "/update/check");
+
+  assert.deepEqual(db.releaseUpdateCheckRows(), [
+    {
+      day: todayDay(),
+      channel: "unknown",
+      client_version: "unknown",
+      latest_version: "1.1.0",
+      update_available: "unknown",
+      checks: 1,
+      first_check_true: 0,
+      first_check_false: 0,
+      first_check_unknown: 1,
+    },
+  ]);
+});
+
+test("invalid first_check value is bucketed as unknown first-check", async () => {
+  const { db, env } = createHarness();
+
+  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=banana");
+
+  const [row] = db.releaseUpdateCheckRows();
+  assert.equal(row.first_check_true, 0);
+  assert.equal(row.first_check_false, 0);
+  assert.equal(row.first_check_unknown, 1);
+});
+
+test("first_check accepts 1 and 0 aliases", async () => {
+  const { db: dbTrue, env: envTrue } = createHarness();
+  await dispatch(envTrue, "/update/check?current_version=1.3.3&channel=stable&first_check=1");
+  assert.equal(dbTrue.releaseUpdateCheckRows()[0].first_check_true, 1);
+
+  const { db: dbFalse, env: envFalse } = createHarness();
+  await dispatch(envFalse, "/update/check?current_version=1.3.3&channel=stable&first_check=0");
+  assert.equal(dbFalse.releaseUpdateCheckRows()[0].first_check_false, 1);
+});
+
+test("first_check is case-insensitive (TRUE)", async () => {
+  const { db, env } = createHarness();
+
+  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=TRUE");
+
+  assert.equal(db.releaseUpdateCheckRows()[0].first_check_true, 1);
+});
+
+test("D1 write failure never breaks /update/check even with first_check present", async () => {
+  const { db, env } = createHarness({ failReleaseSignalWrites: true });
+
+  const response = await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=true");
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).update_checks, 1);
+  assert.deepEqual(db.releaseUpdateCheckRows(), []);
+});
+
+test("/report exposes first-check aggregates with correct sums and share", async () => {
+  const { env } = createHarness();
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("skip refresh");
+  };
+
+  try {
+    // Two first-seen and one repeat check-in collapse onto the same additive row.
+    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=true");
+    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=true");
+    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=false");
+    // One unknown-first-check check-in.
+    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable");
+
+    const reportResponse = await dispatch(env, "/report", {
+      headers: { "X-Admin-Token": "secret-token" },
+    });
+    const payload = await reportResponse.json();
+
+    assert.equal(reportResponse.status, 200);
+    const today = payload.release_signals.today;
+    assert.equal(today.first_seen_checkins, 2);
+    assert.equal(today.repeat_checkins, 1);
+    assert.equal(today.unknown_first_checkins, 1);
+    assert.equal(today.first_seen_share, 2 / 3);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("first_seen_share is 0 when there are no known-status first-check check-ins", async () => {
+  const { env } = createHarness();
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("skip refresh");
+  };
+
+  try {
+    await dispatch(env, "/update/check");
+
+    const reportResponse = await dispatch(env, "/report", {
+      headers: { "X-Admin-Token": "secret-token" },
+    });
+    const payload = await reportResponse.json();
+    const today = payload.release_signals.today;
+
+    assert.equal(today.first_seen_checkins, 0);
+    assert.equal(today.repeat_checkins, 0);
+    assert.equal(today.unknown_first_checkins, 1);
+    assert.equal(today.first_seen_share, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+// --- Ticket 3: manifest latest-version parse guard ---------------------------
+
+test("manifest latest version 1.3.3 parses as a valid latest version", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.3.3" });
+
+  await dispatch(env, "/update/check");
+
+  assert.equal(db.releaseUpdateCheckRows()[0].latest_version, "1.3.3");
+});
+
+test("manifest latest version v1.3.3 is intentionally rejected and buckets as unknown", async () => {
+  // Guard: the strict semver parser rejects a leading-v tag. If the BUS Core
+  // release pipeline ever emits `vX.Y.Z`, latest-version reporting zeroes out —
+  // this test documents that behavior so the change cannot happen silently.
+  const { db, env } = createHarness({ manifestVersion: "v1.3.3" });
+
+  await dispatch(env, "/update/check");
+
+  assert.equal(db.releaseUpdateCheckRows()[0].latest_version, "unknown");
+});
+
+// --- Ticket 3: /report vs /report?site_key=buscore release-signal parity -----
+
+test("GET /report and GET /report?site_key=buscore return equivalent release_signals", async () => {
+  const { env } = createHarness();
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("skip refresh");
+  };
+
+  try {
+    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=true");
+    await dispatch(env, "/update/check?current_version=1.1.0&channel=stable&first_check=false");
+
+    const plain = await (
+      await dispatch(env, "/report", { headers: { "X-Admin-Token": "secret-token" } })
+    ).json();
+    const scoped = await (
+      await dispatch(env, "/report?site_key=buscore", { headers: { "X-Admin-Token": "secret-token" } })
+    ).json();
+
+    assert.deepEqual(scoped.release_signals, plain.release_signals);
   } finally {
     global.fetch = originalFetch;
   }

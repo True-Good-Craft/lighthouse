@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.19.0] - 2026-07-09
+
+BUS Core analytics repair — Ticket 3: aggregate-safe `first_check` on `/update/check`.
+Additive, aggregate-only, no PII, no identity, no dedupe, no install ID.
+
+### Added
+- **Three additive counters** on `release_update_checks_daily` (migration
+  `0012_add_first_check_aggregates.sql`): `first_check_true`, `first_check_false`, and
+  `first_check_unknown` (`INTEGER NOT NULL DEFAULT 0`). `first_check` is **not** part of the row
+  key — each successful `/update/check` increments exactly one counter on the existing row, so
+  reporting stays additive with no row explosion.
+- **Optional `first_check` query param** on `GET /update/check`, parsed strictly: `true`/`1` →
+  first-seen check, `false`/`0` → repeat check, missing/invalid → unknown first-check status.
+  Never inferred from IP, user agent, cookies, or timing.
+- **`release_signals` first-check aggregates** in each window (`today`/`last_7_days`/`last_30_days`):
+  `first_seen_checkins` (`SUM(first_check_true)`), `repeat_checkins` (`SUM(first_check_false)`),
+  `unknown_first_checkins` (`SUM(first_check_unknown)`), and `first_seen_share`
+  (`first_seen_checkins / (first_seen_checkins + repeat_checkins)`, or `0` when that denominator
+  is `0`). These are aggregate check-in buckets only — not users, installs, devices, or unique
+  anything.
+- **Contract tests**: new/repeat/old-client/invalid `first_check` handling, `1`/`0` aliases,
+  case-insensitivity, best-effort D1 write isolation, report sums + share, a manifest parse guard
+  (`1.3.3` valid vs. strict rejection of `v1.3.3` → `unknown`), and `/report` vs
+  `/report?site_key=buscore` release-signal parity.
+
+### Changed
+- Bumped version to `1.19.0`.
+
+### Notes
+- Existing `release_signals` fields, `metrics_daily` counters, manifest/download/lead/site-ingest
+  behavior, and old query-param-less `/update/check` clients are unchanged. D1/reporting failures
+  never break `/update/check`.
+
 ## [1.18.0] - 2026-07-06
 
 Phase 3 analytics (`BUS-Core-Analytics-Plan.md`): Monthly Asset Brief data + deterministic

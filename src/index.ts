@@ -15,6 +15,8 @@ type CounterColumn = "update_checks" | "downloads" | "errors";
 type MetricTotals = { update_checks: number; downloads: number; errors: number };
 type ReleaseDownloadSummaryRow = { release_version: string; filename: string; downloads: number };
 type ReleaseUpdateAvailability = "true" | "false" | "unknown";
+// Aggregate-only first-check bucket. Never an identity, install, or unique-user signal.
+type ReleaseFirstCheck = "true" | "false" | "unknown";
 type ReleaseSignalWindow = {
   artifact_downloads: number;
   artifact_downloads_by_release: ReleaseDownloadSummaryRow[];
@@ -23,6 +25,10 @@ type ReleaseSignalWindow = {
   update_checks_unknown_client_version: number;
   update_available_impressions: number;
   latest_version_checkins: number;
+  first_seen_checkins: number;
+  repeat_checkins: number;
+  unknown_first_checkins: number;
+  first_seen_share: number;
 };
 type ReleaseSignalsSummary = {
   today: ReleaseSignalWindow;
@@ -35,6 +41,9 @@ type ReleaseUpdateSignalAggregateRow = {
   update_checks_unknown_client_version?: number | null;
   update_available_impressions?: number | null;
   latest_version_checkins?: number | null;
+  first_seen_checkins?: number | null;
+  repeat_checkins?: number | null;
+  unknown_first_checkins?: number | null;
 };
 type TrafficTotals = { row_count: number; visits: number | null; requests: number | null };
 type TrafficRow = { day: string; visits: number | null; requests: number; captured_at: string };
@@ -621,6 +630,28 @@ function resolveUpdateAvailability(
   return compareSemver(latestVersion, clientVersion) > 0 ? "true" : "false";
 }
 
+// Parse the optional aggregate-safe `first_check` query param.
+//   true  / 1 -> first-seen check
+//   false / 0 -> repeat check
+//   missing / invalid -> unknown first-check status
+// Strict allow-list only. Never inferred from IP, user agent, cookies, or timing.
+function resolveFirstCheckSignal(url: URL): ReleaseFirstCheck {
+  const raw = nullIfBlank(url.searchParams.get("first_check"));
+  if (raw === null) {
+    return "unknown";
+  }
+
+  const normalized = raw.toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return "true";
+  }
+  if (normalized === "false" || normalized === "0") {
+    return "false";
+  }
+
+  return "unknown";
+}
+
 function shouldCountArtifactDownload(request: Request): boolean {
   return request.method === "GET" && !request.headers.has("Range");
 }
@@ -1175,13 +1206,21 @@ async function incrementReleaseUpdateCheckCounter(
   channel: string,
   clientVersion: string,
   latestVersion: string,
-  updateAvailable: ReleaseUpdateAvailability
+  updateAvailable: ReleaseUpdateAvailability,
+  firstCheck: ReleaseFirstCheck
 ): Promise<void> {
+  // Additive first-check counters live on the existing row key so we never
+  // explode rows or introduce any per-request identity. Exactly one of the
+  // three deltas is 1 per call.
+  const firstCheckTrue = firstCheck === "true" ? 1 : 0;
+  const firstCheckFalse = firstCheck === "false" ? 1 : 0;
+  const firstCheckUnknown = firstCheck === "unknown" ? 1 : 0;
+
   await db
     .prepare(
-      "INSERT INTO release_update_checks_daily(day, channel, client_version, latest_version, update_available, checks) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(day, channel, client_version, latest_version, update_available) DO UPDATE SET checks = checks + 1"
+      "INSERT INTO release_update_checks_daily(day, channel, client_version, latest_version, update_available, checks, first_check_true, first_check_false, first_check_unknown) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?) ON CONFLICT(day, channel, client_version, latest_version, update_available) DO UPDATE SET checks = checks + 1, first_check_true = first_check_true + excluded.first_check_true, first_check_false = first_check_false + excluded.first_check_false, first_check_unknown = first_check_unknown + excluded.first_check_unknown"
     )
-    .bind(day, channel, clientVersion, latestVersion, updateAvailable)
+    .bind(day, channel, clientVersion, latestVersion, updateAvailable, firstCheckTrue, firstCheckFalse, firstCheckUnknown)
     .run();
 }
 
@@ -1204,10 +1243,11 @@ async function incrementReleaseUpdateCheckCounterBestEffort(
   channel: string,
   clientVersion: string,
   latestVersion: string,
-  updateAvailable: ReleaseUpdateAvailability
+  updateAvailable: ReleaseUpdateAvailability,
+  firstCheck: ReleaseFirstCheck
 ): Promise<void> {
   try {
-    await incrementReleaseUpdateCheckCounter(db, day, channel, clientVersion, latestVersion, updateAvailable);
+    await incrementReleaseUpdateCheckCounter(db, day, channel, clientVersion, latestVersion, updateAvailable, firstCheck);
   } catch (error) {
     console.warn("Release update-check aggregate increment skipped after D1 failure.", error);
   }
@@ -1327,10 +1367,14 @@ async function queryReleaseUpdateSignalsInRange(
 ): Promise<Omit<ReleaseSignalWindow, "artifact_downloads" | "artifact_downloads_by_release">> {
   const row = await db
     .prepare(
-      "SELECT COALESCE(SUM(checks),0) AS update_checks, COALESCE(SUM(CASE WHEN client_version != ? THEN checks ELSE 0 END),0) AS update_checks_with_known_client_version, COALESCE(SUM(CASE WHEN client_version = ? THEN checks ELSE 0 END),0) AS update_checks_unknown_client_version, COALESCE(SUM(CASE WHEN update_available = 'true' THEN checks ELSE 0 END),0) AS update_available_impressions, COALESCE(SUM(CASE WHEN update_available = 'false' AND client_version = latest_version AND client_version != ? THEN checks ELSE 0 END),0) AS latest_version_checkins FROM release_update_checks_daily WHERE day >= ? AND day <= ?"
+      "SELECT COALESCE(SUM(checks),0) AS update_checks, COALESCE(SUM(CASE WHEN client_version != ? THEN checks ELSE 0 END),0) AS update_checks_with_known_client_version, COALESCE(SUM(CASE WHEN client_version = ? THEN checks ELSE 0 END),0) AS update_checks_unknown_client_version, COALESCE(SUM(CASE WHEN update_available = 'true' THEN checks ELSE 0 END),0) AS update_available_impressions, COALESCE(SUM(CASE WHEN update_available = 'false' AND client_version = latest_version AND client_version != ? THEN checks ELSE 0 END),0) AS latest_version_checkins, COALESCE(SUM(first_check_true),0) AS first_seen_checkins, COALESCE(SUM(first_check_false),0) AS repeat_checkins, COALESCE(SUM(first_check_unknown),0) AS unknown_first_checkins FROM release_update_checks_daily WHERE day >= ? AND day <= ?"
     )
     .bind(UNKNOWN_VERSION_BUCKET, UNKNOWN_VERSION_BUCKET, UNKNOWN_VERSION_BUCKET, startDay, endDay)
     .first<ReleaseUpdateSignalAggregateRow>();
+
+  const firstSeenCheckins = row?.first_seen_checkins ?? 0;
+  const repeatCheckins = row?.repeat_checkins ?? 0;
+  const firstCheckKnown = firstSeenCheckins + repeatCheckins;
 
   return {
     update_checks: row?.update_checks ?? 0,
@@ -1338,6 +1382,12 @@ async function queryReleaseUpdateSignalsInRange(
     update_checks_unknown_client_version: row?.update_checks_unknown_client_version ?? 0,
     update_available_impressions: row?.update_available_impressions ?? 0,
     latest_version_checkins: row?.latest_version_checkins ?? 0,
+    first_seen_checkins: firstSeenCheckins,
+    repeat_checkins: repeatCheckins,
+    unknown_first_checkins: row?.unknown_first_checkins ?? 0,
+    // Share of known-status check-ins that were first-seen. 0 when no known-status
+    // check-ins exist, matching the repo's number-only report style (never null).
+    first_seen_share: firstCheckKnown > 0 ? firstSeenCheckins / firstCheckKnown : 0,
   };
 }
 
@@ -1350,6 +1400,10 @@ function emptyReleaseSignalWindow(): ReleaseSignalWindow {
     update_checks_unknown_client_version: 0,
     update_available_impressions: 0,
     latest_version_checkins: 0,
+    first_seen_checkins: 0,
+    repeat_checkins: 0,
+    unknown_first_checkins: 0,
+    first_seen_share: 0,
   };
 }
 
@@ -5045,6 +5099,7 @@ export default {
             clientVersion === UNKNOWN_VERSION_BUCKET ? null : clientVersion,
             latestVersion === UNKNOWN_VERSION_BUCKET ? null : latestVersion
           );
+          const firstCheck = resolveFirstCheckSignal(url);
 
           await incrementCounter(env.DB, day, "update_checks");
           await incrementReleaseUpdateCheckCounterBestEffort(
@@ -5053,7 +5108,8 @@ export default {
             channel,
             clientVersion,
             latestVersion,
-            updateAvailable
+            updateAvailable,
+            firstCheck
           );
         }
         return withCors(

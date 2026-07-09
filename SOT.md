@@ -124,6 +124,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - On the same successful response, records additive daily update-check detail in `release_update_checks_daily` with `channel`, `client_version`, `latest_version`, and `update_available` (`true` | `false` | `unknown`).
   - Lighthouse accepts optional client-version signals from query params `current_version` or `version`, and header `X-BUS-Core-Version`.
   - Lighthouse accepts optional channel signals from query param `channel` or header `X-BUS-Core-Channel`.
+  - Lighthouse accepts an optional aggregate-safe `first_check` query param. It is parsed strictly: `true`/`1` → first-seen check, `false`/`0` → repeat check, missing/invalid → unknown first-check status. The same successful response increments exactly one of the additive counters `first_check_true`, `first_check_false`, or `first_check_unknown` on the `release_update_checks_daily` row. `first_check` is **never** inferred from IP, user agent, cookies, or timing, and is an aggregate check-in bucket only — never a user, install, device, or unique identifier.
   - Missing or malformed client versions do not fail the request; they are stored as `client_version = "unknown"` and `update_available = "unknown"`.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` on manifest errors.
 
@@ -251,8 +252,13 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - `update_checks_unknown_client_version`
   - `update_available_impressions`
   - `latest_version_checkins`
+  - `first_seen_checkins` = `SUM(first_check_true)`
+  - `repeat_checkins` = `SUM(first_check_false)`
+  - `unknown_first_checkins` = `SUM(first_check_unknown)`
+  - `first_seen_share` = `first_seen_checkins / (first_seen_checkins + repeat_checkins)`, or `0` when that denominator is `0`
 - `update_available_impressions` means a known client version was older than the latest manifest version served.
 - `latest_version_checkins` means a known client version matched the latest manifest version served.
+- `first_seen_checkins`, `repeat_checkins`, and `unknown_first_checkins` are aggregate check-in bucket counts derived from the optional `first_check` param. They are not users, installs, devices, or unique anything; there is no identity, dedupe, or install ID.
 - Lighthouse does not claim installs or successful update completion; it reports only observable check and handout signals.
 
 ### Fallback Behavior
@@ -304,6 +310,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `BUSCORE_LEADS_DB` is read only by the BUS Core `operator_summary` report path. It aggregates `early_access_leads` attribution columns (`src`, `utm_source`, `utm_campaign`, `referrer_domain`, and timestamps) and never returns lead emails, workflow details, analytics IDs, IP addresses, hashed IPs, user-agent hashes, or raw lead rows.
 - `release_downloads_daily` stores one row per day, filename, and release version for successful Lighthouse-served artifact handouts.
 - `release_update_checks_daily` stores one row per day, channel, client version bucket, latest manifest version bucket, and `update_available` state for successful `GET /update/check` responses.
+- `release_update_checks_daily` also carries the additive first-check counters `first_check_true`, `first_check_false`, and `first_check_unknown` (all `INTEGER NOT NULL DEFAULT 0`). `first_check` is not part of the row key: each successful check increments exactly one of these counters on the existing row, so first-check reporting never causes row explosion and stays aggregate-only (no identity, install ID, or dedupe).
 
 ## 5. Configuration
 
