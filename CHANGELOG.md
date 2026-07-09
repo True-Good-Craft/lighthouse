@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.20.0] - 2026-07-09
+
+BUS Core analytics repair — Ticket 4A: release-signal update-check reconciliation.
+Additive, aggregate-only safety instrumentation; no migration, identity, or endpoint behavior change.
+
+### Added
+- **Raw-versus-breakdown reconciliation fields** in every `release_signals` window (`today`,
+  `last_7_days`, and `last_30_days`): `raw_update_checks`
+  (`SUM(metrics_daily.update_checks)`), `breakdown_update_checks`
+  (`SUM(release_update_checks_daily.checks)`), and `raw_breakdown_delta`
+  (`raw_update_checks - breakdown_update_checks`). A positive delta exposes a successful raw
+  counter increment whose additive versioned-breakdown write did not persist.
+- **Contract coverage** for normal, old-client, known-version first-check, and simulated
+  release-signal write-failure reconciliation. The update endpoint remains successful when its
+  best-effort breakdown write fails.
+
+### Changed
+- Bumped version to `1.20.0`.
+
+### Notes
+- Existing `release_signals.update_checks` and all existing report fields remain unchanged;
+  `update_checks` continues to represent the versioned breakdown total for compatibility.
+
 ## [1.19.0] - 2026-07-09
 
 BUS Core analytics repair — Ticket 3: aggregate-safe `first_check` on `/update/check`.

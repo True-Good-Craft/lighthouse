@@ -247,6 +247,9 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Each release-signal window contains:
   - `artifact_downloads`
   - `artifact_downloads_by_release[]` with `release_version`, `filename`, and `downloads`
+  - `raw_update_checks` = `SUM(metrics_daily.update_checks)` for the window
+  - `breakdown_update_checks` = `SUM(release_update_checks_daily.checks)` for the window
+  - `raw_breakdown_delta` = `raw_update_checks - breakdown_update_checks`
   - `update_checks`
   - `update_checks_with_known_client_version`
   - `update_checks_unknown_client_version`
@@ -258,6 +261,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - `first_seen_share` = `first_seen_checkins / (first_seen_checkins + repeat_checkins)`, or `0` when that denominator is `0`
 - `update_available_impressions` means a known client version was older than the latest manifest version served.
 - `latest_version_checkins` means a known client version matched the latest manifest version served.
+- The raw-versus-breakdown fields are reconciliation instrumentation: a positive `raw_breakdown_delta` means raw update checks were counted but the versioned daily-breakdown total is lower for the same window. Existing `update_checks` remains the versioned breakdown total for backward compatibility.
 - `first_seen_checkins`, `repeat_checkins`, and `unknown_first_checkins` are aggregate check-in bucket counts derived from the optional `first_check` param. They are not users, installs, devices, or unique anything; there is no identity, dedupe, or install ID.
 - Lighthouse does not claim installs or successful update completion; it reports only observable check and handout signals.
 

@@ -20,6 +20,9 @@ type ReleaseFirstCheck = "true" | "false" | "unknown";
 type ReleaseSignalWindow = {
   artifact_downloads: number;
   artifact_downloads_by_release: ReleaseDownloadSummaryRow[];
+  raw_update_checks: number;
+  breakdown_update_checks: number;
+  raw_breakdown_delta: number;
   update_checks: number;
   update_checks_with_known_client_version: number;
   update_checks_unknown_client_version: number;
@@ -1364,7 +1367,10 @@ async function queryReleaseUpdateSignalsInRange(
   db: D1Database,
   startDay: string,
   endDay: string
-): Promise<Omit<ReleaseSignalWindow, "artifact_downloads" | "artifact_downloads_by_release">> {
+): Promise<Omit<
+  ReleaseSignalWindow,
+  "artifact_downloads" | "artifact_downloads_by_release" | "raw_update_checks" | "breakdown_update_checks" | "raw_breakdown_delta"
+>> {
   const row = await db
     .prepare(
       "SELECT COALESCE(SUM(checks),0) AS update_checks, COALESCE(SUM(CASE WHEN client_version != ? THEN checks ELSE 0 END),0) AS update_checks_with_known_client_version, COALESCE(SUM(CASE WHEN client_version = ? THEN checks ELSE 0 END),0) AS update_checks_unknown_client_version, COALESCE(SUM(CASE WHEN update_available = 'true' THEN checks ELSE 0 END),0) AS update_available_impressions, COALESCE(SUM(CASE WHEN update_available = 'false' AND client_version = latest_version AND client_version != ? THEN checks ELSE 0 END),0) AS latest_version_checkins, COALESCE(SUM(first_check_true),0) AS first_seen_checkins, COALESCE(SUM(first_check_false),0) AS repeat_checkins, COALESCE(SUM(first_check_unknown),0) AS unknown_first_checkins FROM release_update_checks_daily WHERE day >= ? AND day <= ?"
@@ -1395,6 +1401,9 @@ function emptyReleaseSignalWindow(): ReleaseSignalWindow {
   return {
     artifact_downloads: 0,
     artifact_downloads_by_release: [],
+    raw_update_checks: 0,
+    breakdown_update_checks: 0,
+    raw_breakdown_delta: 0,
     update_checks: 0,
     update_checks_with_known_client_version: 0,
     update_checks_unknown_client_version: 0,
@@ -1413,7 +1422,8 @@ async function buildReleaseSignalWindow(
   endDay: string
 ): Promise<ReleaseSignalWindow> {
   try {
-    const [artifactDownloads, artifactDownloadBreakdown, updateSignals] = await Promise.all([
+    const [rawTotals, artifactDownloads, artifactDownloadBreakdown, updateSignals] = await Promise.all([
+      queryTotalsInRange(db, startDay, endDay),
       queryReleaseDownloadTotalsInRange(db, startDay, endDay),
       queryReleaseDownloadBreakdownInRange(db, startDay, endDay),
       queryReleaseUpdateSignalsInRange(db, startDay, endDay),
@@ -1422,6 +1432,9 @@ async function buildReleaseSignalWindow(
     return {
       artifact_downloads: artifactDownloads,
       artifact_downloads_by_release: artifactDownloadBreakdown,
+      raw_update_checks: rawTotals.update_checks,
+      breakdown_update_checks: updateSignals.update_checks,
+      raw_breakdown_delta: rawTotals.update_checks - updateSignals.update_checks,
       ...updateSignals,
     };
   } catch (error) {

@@ -549,6 +549,9 @@ test("GET /update/check?current_version=1.1.0 records update_available = false a
           downloads: 1,
         },
       ],
+      raw_update_checks: 1,
+      breakdown_update_checks: 1,
+      raw_breakdown_delta: 0,
       update_checks: 1,
       update_checks_with_known_client_version: 1,
       update_checks_unknown_client_version: 0,
@@ -584,6 +587,9 @@ test("/report remains available when additive release-signal aggregate reads fai
     assert.deepEqual(payload.release_signals.today, {
       artifact_downloads: 0,
       artifact_downloads_by_release: [],
+      raw_update_checks: 0,
+      breakdown_update_checks: 0,
+      raw_breakdown_delta: 0,
       update_checks: 0,
       update_checks_with_known_client_version: 0,
       update_checks_unknown_client_version: 0,
@@ -693,6 +699,31 @@ test("D1 write failure never breaks /update/check even with first_check present"
   assert.deepEqual(db.releaseUpdateCheckRows(), []);
 });
 
+test("/report exposes a raw-versus-breakdown update-check mismatch when additive writes fail", async () => {
+  const { env } = createHarness({ failReleaseSignalWrites: true });
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("skip refresh");
+  };
+
+  try {
+    const updateResponse = await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=true");
+    const reportResponse = await dispatch(env, "/report", {
+      headers: { "X-Admin-Token": "secret-token" },
+    });
+    const payload = await reportResponse.json();
+
+    assert.equal(updateResponse.status, 200);
+    for (const window of Object.values(payload.release_signals)) {
+      assert.equal(window.raw_update_checks, 1);
+      assert.equal(window.breakdown_update_checks, 0);
+      assert.equal(window.raw_breakdown_delta, 1);
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("/report exposes first-check aggregates with correct sums and share", async () => {
   const { env } = createHarness();
   const originalFetch = global.fetch;
@@ -715,6 +746,9 @@ test("/report exposes first-check aggregates with correct sums and share", async
 
     assert.equal(reportResponse.status, 200);
     const today = payload.release_signals.today;
+    assert.equal(today.raw_update_checks, 4);
+    assert.equal(today.breakdown_update_checks, 4);
+    assert.equal(today.raw_breakdown_delta, 0);
     assert.equal(today.first_seen_checkins, 2);
     assert.equal(today.repeat_checkins, 1);
     assert.equal(today.unknown_first_checkins, 1);
@@ -740,6 +774,9 @@ test("first_seen_share is 0 when there are no known-status first-check check-ins
     const payload = await reportResponse.json();
     const today = payload.release_signals.today;
 
+    assert.equal(today.raw_update_checks, 1);
+    assert.equal(today.breakdown_update_checks, 1);
+    assert.equal(today.raw_breakdown_delta, 0);
     assert.equal(today.first_seen_checkins, 0);
     assert.equal(today.repeat_checkins, 0);
     assert.equal(today.unknown_first_checkins, 1);
