@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Clarified user-owned commit, deployment, D1 migration, secret, and release approval rules.
+- Added a minimum CI validation workflow for type-checking and tests.
+
 ## [1.20.0] - 2026-07-09
 
 BUS Core analytics repair — Ticket 4A: release-signal update-check reconciliation.

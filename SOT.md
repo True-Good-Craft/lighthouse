@@ -14,6 +14,13 @@ Shipped Lighthouse behavior is authorized by `SOT.md`, recorded in `CHANGELOG.md
 No behavioral, contract, storage, configuration, auth, or scheduling change is considered released unless all three are updated together in the same change set.
 Lighthouse mirrors only implementation-relevant policy truth from `TGC Analytics Policie.md`; it does not duplicate full company policy prose that Lighthouse does not implement.
 
+### Governance and Release Ownership
+
+- Update `SOT.md` and `CHANGELOG.md` in the same change as any operator-visible, report-contract, endpoint, schema, privacy/security, or cross-repository change.
+- Keep the `package.json` and `package-lock.json` version aligned with `CHANGELOG.md` when a repository change requires a version bump under the local governance policy.
+- D1 migrations must be additive and backward-compatible where practical.
+- Jamie/the user owns commits, deployments, D1 migration approval, and release approval. Agents prepare changes only and must not print secret values.
+
 ### Operational Independence Rule
 
 Operational Independence Rule: Lighthouse must remain an independently runnable service. It may observe, receive traffic from, or report on BUS Core and other systems, but its core operation must not require BUS Core or any other external service to be available. All integrations must be optional, additive, and non-blocking.

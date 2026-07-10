@@ -25,6 +25,14 @@ Authority sources in descending order:
 - Agents must not silently "fix" behavior by guessing intent.
 - When conflict exists, stop and report—do not proceed based on assumption.
 
+## Owner Approval and Operational Safety
+
+- Do not commit unless Jamie/the user explicitly approves.
+- Do not deploy, run `wrangler deploy`, apply D1 migrations, rotate secrets, perform destructive operations, or publish releases unless Jamie/the user explicitly approves.
+- When code depends on a D1 schema change, a migration requires explicit approval and remote verification before any Worker deployment.
+- Do not print or commit secret values.
+- Cross-repository contracts with Agent Smith, BUS Core, buscore-site, or the leads database must be documented when touched.
+
 ---
 
 ## 2. Mandatory Change Bundle
