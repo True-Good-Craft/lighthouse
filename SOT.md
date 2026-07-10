@@ -18,6 +18,7 @@ Lighthouse mirrors only implementation-relevant policy truth from `TGC Analytics
 
 - Update `SOT.md` and `CHANGELOG.md` in the same change as any operator-visible, report-contract, endpoint, schema, privacy/security, or cross-repository change.
 - Keep the `package.json` and `package-lock.json` version aligned with `CHANGELOG.md` when a repository change requires a version bump under the local governance policy.
+- The governance workflow runs type-checking and the full Node test suite. Test discovery must remain shell-independent so local Windows validation and GitHub's Ubuntu runner execute the same tests.
 - D1 migrations must be additive and backward-compatible where practical.
 - Jamie/the user owns commits, deployments, D1 migration approval, and release approval. Agents prepare changes only and must not print secret values.
 

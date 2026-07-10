@@ -1,13 +1,13 @@
 {
   "name": "buscore-lighthouse",
-  "version": "1.20.0",
+  "version": "1.20.1",
   "description": "Standalone deterministic metrics worker: manifest proxy + fixed daily counters + protected on-demand reporting.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "build": "tsc --outDir dist --module NodeNext --moduleResolution NodeNext --noEmit false",
-    "test": "npm run build && node --test tests/**/*.test.mjs"
+    "test": "npm run build && node --test"
   },
   "repository": {
     "type": "git",

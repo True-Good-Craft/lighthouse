@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## [1.20.1] - 2026-07-09
+
+### Fixed
+- Made Node test discovery shell-independent so the governance workflow runs on GitHub's Ubuntu runner instead of treating `tests/**/*.test.mjs` as a missing literal path.
 
 ### Changed
 - Clarified user-owned commit, deployment, D1 migration, secret, and release approval rules.
 - Added a minimum CI validation workflow for type-checking and tests.
+- Updated the workflow actions to Node 24-based releases to avoid deprecated action-runtime warnings.
 
 ## [1.20.0] - 2026-07-09
 
