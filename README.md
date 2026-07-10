@@ -1,5 +1,19 @@
 # buscore-lighthouse
 
+## BUS Core transition direction
+
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Repository version 1.21.0 also implements the strict BUS Core product-telemetry v1 contract at `POST /telemetry/v1/events`; it is not production behavior until migration 0013 is applied and the Worker is explicitly deployed.
+
+The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
+
+Contract artifacts:
+
+- `contracts/buscore-product-telemetry-v1.json`
+- `migrations/0013_add_buscore_product_telemetry.sql`
+- `tests/product-telemetry-contract.test.mjs`
+
+Retention is 30 days for accepted raw product events, 400 days for daily aggregates, and 2 days for privacy-preserving IP-hash rate buckets. Raw IP addresses are never stored.
+
 Lighthouse is a single Cloudflare Worker that provides a small, deterministic, privacy-first, aggregate-first metrics primitive with one narrow first-party JS-fired pageview ingestion path.
 
 Architectural rule:

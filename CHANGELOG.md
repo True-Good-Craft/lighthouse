@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.21.0] - 2026-07-10
+
+- Added strict `POST /telemetry/v1/events` ingestion for BUS Core product telemetry schema `1.0`.
+- Added an exact event allowlist, exact root/context field sets, UUIDv4 installation and event identifiers, SemVer/channel/OS validation, and rejection of unknown or unexpected fields.
+- Added idempotent event retry handling, privacy-preserving short-lived IP-hash rate controls, 30-day raw retention, 400-day aggregate retention, and daily aggregation by event/version/channel/OS.
+- Added migration `0013_add_buscore_product_telemetry.sql`, the canonical JSON contract fixture, and contract/integration tests proving prohibited extra content is rejected.
+- Kept public-site event/pageview contracts and release/update routes unchanged. Deployment and remote migration remain owner-approved operations and were not performed.
+
+## [1.20.2] - 2026-07-10
+
+- Documented the approved, not-yet-shipped BUS Core product-telemetry direction and Lighthouse's future role as its versioned contract authority.
+- Defined the event allowlist, field rejection, retention, installation-identifier, fail-soft, and prohibited-business-content boundaries that must exist before client telemetry ships.
+- Preserved all currently deployed Lighthouse routes, schemas, reports, storage, and retention behavior; this is documentation and contract direction only.
+
 ## [1.20.1] - 2026-07-09
 
 ### Fixed

@@ -1,3 +1,9 @@
+import {
+  BUSCORE_TELEMETRY_PATH,
+  handleBuscoreTelemetryRequest,
+  pruneBuscoreTelemetry,
+} from "./productTelemetry.js";
+
 export interface Env {
   DB: D1Database;
   BUSCORE_LEADS_DB?: D1Database;
@@ -4926,6 +4932,9 @@ export default {
           prunePageviewData(env.DB).catch((error) => {
             console.warn("Pageview retention cleanup skipped after D1 failure.", error);
           }),
+          pruneBuscoreTelemetry(env.DB).catch((error) => {
+            console.warn("BUS Core product telemetry retention cleanup skipped after D1 failure.", error);
+          }),
           capturePreviousCompletedDailyRollup(env).catch((error) => {
             console.warn("Daily rollup capture skipped after failure.", error);
           }),
@@ -4949,7 +4958,7 @@ export default {
 
     if (request.method === "OPTIONS") {
       const allowMethods =
-        url.pathname === PAGEVIEW_METRICS_PATH || url.pathname === SITE_EVENT_METRICS_PATH
+        url.pathname === PAGEVIEW_METRICS_PATH || url.pathname === SITE_EVENT_METRICS_PATH || url.pathname === BUSCORE_TELEMETRY_PATH
           ? "POST, OPTIONS"
           : "GET, OPTIONS";
       return withCors(request, new Response(null, { status: 200 }), allowMethods);
@@ -4977,6 +4986,10 @@ export default {
           })
       );
       return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
+    }
+
+    if (url.pathname === BUSCORE_TELEMETRY_PATH) {
+      return handleBuscoreTelemetryRequest(request, env.DB);
     }
 
     // Admin-token-protected operator route for logging community posts.

@@ -43,6 +43,16 @@ TGC does **not** collect unnecessary personal information just because it is ava
 * **No behavioral profiling by default:** TGC analytics should not drift into cross-day user linking or user profiling unless that collection is explicitly justified and approved.
 * **Fail-soft and non-blocking:** Analytics collection must not break the product or degrade primary user flows.
 
+## BUS Core product telemetry policy
+
+BUS Core Self-Managed remains free, open-source, customer-operated, and fully usable without a subscription or forced hosted service. TGC Managed BUS is the optional paid operating service direction.
+
+Limited BUS Core product telemetry is approved for future implementation only through a versioned Lighthouse contract. The current BUS Core release does not yet emit that broader product telemetry.
+
+Permitted future categories are installation/release state, coarse module openings, first-workflow milestones, backup/restore/import outcomes, and reliability failures. The contract must reject customer or supplier names, employee names, item or recipe names, invoice contents, email addresses, business documents, file paths, exact financial values, exact inventory or production quantities, raw database records, machine fingerprints, persistent raw IP identifiers, and detailed clickstream histories.
+
+A random local installation identifier may be used only for installation-level product signals. It must not be hardware-derived or secretly joined to voluntary contact data. Identity and commercial interest must come from separate voluntary managed-service, support, feedback, or signup actions.
+
 ## Types of Analytics
 * Pageviews
 * Source
@@ -402,4 +412,3 @@ Agent Smith is a read-only formatting bridge. It MUST adhere to the following ha
 * **Correct Summary Keys:** Smith MUST parse traffic\_requests\_7d and traffic\_visits\_7d. It MUST NOT look for legacy keys like requests\_7d.  
 * **Legible Filtering:** Smith MUST explicitly state when Report scope is production-only and render the excluded\_non\_production\_host value so operators know when data is filtered versus missing.  
 * **No Fake Parity:** Smith MUST NOT silence or fake empty arrays, and it MUST NOT label an explicit \[\] array as "unavailable".
-

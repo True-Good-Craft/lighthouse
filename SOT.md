@@ -1,5 +1,25 @@
 # Lighthouse — Source of Truth
 
+## BUS Core product-telemetry contract v1 — implemented, not yet deployed
+
+Lighthouse is the versioned contract and ingestion authority for limited BUS Core product telemetry. Repository version 1.21.0 implements the contract, but it is not production behavior until migration `0013_add_buscore_product_telemetry.sql` is remotely applied and the Worker is explicitly deployed.
+
+The implemented contract provides:
+
+- a versioned BUS Core event schema;
+- an event-name allowlist and per-event field allowlists;
+- rejection of unknown events and unexpected fields;
+- separation of release/update signals from product-usage events;
+- bounded retention and privacy-preserving rate controls;
+- aggregates for release health, version distribution, coarse module use, workflow milestones, reliability, and Managed BUS inquiries;
+- a prohibition on customer, supplier, employee, item, recipe, invoice, document, filepath, exact financial, exact quantity, raw database, machine-fingerprint, or persistent raw-IP content.
+
+The approved BUS Core installation identifier is random and locally generated. It must not be derived from hardware, username, filesystem, network, account, or machine-fingerprint data. Lighthouse availability must remain optional and non-blocking for the self-managed product.
+
+The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible. Accepted raw events are retained for 30 days, aggregates for 400 days, and IP-hash rate buckets for 2 days. Event IDs provide idempotent retry deduplication.
+
+Existing public-site `/metrics/event` and legacy `/metrics/pageview` behavior remain unchanged. BUS Core client telemetry must not ship until this Lighthouse migration and Worker version are deployed and production payload verification passes.
+
 ## 1. System Overview
 
   - Lighthouse is a single Cloudflare Worker that acts as a minimal, privacy-first, aggregate-first stats source with a multi-site event ingestion spine and a legacy BUS Core pageview ingestion path.
