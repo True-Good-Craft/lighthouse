@@ -237,6 +237,7 @@ test("assembleLegacyReport preserves the legacy top-level shape", () => {
     "legacy_pageview",
     "intent_counters",
     "release_signals",
+    "product_telemetry",
     "identity",
     "site_events",
     "operator_summary",

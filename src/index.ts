@@ -1,7 +1,9 @@
 import {
   BUSCORE_TELEMETRY_PATH,
+  buildBuscoreProductTelemetryReport,
   handleBuscoreTelemetryRequest,
   pruneBuscoreTelemetry,
+  type BuscoreProductTelemetryReport,
 } from "./productTelemetry.js";
 
 export interface Env {
@@ -12,6 +14,7 @@ export interface Env {
   IGNORED_IP: string;
   CF_API_TOKEN: string;
   CF_ZONE_TAG: string;
+  TELEMETRY_RATE_LIMIT_SECRET?: string;
   // Phase 2 (optional, additive). Missing values degrade to null data, never fake.
   GITHUB_REPO?: string; // defaults to True-Good-Craft/TGC-BUS-Core
   GITHUB_TOKEN?: string; // optional; raises rate limit and unlocks private fields if ever needed
@@ -3077,6 +3080,7 @@ export function assembleLegacyReport(input: {
   identity: IdentitySummary;
   siteEvents: SiteEventSummary | null;
   releaseSignals: ReleaseSignalsSummary;
+  productTelemetry?: BuscoreProductTelemetryReport;
   operatorSummary: OperatorSummary | undefined;
 }) {
   const humanTraffic = {
@@ -3120,6 +3124,7 @@ export function assembleLegacyReport(input: {
       month_to_date: input.monthToDate,
     },
     release_signals: input.releaseSignals,
+    product_telemetry: input.productTelemetry ?? { available: false, reason: "storage_unavailable" as const },
     identity: input.identity,
     site_events: input.siteEvents,
     operator_summary: input.operatorSummary,
@@ -3287,6 +3292,7 @@ async function buildLegacyReport(
     todayReleaseSignals,
     last7ReleaseSignals,
     last30ReleaseSignals,
+    productTelemetry,
   ] = await Promise.all([
     queryTotalsInRange(db, todayDay, todayDay),
     queryTotalsInRange(db, yesterdayDay, yesterdayDay),
@@ -3308,6 +3314,7 @@ async function buildLegacyReport(
     buildReleaseSignalWindow(db, todayDay, todayDay),
     buildReleaseSignalWindow(db, last7StartDay, todayDay),
     buildReleaseSignalWindow(db, last30StartDay, todayDay),
+    buildBuscoreProductTelemetryReport(db, now),
   ]);
 
   const identity = summarizeIdentity(identityEvents, firstSeenByIdentity, todayDay, last7StartDay);
@@ -3348,6 +3355,7 @@ async function buildLegacyReport(
       last_7_days: last7ReleaseSignals,
       last_30_days: last30ReleaseSignals,
     },
+    productTelemetry,
     operatorSummary,
   });
 }
@@ -4989,7 +4997,11 @@ export default {
     }
 
     if (url.pathname === BUSCORE_TELEMETRY_PATH) {
-      return handleBuscoreTelemetryRequest(request, env.DB);
+      return withCors(
+        request,
+        await handleBuscoreTelemetryRequest(request, env.DB, env.TELEMETRY_RATE_LIMIT_SECRET),
+        "POST, OPTIONS"
+      );
     }
 
     // Admin-token-protected operator route for logging community posts.

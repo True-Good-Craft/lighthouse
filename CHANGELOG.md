@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.22.0] - 2026-07-12
+
+- Completed BUS Core product-telemetry v1 with server-derived installation/release, module-use, workflow-milestone, and reliability categories.
+- Made raw acceptance and daily aggregation atomic through migration 0013's `AFTER INSERT` trigger while preserving event-id retry deduplication.
+- Added bounded streaming body reads, strict payload/dimension limits, and HMAC-SHA256 rate identifiers keyed by a production secret and rotated each UTC minute.
+- Added literal `product_telemetry` report windows with event/category/version/channel/OS counts, first launches, and aggregate returning-installation signals; no installation identifiers are returned.
+- Kept `/update/check` authoritative for release-route checks and named product `update_check` events separately as delivery observations.
+- Expanded production-like fixtures plus method, content, size, rate, prohibited-field, persistence-failure, retention, migration-trigger, report, route, and CORS coverage.
+- Migration 0013 and the Worker remain unapplied and undeployed pending owner approval and production verification.
+
+## [1.21.1] - 2026-07-12
+
+- Completed update-check reconciliation documentation by adding the raw/breakdown/delta and first/repeat fields to the README report contract.
+- Declared `raw_update_checks` authoritative for decisions and retained `release_signals.update_checks` as compatibility-only breakdown data.
+- Added direct contract coverage for migration `0012_add_first_check_aggregates.sql`.
+- No endpoint, storage, ingestion, or deployed behavior changed.
+
 ## [1.21.0] - 2026-07-10
 
 - Added strict `POST /telemetry/v1/events` ingestion for BUS Core product telemetry schema `1.0`.

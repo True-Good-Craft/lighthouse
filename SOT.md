@@ -2,21 +2,23 @@
 
 ## BUS Core product-telemetry contract v1 — implemented, not yet deployed
 
-Lighthouse is the versioned contract and ingestion authority for limited BUS Core product telemetry. Repository version 1.21.0 implements the contract, but it is not production behavior until migration `0013_add_buscore_product_telemetry.sql` is remotely applied and the Worker is explicitly deployed.
+Lighthouse is the versioned contract and ingestion authority for limited BUS Core product telemetry. Repository version 1.22.0 implements the contract, but it is not production behavior until migration `0013_add_buscore_product_telemetry.sql` is remotely applied and the Worker is explicitly deployed.
 
 The implemented contract provides:
 
 - a versioned BUS Core event schema;
-- an event-name allowlist and per-event field allowlists;
+- an event-name allowlist where every v1 event accepts the same exact common root/context fields and no event-specific content fields;
 - rejection of unknown events and unexpected fields;
 - separation of release/update signals from product-usage events;
 - bounded retention and privacy-preserving rate controls;
-- aggregates for release health, version distribution, coarse module use, workflow milestones, reliability, and Managed BUS inquiries;
+- literal aggregates for installation/release observations, version distribution, coarse module use, workflow milestones, and reliability; voluntary Managed BUS inquiries remain a separate lead-system contract and are not product telemetry;
 - a prohibition on customer, supplier, employee, item, recipe, invoice, document, filepath, exact financial, exact quantity, raw database, machine-fingerprint, or persistent raw-IP content.
 
 The approved BUS Core installation identifier is random and locally generated. It must not be derived from hardware, username, filesystem, network, account, or machine-fingerprint data. Lighthouse availability must remain optional and non-blocking for the self-managed product.
 
-The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible. Accepted raw events are retained for 30 days, aggregates for 400 days, and IP-hash rate buckets for 2 days. Event IDs provide idempotent retry deduplication.
+The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible, and the server derives the category. Accepted raw events are retained for 30 UTC-day buckets, aggregates for 400, and rate buckets for 2 days. Rate keys are minute-rotating HMAC-SHA256 values keyed by `TELEMETRY_RATE_LIMIT_SECRET`; raw IP and unsalted IP hashes are not retained. Event IDs provide idempotent retry deduplication, and migration 0013's `AFTER INSERT` trigger makes the accepted raw insert and aggregate increment atomic.
+
+Bare BUS Core `/report` output includes additive `product_telemetry` windows for today, 7 days, and 30 days. Output is literal: category and event counts, version/channel/OS distributions, first-launch counts, update-check delivery observations, and counts of random installation IDs observed on at least two received UTC days within the retained raw window. It returns no installation IDs and does not call those counts people, users, active installs, or retention. The existing `/update/check` raw counter remains authoritative for release-route update checks; `product_telemetry.update_check_delivery_observations` is separate.
 
 Existing public-site `/metrics/event` and legacy `/metrics/pageview` behavior remain unchanged. BUS Core client telemetry must not ship until this Lighthouse migration and Worker version are deployed and production payload verification passes.
 
@@ -290,6 +292,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `update_available_impressions` means a known client version was older than the latest manifest version served.
 - `latest_version_checkins` means a known client version matched the latest manifest version served.
 - The raw-versus-breakdown fields are reconciliation instrumentation: a positive `raw_breakdown_delta` means raw update checks were counted but the versioned daily-breakdown total is lower for the same window. Existing `update_checks` remains the versioned breakdown total for backward compatibility.
+- `raw_update_checks` is the authoritative update-check total for decisions. The compatible `update_checks` field is deprecated for decision use and remains only to avoid breaking older consumers.
 - `first_seen_checkins`, `repeat_checkins`, and `unknown_first_checkins` are aggregate check-in bucket counts derived from the optional `first_check` param. They are not users, installs, devices, or unique anything; there is no identity, dedupe, or install ID.
 - Lighthouse does not claim installs or successful update completion; it reports only observable check and handout signals.
 
@@ -298,7 +301,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `OPTIONS` returns `200`.
 - `OPTIONS /metrics/pageview` advertises `POST, OPTIONS` for the ingestion route.
 - `OPTIONS /metrics/pageview` returns first-party CORS allow headers only for `Origin` values `https://buscore.ca` and `https://www.buscore.ca`, and never returns wildcard `Access-Control-Allow-Origin` on that route.
-  - `POST /metrics/pageview` and `POST /metrics/event` are the two approved non-`GET` routes.
+  - `POST /metrics/pageview`, `POST /metrics/event`, and `POST /telemetry/v1/events` are the approved public non-`GET` ingestion routes.
   - `OPTIONS /metrics/event` advertises `POST, OPTIONS` and returns CORS allow headers for the origin if it matches an active tracked-site entry; never returns wildcard on that route.
   - Other non-`GET` methods return `405` JSON `{ "ok": false, "error": "method_not_allowed" }`.
 - Unmatched routes return `404` JSON `{ "ok": false, "error": "not_found" }`.
@@ -317,6 +320,9 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Table: `site_event_rate_limit`
 - Table: `release_downloads_daily`
 - Table: `release_update_checks_daily`
+- Table: `buscore_product_events_raw`
+- Table: `buscore_product_events_daily`
+- Table: `buscore_telemetry_rate_limit`
 - Aggregate counters: `update_checks`, `downloads`, `errors`
 - `downloads` means successful Lighthouse-served release artifact handouts.
 - Day key format: UTC `YYYY-MM-DD`
@@ -354,6 +360,7 @@ Required bindings/secrets used by code:
 - `IGNORED_IP` — optional; if set, requests whose `CF-Connecting-IP` exactly matches this value skip counter increments but receive normal responses.
 - `CF_API_TOKEN` — required for the approved daily Buscore traffic capture job.
 - `CF_ZONE_TAG` — required for the approved daily Buscore traffic capture job.
+- `TELEMETRY_RATE_LIMIT_SECRET` — required in production; keys BUS Core product-telemetry rate identifiers that rotate by UTC minute. A random per-isolate fallback is local-development compatibility, not the production contract.
 
 Not used by current code:
 

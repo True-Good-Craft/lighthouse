@@ -2,7 +2,7 @@
 
 ## BUS Core transition direction
 
-Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Repository version 1.21.0 also implements the strict BUS Core product-telemetry v1 contract at `POST /telemetry/v1/events`; it is not production behavior until migration 0013 is applied and the Worker is explicitly deployed.
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Repository version 1.22.0 also implements the strict BUS Core product-telemetry v1 contract at `POST /telemetry/v1/events`; it is not production behavior until migration 0013 is applied and the Worker is explicitly deployed.
 
 The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
 
@@ -12,7 +12,7 @@ Contract artifacts:
 - `migrations/0013_add_buscore_product_telemetry.sql`
 - `tests/product-telemetry-contract.test.mjs`
 
-Retention is 30 days for accepted raw product events, 400 days for daily aggregates, and 2 days for privacy-preserving IP-hash rate buckets. Raw IP addresses are never stored.
+Retention is 30 UTC-day buckets for accepted raw product events, 400 UTC-day buckets for daily aggregates, and 2 days for rate-control buckets. Product telemetry rate identifiers are HMAC-SHA256 values keyed with `TELEMETRY_RATE_LIMIT_SECRET` and include the UTC minute, so they rotate each minute and cannot be correlated across buckets. Raw IP addresses and unsalted IP hashes are never stored. Production must configure the secret; the per-isolate random fallback exists only so local standalone development fails safely.
 
 Lighthouse is a single Cloudflare Worker that provides a small, deterministic, privacy-first, aggregate-first metrics primitive with one narrow first-party JS-fired pageview ingestion path.
 
@@ -38,7 +38,7 @@ Release authority:
 
 ## Current System
 
-Lighthouse currently does six things:
+Lighthouse currently does seven things:
 
 1. Serves the BUS Core manifest from R2.
 2. Increments fixed daily aggregate counters in D1.
@@ -46,6 +46,7 @@ Lighthouse currently does six things:
 4. Accepts standardized multi-site events on `POST /metrics/event`.
 5. Exposes protected, on-demand aggregate reporting.
 6. Pulls one daily Buscore traffic snapshot from the Cloudflare GraphQL Analytics API into D1 on a scheduled cron.
+7. Accepts strict BUS Core product telemetry and exposes literal aggregate product-telemetry windows when migration 0013 is present.
 
 For BUS Core, the authenticated site report also includes an aggregate-only `operator_summary` that combines Lighthouse counted-intent events with early-access lead attribution totals when the optional `BUSCORE_LEADS_DB` binding is configured. It does not post to Discord.
 
@@ -182,13 +183,15 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 | GET | `/releases/:filename` | Serve release artifact from R2 key `releases/:filename` and count successful full artifact handouts |
 | POST | `/metrics/pageview` | Accept first-party JS-fired pageview JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | POST | `/metrics/event` | Accept standardized multi-site event JSON, always return `204`, and persist/aggregate best-effort in D1 |
-| GET | `/report` | Return protected aggregate report; supports legacy bare mode plus `view=fleet`, `view=site`, and `view=source_health` |
+| POST | `/telemetry/v1/events` | Accept one strict BUS Core schema-1.0 event, apply a keyed rotating rate control, and return `202 accepted`, `200 duplicate`, or a bounded error |
+| GET | `/report` | Return protected aggregate report; legacy BUS Core output includes literal `product_telemetry` windows when migration 0013 is available |
 
 Notes:
 - `/manifest/core/stable.json` never increments counters.
 - `/download/latest` never increments `downloads` directly.
 - `/releases/:filename` increments `downloads` only for successful full `GET` artifact handouts that pass through Lighthouse.
 - `/update/check` does not require `X-BUS-Update-Source: core` for counting.
+- `/update/check` remains the authoritative release-route update-check total. A product-telemetry `update_check` event is reported separately as an accepted delivery observation and is never added to or substituted for the release-route counter.
 - If `IGNORED_IP` is configured and matches `CF-Connecting-IP`, counting is suppressed while normal responses are still returned.
 - `POST /metrics/pageview` is unauthenticated by design, parses raw request text then JSON, and still returns `204` for malformed, invalid, or rate-limited submissions.
 - Valid accepted payloads follow the deployed BUS Core site emitter contract: `type = "pageview"`; required fields `client_ts`, `path`, `url`, `referrer`, `utm` object, `device`, `viewport`, `lang`, and `tz`; optional omitted fields `src`, `utm.{source,medium,campaign,content}`, `anon_user_id`, `session_id`, and `is_new_user`.
@@ -261,29 +264,50 @@ Bare `GET /report` preserves the legacy operator contract and returns:
     "today": {
       "artifact_downloads": 0,
       "artifact_downloads_by_release": [],
+      "raw_update_checks": 0,
+      "breakdown_update_checks": 0,
+      "raw_breakdown_delta": 0,
       "update_checks": 0,
       "update_checks_with_known_client_version": 0,
       "update_checks_unknown_client_version": 0,
       "update_available_impressions": 0,
-      "latest_version_checkins": 0
+      "latest_version_checkins": 0,
+      "first_seen_checkins": 0,
+      "repeat_checkins": 0,
+      "unknown_first_checkins": 0,
+      "first_seen_share": 0
     },
     "last_7_days": {
       "artifact_downloads": 0,
       "artifact_downloads_by_release": [],
+      "raw_update_checks": 0,
+      "breakdown_update_checks": 0,
+      "raw_breakdown_delta": 0,
       "update_checks": 0,
       "update_checks_with_known_client_version": 0,
       "update_checks_unknown_client_version": 0,
       "update_available_impressions": 0,
-      "latest_version_checkins": 0
+      "latest_version_checkins": 0,
+      "first_seen_checkins": 0,
+      "repeat_checkins": 0,
+      "unknown_first_checkins": 0,
+      "first_seen_share": 0
     },
     "last_30_days": {
       "artifact_downloads": 0,
       "artifact_downloads_by_release": [],
+      "raw_update_checks": 0,
+      "breakdown_update_checks": 0,
+      "raw_breakdown_delta": 0,
       "update_checks": 0,
       "update_checks_with_known_client_version": 0,
       "update_checks_unknown_client_version": 0,
       "update_available_impressions": 0,
-      "latest_version_checkins": 0
+      "latest_version_checkins": 0,
+      "first_seen_checkins": 0,
+      "repeat_checkins": 0,
+      "unknown_first_checkins": 0,
+      "first_seen_share": 0
     }
   },
   "identity": {
@@ -310,7 +334,7 @@ Contract note:
 - Existing top-level `traffic` remains the Cloudflare-derived traffic summary and is not renamed or reinterpreted by pageview ingestion.
 - Additive top-level `human_traffic` is JS-fired first-party pageview telemetry, not verified-human analytics. `legacy_pageview` is a semantic alias for the same object (BUS Core `legacy_pageview` layer).
 - Additive top-level `intent_counters` groups the same `today`, `yesterday`, `last_7_days`, `last_30_days`, and `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer (`update_checks`, `downloads`, `errors`). The individual top-level fields remain for backward compatibility.
-- Additive top-level `release_signals` reports truthful release signals only: successful artifact handouts, update checks, unknown-version checks, update-available impressions, and latest-version check-ins. Lighthouse still does not claim installs.
+- Additive top-level `release_signals` reports truthful release signals only: successful artifact handouts, authoritative raw update-check totals, versioned-breakdown totals and deltas, known/unknown-version checks, first/repeat/unknown check-in buckets, update-available impressions, and latest-version check-ins. `update_checks` remains a compatibility alias for the breakdown total; decision consumers use `raw_update_checks`. Lighthouse does not claim installs.
 - Bare `/report`, `view=fleet`, and `view=site` each perform one best-effort refresh capture for the previous completed UTC day before assembly.
 - `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
 - The refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.
@@ -648,6 +672,7 @@ Required bindings/secrets:
 - `IGNORED_IP` (optional)
 - `CF_API_TOKEN` (required for scheduled Buscore traffic capture)
 - `CF_ZONE_TAG` (required for scheduled Buscore traffic capture)
+- `TELEMETRY_RATE_LIMIT_SECRET` (required in production for keyed, minute-rotating BUS Core product-telemetry rate controls)
 
 No new bindings or secrets are introduced by pageview ingestion.
 
@@ -705,6 +730,7 @@ npx wrangler d1 migrations apply buscore-lighthouse --remote
 ```bash
 npx wrangler secret put ADMIN_TOKEN
 npx wrangler secret put CF_API_TOKEN
+npx wrangler secret put TELEMETRY_RATE_LIMIT_SECRET
 ```
 
 Add `CF_ZONE_TAG` to your Worker environment configuration before deploying scheduled traffic capture.

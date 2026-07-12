@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import * as workerModule from "../dist/index.js";
+
+test("migration 0012 adds all first-check aggregate counters", () => {
+  const sql = readFileSync(new URL("../migrations/0012_add_first_check_aggregates.sql", import.meta.url), "utf8");
+  for (const column of ["first_check_true", "first_check_false", "first_check_unknown"]) {
+    assert.match(sql, new RegExp(`ALTER TABLE release_update_checks_daily ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`, "i"));
+  }
+});
 
 const worker = workerModule.default?.fetch
   ? workerModule.default

@@ -2,11 +2,39 @@
   "schema_version": "1.0",
   "endpoint": "/telemetry/v1/events",
   "strict": true,
-  "root_fields": ["schema_version", "event_id", "event_name", "installation_id", "client_ts", "context"],
-  "context_fields": ["app_version", "release_channel", "os_category"],
-  "raw_retention_days": 30,
-  "aggregate_retention_days": 400,
-  "rate_limit_retention_days": 2,
+  "common_fields": {
+    "root": ["schema_version", "event_id", "event_name", "installation_id", "client_ts", "context"],
+    "context": ["app_version", "release_channel", "os_category"]
+  },
+  "event_fields": "all v1 events use exactly the common root and context fields; no event-specific content fields are accepted",
+  "release_channels": ["stable", "test", "partner-3dque", "lts-1.1", "security-hotfix"],
+  "os_categories": ["windows", "linux", "macos", "other"],
+  "limits": {
+    "max_body_bytes": 4096,
+    "rate_limit_per_minute": 120,
+    "app_version_max_length": 20,
+    "semver_component_max_digits": 6
+  },
+  "retention_days": {
+    "raw": 30,
+    "aggregate": 400,
+    "rate_limit": 2
+  },
+  "event_categories": {
+    "installation_release": [
+      "installation_first_launch", "update_check", "update_success", "update_failure"
+    ],
+    "module_use": [
+      "inventory_opened", "recipes_opened", "manufacturing_opened", "jobs_opened", "invoices_opened", "settings_opened"
+    ],
+    "workflow_milestone": [
+      "first_inventory_item_created", "first_recipe_created", "first_manufacturing_run_completed", "first_job_completed", "first_invoice_created",
+      "backup_completed", "restore_attempted", "restore_completed", "import_completed", "import_failed"
+    ],
+    "reliability": [
+      "startup_failure", "backup_failure", "restore_failure", "unhandled_application_error", "migration_failure"
+    ]
+  },
   "event_names": [
     "installation_first_launch", "update_check", "update_success", "update_failure",
     "inventory_opened", "recipes_opened", "manufacturing_opened", "jobs_opened", "invoices_opened", "settings_opened",

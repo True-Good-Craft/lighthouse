@@ -1,0 +1,4 @@
+# Local development placeholders only. Never commit real secret values.
+ADMIN_TOKEN=replace-with-local-admin-token
+CF_API_TOKEN=replace-with-local-cloudflare-token
+TELEMETRY_RATE_LIMIT_SECRET=replace-with-a-long-random-local-secret
