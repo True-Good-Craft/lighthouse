@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.22.1] - 2026-07-12
+
+- Fixed Cloudflare Worker startup validation by moving the local-only random rate-secret fallback out of module initialization and lazily initializing it in request scope.
+- Preserved one stable fallback per isolate so local standalone requests retain effective minute-bucket rate limiting; production continues to use `TELEMETRY_RATE_LIMIT_SECRET`.
+- Recorded that migration 0013 is applied remotely while the corrected Worker deployment remains pending.
+
 ## [1.22.0] - 2026-07-12
 
 - Completed BUS Core product-telemetry v1 with server-derived installation/release, module-use, workflow-milestone, and reliability categories.

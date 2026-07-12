@@ -72,7 +72,16 @@ const CATEGORY_BY_EVENT = new Map<string, BuscoreTelemetryCategory>(
     eventNames.map((eventName) => [eventName, category as BuscoreTelemetryCategory] as const)
   )
 );
-const LOCAL_RATE_LIMIT_SECRET = crypto.randomUUID();
+let localRateLimitSecret: string | undefined;
+
+function resolveRateLimitSecret(configuredSecret?: string): string {
+  if (configuredSecret) return configuredSecret;
+  // Cloudflare forbids random generation during module initialization. Keep the
+  // standalone-development fallback isolate-local, but initialize it lazily
+  // from request scope where runtime I/O is allowed.
+  localRateLimitSecret ??= crypto.randomUUID();
+  return localRateLimitSecret;
+}
 
 export type BuscoreTelemetryEvent = {
   schema_version: "1.0";
@@ -245,7 +254,7 @@ export async function handleBuscoreTelemetryRequest(
   try {
     const minute = utcMinute(now);
     const clientIp = request.headers.get("CF-Connecting-IP") ?? "missing";
-    const hash = await hmacRateLimitKey(rateLimitSecret || LOCAL_RATE_LIMIT_SECRET, minute, clientIp);
+    const hash = await hmacRateLimitKey(resolveRateLimitSecret(rateLimitSecret), minute, clientIp);
     const count = await incrementRateLimit(db, minute, hash);
     if (count > BUSCORE_TELEMETRY_LIMITS.rate_limit_per_minute) {
       return Response.json({ ok: false, error: "rate_limited" }, { status: 429 });

@@ -2,7 +2,7 @@
 
 ## BUS Core transition direction
 
-Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Repository version 1.22.0 also implements the strict BUS Core product-telemetry v1 contract at `POST /telemetry/v1/events`; it is not production behavior until migration 0013 is applied and the Worker is explicitly deployed.
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migration 0013 is applied, and repository version 1.22.1 implements the strict BUS Core product-telemetry v1 contract at `POST /telemetry/v1/events`; it is not production behavior until the Worker is explicitly deployed.
 
 The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
 
@@ -12,7 +12,7 @@ Contract artifacts:
 - `migrations/0013_add_buscore_product_telemetry.sql`
 - `tests/product-telemetry-contract.test.mjs`
 
-Retention is 30 UTC-day buckets for accepted raw product events, 400 UTC-day buckets for daily aggregates, and 2 days for rate-control buckets. Product telemetry rate identifiers are HMAC-SHA256 values keyed with `TELEMETRY_RATE_LIMIT_SECRET` and include the UTC minute, so they rotate each minute and cannot be correlated across buckets. Raw IP addresses and unsalted IP hashes are never stored. Production must configure the secret; the per-isolate random fallback exists only so local standalone development fails safely.
+Retention is 30 UTC-day buckets for accepted raw product events, 400 UTC-day buckets for daily aggregates, and 2 days for rate-control buckets. Product telemetry rate identifiers are HMAC-SHA256 values keyed with `TELEMETRY_RATE_LIMIT_SECRET` and include the UTC minute, so they rotate each minute and cannot be correlated across buckets. Raw IP addresses and unsalted IP hashes are never stored. Production must configure the secret; the per-isolate random fallback is initialized lazily in request scope and exists only so local standalone development fails safely.
 
 Lighthouse is a single Cloudflare Worker that provides a small, deterministic, privacy-first, aggregate-first metrics primitive with one narrow first-party JS-fired pageview ingestion path.
 

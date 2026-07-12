@@ -1,8 +1,8 @@
 # Lighthouse — Source of Truth
 
-## BUS Core product-telemetry contract v1 — implemented, not yet deployed
+## BUS Core product-telemetry contract v1 — migration applied, Worker deployment pending
 
-Lighthouse is the versioned contract and ingestion authority for limited BUS Core product telemetry. Repository version 1.22.0 implements the contract, but it is not production behavior until migration `0013_add_buscore_product_telemetry.sql` is remotely applied and the Worker is explicitly deployed.
+Lighthouse is the versioned contract and ingestion authority for limited BUS Core product telemetry. Migration `0013_add_buscore_product_telemetry.sql` is applied remotely. Repository version 1.22.1 implements the contract and fixes Cloudflare startup compatibility by lazily initializing the local-only rate-secret fallback from request scope; the endpoint is not production behavior until the Worker is explicitly deployed.
 
 The implemented contract provides:
 

@@ -199,6 +199,16 @@ test("HMAC rate keys are stable within a minute and rotate across minutes", asyn
   assert.doesNotMatch(a, /192\.0\.2\.10/);
 });
 
+test("standalone fallback rate secret initializes in request scope and remains stable for the isolate", async () => {
+  const db = new FakeDb();
+  const now = new Date("2026-07-12T12:00:00.000Z");
+  assert.equal((await handleBuscoreTelemetryRequest(requestFor(), db, undefined, now)).status, 202);
+  assert.equal((await handleBuscoreTelemetryRequest(requestFor(validEvent({
+    event_id: "33333333-3333-4333-8333-333333333333",
+  })), db, undefined, now)).status, 202);
+  assert.equal(db.rate.size, 1, "the isolate-local fallback must not rotate between requests");
+});
+
 test("endpoint persists once; the migration trigger makes retry aggregation idempotent", async () => {
   const db = new FakeDb();
   const now = new Date("2026-07-12T12:00:00.000Z");
