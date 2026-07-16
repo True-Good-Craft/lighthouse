@@ -198,6 +198,22 @@ async function incrementRateLimit(db: D1Database, minute: string, ipHash: string
   return row?.count ?? 1;
 }
 
+export async function consumeScopedRateLimit(
+  db: D1Database,
+  configuredSecret: string | undefined,
+  bucket: string,
+  clientIp: string,
+  scope: string,
+  limit: number
+): Promise<boolean> {
+  const hash = await hmacRateLimitKey(
+    resolveRateLimitSecret(configuredSecret),
+    bucket,
+    `${scope}:${clientIp}`
+  );
+  return (await incrementRateLimit(db, bucket, hash)) <= limit;
+}
+
 async function readBodyBounded(request: Request): Promise<{ ok: true; raw: string } | { ok: false }> {
   const contentLength = request.headers.get("Content-Length");
   if (contentLength !== null) {
@@ -254,9 +270,15 @@ export async function handleBuscoreTelemetryRequest(
   try {
     const minute = utcMinute(now);
     const clientIp = request.headers.get("CF-Connecting-IP") ?? "missing";
-    const hash = await hmacRateLimitKey(resolveRateLimitSecret(rateLimitSecret), minute, clientIp);
-    const count = await incrementRateLimit(db, minute, hash);
-    if (count > BUSCORE_TELEMETRY_LIMITS.rate_limit_per_minute) {
+    const allowed = await consumeScopedRateLimit(
+      db,
+      rateLimitSecret,
+      minute,
+      clientIp,
+      "product-telemetry",
+      BUSCORE_TELEMETRY_LIMITS.rate_limit_per_minute
+    );
+    if (!allowed) {
       return Response.json({ ok: false, error: "rate_limited" }, { status: 429 });
     }
 

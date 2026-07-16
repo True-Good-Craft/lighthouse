@@ -1,6 +1,8 @@
 import {
   BUSCORE_TELEMETRY_PATH,
+  BUSCORE_TELEMETRY_RELEASE_CHANNELS,
   buildBuscoreProductTelemetryReport,
+  consumeScopedRateLimit,
   handleBuscoreTelemetryRequest,
   pruneBuscoreTelemetry,
   type BuscoreProductTelemetryReport,
@@ -497,7 +499,10 @@ const TOP_PAGEVIEW_DIMENSION_LIMIT = 5;
 const DIRECT_SOURCE_LABEL = "(direct)";
 const EARLIEST_REPORT_DAY = "0000-01-01";
 const UNKNOWN_VERSION_BUCKET = "unknown";
-const UNKNOWN_CHANNEL_BUCKET = "unknown";
+const MIN_COUNTABLE_BUSCORE_VERSION = "1.4.0";
+const UPDATE_CHECK_COUNT_LIMIT_PER_IP_PER_DAY = 2;
+const UPDATE_CHECK_REQUIRED_QUERY_KEYS = ["current_version", "channel", "first_check"] as const;
+const UPDATE_CHECK_ALLOWED_CHANNELS = new Set<string>(BUSCORE_TELEMETRY_RELEASE_CHANNELS);
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGEVIEW_ALLOWED_DEVICES = new Set(["desktop", "mobile", "tablet"]);
 const PAGEVIEW_VIEWPORT_PATTERN = /^\d+x\d+$/;
@@ -612,25 +617,6 @@ function extractReleaseVersionFromFilename(filename: string): string | null {
   return match ? normalizeSemver(match[1]) : null;
 }
 
-function normalizeChannelSignal(value: string | null): string {
-  const normalized = value?.trim().toLowerCase();
-  return normalized ? normalized : UNKNOWN_CHANNEL_BUCKET;
-}
-
-function resolveClientVersionSignal(url: URL, request: Request): string | null {
-  return (
-    nullIfBlank(url.searchParams.get("current_version")) ??
-    nullIfBlank(url.searchParams.get("version")) ??
-    nullIfBlank(request.headers.get("X-BUS-Core-Version"))
-  );
-}
-
-function resolveChannelSignal(url: URL, request: Request): string {
-  return normalizeChannelSignal(
-    nullIfBlank(url.searchParams.get("channel")) ?? nullIfBlank(request.headers.get("X-BUS-Core-Channel"))
-  );
-}
-
 function resolveUpdateAvailability(
   clientVersion: string | null,
   latestVersion: string | null
@@ -640,28 +626,6 @@ function resolveUpdateAvailability(
   }
 
   return compareSemver(latestVersion, clientVersion) > 0 ? "true" : "false";
-}
-
-// Parse the optional aggregate-safe `first_check` query param.
-//   true  / 1 -> first-seen check
-//   false / 0 -> repeat check
-//   missing / invalid -> unknown first-check status
-// Strict allow-list only. Never inferred from IP, user agent, cookies, or timing.
-function resolveFirstCheckSignal(url: URL): ReleaseFirstCheck {
-  const raw = nullIfBlank(url.searchParams.get("first_check"));
-  if (raw === null) {
-    return "unknown";
-  }
-
-  const normalized = raw.toLowerCase();
-  if (normalized === "true" || normalized === "1") {
-    return "true";
-  }
-  if (normalized === "false" || normalized === "0") {
-    return "false";
-  }
-
-  return "unknown";
 }
 
 function shouldCountArtifactDownload(request: Request): boolean {
@@ -1310,6 +1274,100 @@ function extractLatestManifestVersion(manifest: Record<string, unknown>): string
   } catch {
     return null;
   }
+}
+
+function extractManifestVersionForChannel(
+  manifest: Record<string, unknown>,
+  channel: string
+): string | null {
+  if (channel === "stable") {
+    return extractLatestManifestVersion(manifest);
+  }
+
+  const channels = manifest.channels;
+  if (!channels || typeof channels !== "object" || Array.isArray(channels)) {
+    return null;
+  }
+  const entry = (channels as Record<string, unknown>)[channel];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+  const version = (entry as Record<string, unknown>).version;
+  return normalizeSemver(typeof version === "string" ? version : null);
+}
+
+export type UpdateCheckCountEligibility =
+  | {
+      eligible: true;
+      clientVersion: string;
+      channel: string;
+      firstCheck: Exclude<ReleaseFirstCheck, "unknown">;
+      latestVersion: string;
+    }
+  | {
+      eligible: false;
+      reason:
+        | "method"
+        | "query_shape"
+        | "client_version"
+        | "channel"
+        | "first_check"
+        | "manifest_channel"
+        | "implausible_version";
+    };
+
+export function evaluateUpdateCheckCountEligibility(
+  request: Request,
+  url: URL,
+  manifest: Record<string, unknown>
+): UpdateCheckCountEligibility {
+  if (request.method !== "GET") {
+    return { eligible: false, reason: "method" };
+  }
+
+  const keys = Array.from(url.searchParams.keys());
+  const hasExactQueryShape = keys.length === UPDATE_CHECK_REQUIRED_QUERY_KEYS.length
+    && UPDATE_CHECK_REQUIRED_QUERY_KEYS.every((key) => url.searchParams.getAll(key).length === 1)
+    && keys.every((key) => UPDATE_CHECK_REQUIRED_QUERY_KEYS.includes(key as typeof UPDATE_CHECK_REQUIRED_QUERY_KEYS[number]));
+  if (!hasExactQueryShape) {
+    return { eligible: false, reason: "query_shape" };
+  }
+
+  const rawClientVersion = url.searchParams.get("current_version") ?? "";
+  const clientVersion = normalizeSemver(rawClientVersion);
+  if (!clientVersion || rawClientVersion !== clientVersion) {
+    return { eligible: false, reason: "client_version" };
+  }
+
+  const channel = url.searchParams.get("channel") ?? "";
+  if (!UPDATE_CHECK_ALLOWED_CHANNELS.has(channel)) {
+    return { eligible: false, reason: "channel" };
+  }
+
+  const firstCheck = url.searchParams.get("first_check");
+  if (firstCheck !== "true" && firstCheck !== "false") {
+    return { eligible: false, reason: "first_check" };
+  }
+
+  const latestVersion = extractManifestVersionForChannel(manifest, channel);
+  if (!latestVersion) {
+    return { eligible: false, reason: "manifest_channel" };
+  }
+
+  if (
+    compareSemver(clientVersion, MIN_COUNTABLE_BUSCORE_VERSION) < 0
+    || compareSemver(clientVersion, latestVersion) > 0
+  ) {
+    return { eligible: false, reason: "implausible_version" };
+  }
+
+  return {
+    eligible: true,
+    clientVersion,
+    channel,
+    firstCheck,
+    latestVersion,
+  };
 }
 
 export function isValidReleaseArtifactUrl(rawUrl: string): boolean {
@@ -5129,26 +5187,46 @@ export default {
     if (url.pathname === "/update/check") {
       try {
         const manifest = await readManifestFromR2(env);
-        if (!shouldSkipCounting(getClientIp(request), env.IGNORED_IP)) {
-          const latestVersion = extractLatestManifestVersion(manifest.parsed) ?? UNKNOWN_VERSION_BUCKET;
-          const clientVersion = normalizeSemver(resolveClientVersionSignal(url, request)) ?? UNKNOWN_VERSION_BUCKET;
-          const channel = resolveChannelSignal(url, request);
-          const updateAvailable = resolveUpdateAvailability(
-            clientVersion === UNKNOWN_VERSION_BUCKET ? null : clientVersion,
-            latestVersion === UNKNOWN_VERSION_BUCKET ? null : latestVersion
-          );
-          const firstCheck = resolveFirstCheckSignal(url);
+        const clientIp = getClientIp(request);
+        const rateLimitSecret = env.TELEMETRY_RATE_LIMIT_SECRET?.trim();
+        const eligibility = evaluateUpdateCheckCountEligibility(request, url, manifest.parsed);
+        if (
+          eligibility.eligible
+          && clientIp
+          && rateLimitSecret
+          && !shouldSkipCounting(clientIp, env.IGNORED_IP)
+        ) {
+          let withinRateLimit = false;
+          try {
+            withinRateLimit = await consumeScopedRateLimit(
+              env.DB,
+              rateLimitSecret,
+              `${day}T00:00`,
+              clientIp,
+              "update-check",
+              UPDATE_CHECK_COUNT_LIMIT_PER_IP_PER_DAY
+            );
+          } catch (error) {
+            console.warn("Update-check count skipped because the abuse-control gate was unavailable.", error);
+          }
 
-          await incrementCounter(env.DB, day, "update_checks");
-          await incrementReleaseUpdateCheckCounterBestEffort(
-            env.DB,
-            day,
-            channel,
-            clientVersion,
-            latestVersion,
-            updateAvailable,
-            firstCheck
-          );
+          if (withinRateLimit) {
+            const updateAvailable = resolveUpdateAvailability(
+              eligibility.clientVersion,
+              eligibility.latestVersion
+            );
+
+            await incrementCounter(env.DB, day, "update_checks");
+            await incrementReleaseUpdateCheckCounterBestEffort(
+              env.DB,
+              day,
+              eligibility.channel,
+              eligibility.clientVersion,
+              eligibility.latestVersion,
+              updateAvailable,
+              eligibility.firstCheck
+            );
+          }
         }
         return withCors(
           request,

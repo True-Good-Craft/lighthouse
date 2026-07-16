@@ -2,7 +2,7 @@
 
 ## BUS Core transition direction
 
-Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migration 0013 is applied, and repository version 1.22.1 implements the strict BUS Core product-telemetry v1 contract at `POST /telemetry/v1/events`; it is not production behavior until the Worker is explicitly deployed.
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migration 0013 is applied, and repository version 1.23.0 implements strict BUS Core product telemetry plus qualified, rate-bounded `/update/check` analytics; it is not production behavior until the Worker is explicitly deployed.
 
 The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
 
@@ -12,7 +12,7 @@ Contract artifacts:
 - `migrations/0013_add_buscore_product_telemetry.sql`
 - `tests/product-telemetry-contract.test.mjs`
 
-Retention is 30 UTC-day buckets for accepted raw product events, 400 UTC-day buckets for daily aggregates, and 2 days for rate-control buckets. Product telemetry rate identifiers are HMAC-SHA256 values keyed with `TELEMETRY_RATE_LIMIT_SECRET` and include the UTC minute, so they rotate each minute and cannot be correlated across buckets. Raw IP addresses and unsalted IP hashes are never stored. Production must configure the secret; the per-isolate random fallback is initialized lazily in request scope and exists only so local standalone development fails safely.
+Retention is 30 UTC-day buckets for accepted raw product events, 400 UTC-day buckets for daily aggregates, and 2 days for rate-control buckets. Rate identifiers are scope-separated HMAC-SHA256 values keyed with `TELEMETRY_RATE_LIMIT_SECRET`: product telemetry rotates by UTC minute and qualified update-check counting by UTC day. Raw IP addresses and unsalted IP hashes are never stored. Production must configure the secret; update-check counting fails closed without it.
 
 Lighthouse is a single Cloudflare Worker that provides a small, deterministic, privacy-first, aggregate-first metrics primitive with one narrow first-party JS-fired pageview ingestion path.
 
@@ -178,7 +178,7 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 | Method | Path | Behavior |
 |--------|------|----------|
 | GET | `/manifest/core/stable.json` | Return manifest JSON from R2 (no counting) |
-| GET | `/update/check` | Return manifest JSON, increment `update_checks` unless request IP matches `IGNORED_IP`, and record additive release-uptake detail buckets |
+| GET | `/update/check` | Always return public manifest JSON; count only strict, plausible, rate-allowed BUS Core v1.4.0+ request tuples |
 | GET | `/download/latest` | Validate latest manifest download URL and return `302` redirect intent only |
 | GET | `/releases/:filename` | Serve release artifact from R2 key `releases/:filename` and count successful full artifact handouts |
 | POST | `/metrics/pageview` | Accept first-party JS-fired pageview JSON, always return `204`, and persist/aggregate best-effort in D1 |
@@ -190,8 +190,9 @@ Notes:
 - `/manifest/core/stable.json` never increments counters.
 - `/download/latest` never increments `downloads` directly.
 - `/releases/:filename` increments `downloads` only for successful full `GET` artifact handouts that pass through Lighthouse.
-- `/update/check` does not require `X-BUS-Update-Source: core` for counting.
-- `/update/check` remains the authoritative release-route update-check total. A product-telemetry `update_check` event is reported separately as an accepted delivery observation and is never added to or substituted for the release-route counter.
+- `/update/check` manifest delivery remains public. Counting requires exactly `current_version`, `channel`, and lowercase `first_check=true|false`, canonical plausible SemVer, an explicit selected manifest channel, Cloudflare client IP context, the configured rate secret, and allowance under the two-count-per-IP-per-UTC-day gate.
+- Missing, duplicated, legacy-alias, header-only, extra, malformed, implausible, unserviceable-channel, ignored-IP, missing-secret/IP, and over-limit requests receive the manifest but contribute zero analytics.
+- `/update/check` remains the authoritative qualified release-route request total, not proof of authentic-client origin. A product-telemetry `update_check` event is reported separately as an accepted delivery observation and is never added to or substituted for the release-route counter.
 - If `IGNORED_IP` is configured and matches `CF-Connecting-IP`, counting is suppressed while normal responses are still returned.
 - `POST /metrics/pageview` is unauthenticated by design, parses raw request text then JSON, and still returns `204` for malformed, invalid, or rate-limited submissions.
 - Valid accepted payloads follow the deployed BUS Core site emitter contract: `type = "pageview"`; required fields `client_ts`, `path`, `url`, `referrer`, `utm` object, `device`, `viewport`, `lang`, and `tz`; optional omitted fields `src`, `utm.{source,medium,campaign,content}`, `anon_user_id`, `session_id`, and `is_new_user`.
@@ -334,7 +335,7 @@ Contract note:
 - Existing top-level `traffic` remains the Cloudflare-derived traffic summary and is not renamed or reinterpreted by pageview ingestion.
 - Additive top-level `human_traffic` is JS-fired first-party pageview telemetry, not verified-human analytics. `legacy_pageview` is a semantic alias for the same object (BUS Core `legacy_pageview` layer).
 - Additive top-level `intent_counters` groups the same `today`, `yesterday`, `last_7_days`, `last_30_days`, and `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer (`update_checks`, `downloads`, `errors`). The individual top-level fields remain for backward compatibility.
-- Additive top-level `release_signals` reports truthful release signals only: successful artifact handouts, authoritative raw update-check totals, versioned-breakdown totals and deltas, known/unknown-version checks, first/repeat/unknown check-in buckets, update-available impressions, and latest-version check-ins. `update_checks` remains a compatibility alias for the breakdown total; decision consumers use `raw_update_checks`. Lighthouse does not claim installs.
+- Additive top-level `release_signals` reports truthful release signals only: successful artifact handouts, qualified rate-bounded update-check totals, versioned-breakdown totals and deltas, historical known/unknown-version checks, first/repeat/unknown check-in buckets, update-available impressions, and latest-version check-ins. `update_checks` remains a compatibility alias for the breakdown total; decision consumers use `raw_update_checks` and must not interpret it as authenticated-client proof. Lighthouse does not claim installs.
 - Bare `/report`, `view=fleet`, and `view=site` each perform one best-effort refresh capture for the previous completed UTC day before assembly.
 - `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
 - The refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.

@@ -1,8 +1,8 @@
 # Lighthouse — Source of Truth
 
-## BUS Core product-telemetry contract v1 — migration applied, Worker deployment pending
+## Qualified BUS Core update-check counting — v1.23.0 deployment pending
 
-Lighthouse is the versioned contract and ingestion authority for limited BUS Core product telemetry. Migration `0013_add_buscore_product_telemetry.sql` is applied remotely. Repository version 1.22.1 implements the contract and fixes Cloudflare startup compatibility by lazily initializing the local-only rate-secret fallback from request scope; the endpoint is not production behavior until the Worker is explicitly deployed.
+Lighthouse remains the versioned contract and ingestion authority for limited BUS Core product telemetry. Migration `0013_add_buscore_product_telemetry.sql` is applied remotely. Repository version 1.23.0 additionally makes `/update/check` analytics fail closed: public manifest delivery is unchanged, but only exact, plausible BUS Core v1.4.0+ request tuples that pass the existing keyed rate-control storage are counted. No new migration is required. This behavior is not production reality until the Worker is explicitly deployed.
 
 The implemented contract provides:
 
@@ -16,9 +16,9 @@ The implemented contract provides:
 
 The approved BUS Core installation identifier is random and locally generated. It must not be derived from hardware, username, filesystem, network, account, or machine-fingerprint data. Lighthouse availability must remain optional and non-blocking for the self-managed product.
 
-The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible, and the server derives the category. Accepted raw events are retained for 30 UTC-day buckets, aggregates for 400, and rate buckets for 2 days. Rate keys are minute-rotating HMAC-SHA256 values keyed by `TELEMETRY_RATE_LIMIT_SECRET`; raw IP and unsalted IP hashes are not retained. Event IDs provide idempotent retry deduplication, and migration 0013's `AFTER INSERT` trigger makes the accepted raw insert and aggregate increment atomic.
+The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible, and the server derives the category. Accepted raw events are retained for 30 UTC-day buckets, aggregates for 400, and rate buckets for 2 days. Rate keys are HMAC-SHA256 values keyed by `TELEMETRY_RATE_LIMIT_SECRET`: product telemetry rotates by UTC minute and qualified update-check counting rotates by UTC day with a separate scope. Raw IP and unsalted IP hashes are not retained. Event IDs provide idempotent retry deduplication, and migration 0013's `AFTER INSERT` trigger makes the accepted raw insert and aggregate increment atomic.
 
-Bare BUS Core `/report` output includes additive `product_telemetry` windows for today, 7 days, and 30 days. Output is literal: category and event counts, version/channel/OS distributions, first-launch counts, update-check delivery observations, and counts of random installation IDs observed on at least two received UTC days within the retained raw window. It returns no installation IDs and does not call those counts people, users, active installs, or retention. The existing `/update/check` raw counter remains authoritative for release-route update checks; `product_telemetry.update_check_delivery_observations` is separate.
+Bare BUS Core `/report` output includes additive `product_telemetry` windows for today, 7 days, and 30 days. Output is literal: category and event counts, version/channel/OS distributions, first-launch counts, update-check delivery observations, and counts of random installation IDs observed on at least two received UTC days within the retained raw window. It returns no installation IDs and does not call those counts people, users, active installs, or retention. The `/update/check` counter is the authoritative total of qualified, rate-bounded release-route requests; it is not proof of client authenticity. `product_telemetry.update_check_delivery_observations` remains separate.
 
 Existing public-site `/metrics/event` and legacy `/metrics/pageview` behavior remain unchanged. BUS Core client telemetry must not ship until this Lighthouse migration and Worker version are deployed and production payload verification passes.
 
@@ -150,12 +150,14 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 
 - `GET /update/check` — **Manifest proxy with update check counting**
   - Returns manifest JSON from `MANIFEST_R2`.
-  - On successful manifest proxy response, increments `update_checks` in D1 (current UTC day) **unless** request IP matches `IGNORED_IP`.
-  - On the same successful response, records additive daily update-check detail in `release_update_checks_daily` with `channel`, `client_version`, `latest_version`, and `update_available` (`true` | `false` | `unknown`).
-  - Lighthouse accepts optional client-version signals from query params `current_version` or `version`, and header `X-BUS-Core-Version`.
-  - Lighthouse accepts optional channel signals from query param `channel` or header `X-BUS-Core-Channel`.
-  - Lighthouse accepts an optional aggregate-safe `first_check` query param. It is parsed strictly: `true`/`1` → first-seen check, `false`/`0` → repeat check, missing/invalid → unknown first-check status. The same successful response increments exactly one of the additive counters `first_check_true`, `first_check_false`, or `first_check_unknown` on the `release_update_checks_daily` row. `first_check` is **never** inferred from IP, user agent, cookies, or timing, and is an aggregate check-in bucket only — never a user, install, device, or unique identifier.
-  - Missing or malformed client versions do not fail the request; they are stored as `client_version = "unknown"` and `update_available = "unknown"`.
+  - Manifest delivery is public and independent from counting. Ineligible or rate-limited callers still receive the same successful manifest response and contribute zero analytics.
+  - Counting requires exactly one each of `current_version`, `channel`, and `first_check` as query parameters, with no extra parameters. Legacy `version` aliases and `X-BUS-Core-*` header fallbacks are not count-eligible.
+  - `current_version` must be canonical strict `major.minor.patch` SemVer, at least `1.4.0`, and no newer than the selected channel's manifest version.
+  - `channel` must be one of `stable`, `test`, `partner-3dque`, `lts-1.1`, or `security-hotfix`. Stable uses top-level `latest`; every non-stable channel requires an explicit `channels.<channel>.version` entry.
+  - `first_check` must be exactly lowercase `true` or `false`. Qualified requests increment only `first_check_true` or `first_check_false`; new qualified traffic never creates unknown-version/channel/first-check rows. Historical unknown rows remain reportable.
+  - Counting also requires `CF-Connecting-IP`, configured `TELEMETRY_RATE_LIMIT_SECRET`, a non-ignored IP, and allowance under the two-count-per-IP-per-UTC-day gate. The stored rate key is a daily, scope-separated HMAC; raw IP is never stored or reported.
+  - Eligibility and rate control reduce scanner and casual abuse pollution but are not cryptographic proof that a request came from an authentic BUS Core binary.
+  - Any validation or rate-control failure skips both `metrics_daily.update_checks` and `release_update_checks_daily` writes without failing manifest delivery.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` on manifest errors.
 
 ### Download Service
@@ -292,8 +294,8 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `update_available_impressions` means a known client version was older than the latest manifest version served.
 - `latest_version_checkins` means a known client version matched the latest manifest version served.
 - The raw-versus-breakdown fields are reconciliation instrumentation: a positive `raw_breakdown_delta` means raw update checks were counted but the versioned daily-breakdown total is lower for the same window. Existing `update_checks` remains the versioned breakdown total for backward compatibility.
-- `raw_update_checks` is the authoritative update-check total for decisions. The compatible `update_checks` field is deprecated for decision use and remains only to avoid breaking older consumers.
-- `first_seen_checkins`, `repeat_checkins`, and `unknown_first_checkins` are aggregate check-in bucket counts derived from the optional `first_check` param. They are not users, installs, devices, or unique anything; there is no identity, dedupe, or install ID.
+- `raw_update_checks` is the authoritative qualified, rate-bounded update-check total for decisions. It is not an authenticated-client count. The compatible `update_checks` field is deprecated for decision use and remains only to avoid breaking older consumers.
+- `first_seen_checkins`, `repeat_checkins`, and `unknown_first_checkins` are aggregate check-in bucket counts. Qualified v1.23.0+ counting requires `first_check=true|false`; `unknown_first_checkins` remains for historical rows written under the earlier optional-param contract. These fields are not users, installs, devices, or unique anything; there is no reported identity or install ID.
 - Lighthouse does not claim installs or successful update completion; it reports only observable check and handout signals.
 
 ### Fallback Behavior
@@ -347,8 +349,8 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `site_events_raw` stores append-only multi-site event submissions with standard enrichment fields. `site_key` is the per-site discriminator for report isolation. `event_name` identifies the event type within a site. `accepted = 1` means the event was accepted and persisted. `drop_reason` currently uses `rate_limited` for standardized ingest drops. `ip_hash` and `user_agent_hash` are SHA-256 hashes when source values are present; raw values are never stored.
 - `BUSCORE_LEADS_DB` is read only by the BUS Core `operator_summary` report path. It aggregates `early_access_leads` attribution columns (`src`, `utm_source`, `utm_campaign`, `referrer_domain`, and timestamps) and never returns lead emails, workflow details, analytics IDs, IP addresses, hashed IPs, user-agent hashes, or raw lead rows.
 - `release_downloads_daily` stores one row per day, filename, and release version for successful Lighthouse-served artifact handouts.
-- `release_update_checks_daily` stores one row per day, channel, client version bucket, latest manifest version bucket, and `update_available` state for successful `GET /update/check` responses.
-- `release_update_checks_daily` also carries the additive first-check counters `first_check_true`, `first_check_false`, and `first_check_unknown` (all `INTEGER NOT NULL DEFAULT 0`). `first_check` is not part of the row key: each successful check increments exactly one of these counters on the existing row, so first-check reporting never causes row explosion and stays aggregate-only (no identity, install ID, or dedupe).
+- `release_update_checks_daily` stores one row per day, channel, client version bucket, latest manifest version bucket, and `update_available` state for qualified, rate-allowed `GET /update/check` responses.
+- `release_update_checks_daily` also carries the additive first-check counters `first_check_true`, `first_check_false`, and `first_check_unknown` (all `INTEGER NOT NULL DEFAULT 0`). `first_check` is not part of the row key: each qualified, rate-allowed check increments exactly one known-status counter on the existing row. The unknown counter is retained for historical compatibility, so reporting remains aggregate-only with no identity or install ID.
 
 ## 5. Configuration
 
@@ -360,7 +362,7 @@ Required bindings/secrets used by code:
 - `IGNORED_IP` — optional; if set, requests whose `CF-Connecting-IP` exactly matches this value skip counter increments but receive normal responses.
 - `CF_API_TOKEN` — required for the approved daily Buscore traffic capture job.
 - `CF_ZONE_TAG` — required for the approved daily Buscore traffic capture job.
-- `TELEMETRY_RATE_LIMIT_SECRET` — required in production; keys BUS Core product-telemetry rate identifiers that rotate by UTC minute. A random per-isolate fallback is local-development compatibility, not the production contract.
+- `TELEMETRY_RATE_LIMIT_SECRET` — required in production; keys scope-separated BUS Core product-telemetry identifiers that rotate by UTC minute and qualified update-check identifiers that rotate by UTC day. Update-check counting fails closed when this secret is absent. A random per-isolate fallback remains local-development compatibility for product telemetry only, not the production contract.
 
 Not used by current code:
 

@@ -95,8 +95,10 @@ class FakeD1Database {
     this.metricsDaily = new Map();
     this.releaseDownloadsDaily = new Map();
     this.releaseUpdateChecksDaily = new Map();
+    this.rateLimits = new Map();
     this.failReleaseSignalReads = options.failReleaseSignalReads ?? false;
     this.failReleaseSignalWrites = options.failReleaseSignalWrites ?? false;
+    this.failRateLimit = options.failRateLimit ?? false;
   }
 
   prepare(sql) {
@@ -132,6 +134,16 @@ class FakeD1Database {
   }
 
   async run(sql, args) {
+    if (sql.startsWith("INSERT INTO buscore_telemetry_rate_limit")) {
+      if (this.failRateLimit) {
+        throw new Error("rate limit unavailable");
+      }
+      const [bucket, ipHash] = args;
+      const key = `${bucket}|${ipHash}`;
+      this.rateLimits.set(key, (this.rateLimits.get(key) ?? 0) + 1);
+      return { success: true };
+    }
+
     if (sql.startsWith("INSERT INTO metrics_daily")) {
       const [day] = args;
       if (!this.metricsDaily.has(day)) {
@@ -183,6 +195,14 @@ class FakeD1Database {
   }
 
   async first(sql, args) {
+    if (sql.startsWith("SELECT count FROM buscore_telemetry_rate_limit")) {
+      if (this.failRateLimit) {
+        throw new Error("rate limit unavailable");
+      }
+      const [bucket, ipHash] = args;
+      return { count: this.rateLimits.get(`${bucket}|${ipHash}`) ?? 0 };
+    }
+
     if (this.failReleaseSignalReads && sql.includes("FROM release_downloads_daily")) {
       throw new Error("no such table: release_downloads_daily");
     }
@@ -327,6 +347,7 @@ function createHarness(options = {}) {
   const db = new FakeD1Database({
     failReleaseSignalReads: options.failReleaseSignalReads,
     failReleaseSignalWrites: options.failReleaseSignalWrites,
+    failRateLimit: options.failRateLimit,
   });
   const env = {
     DB: db,
@@ -336,6 +357,9 @@ function createHarness(options = {}) {
     CF_API_TOKEN: "token",
     CF_ZONE_TAG: "zone",
   };
+  if (!options.omitRateLimitSecret) {
+    env.TELEMETRY_RATE_LIMIT_SECRET = "test-rate-secret";
+  }
 
   return { db, env };
 }
@@ -440,141 +464,207 @@ test("GET /manifest/core/stable.json does not increment downloads or update_chec
   assert.deepEqual(db.metricRow(todayDay()), { update_checks: 0, downloads: 0, errors: 0 });
 });
 
-test("ignored IP suppresses both old counters and new release-signal aggregates", async () => {
-  const { db, env } = createHarness({ ignoredIp: "203.0.113.10" });
+const CORE_IP_A = { "CF-Connecting-IP": "198.51.100.10" };
+const CORE_IP_B = { "CF-Connecting-IP": "198.51.100.11" };
+const VALID_FIRST_CHECK = "/update/check?current_version=1.4.0&channel=stable&first_check=true";
+const VALID_REPEAT_CHECK = "/update/check?current_version=1.4.0&channel=stable&first_check=false";
+
+test("ignored IP suppresses qualified update checks and artifact downloads", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0", ignoredIp: "203.0.113.10" });
   const headers = { "CF-Connecting-IP": "203.0.113.10" };
 
-  await dispatch(env, "/update/check?current_version=1.0.4", { headers });
-  await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers });
+  await dispatch(env, VALID_FIRST_CHECK, { headers });
+  await dispatch(env, "/releases/BUS-Core-1.4.0.zip", { headers });
 
   assert.deepEqual(db.metricRow(todayDay()), { update_checks: 0, downloads: 0, errors: 0 });
   assert.deepEqual(db.releaseDownloadRows(), []);
   assert.deepEqual(db.releaseUpdateCheckRows(), []);
 });
 
-test("GET /update/check still increments metrics_daily.update_checks", async () => {
-  const { db, env } = createHarness();
+test("bare public /update/check still serves the manifest but is not counted", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0" });
 
   const response = await dispatch(env, "/update/check");
 
   assert.equal(response.status, 200);
-  assert.equal(db.metricRow(todayDay()).update_checks, 1);
+  assert.equal(db.metricRow(todayDay()).update_checks, 0);
+  assert.deepEqual(db.releaseUpdateCheckRows(), []);
 });
 
-test("GET /update/check still succeeds when additive release-signal writes fail", async () => {
-  const { db, env } = createHarness({ failReleaseSignalWrites: true });
+test("exact BUS Core v1.4 request shape is counted", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0" });
 
-  const response = await dispatch(env, "/update/check?current_version=1.0.4");
+  const response = await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).update_checks, 1);
+  assert.deepEqual(db.releaseUpdateCheckRows(), [{
+    day: todayDay(),
+    channel: "stable",
+    client_version: "1.4.0",
+    latest_version: "1.4.0",
+    update_available: "false",
+    checks: 1,
+    first_check_true: 1,
+    first_check_false: 0,
+    first_check_unknown: 0,
+  }]);
+});
+
+test("malformed, legacy, duplicated, and embellished query shapes are not counted", async () => {
+  const invalidPaths = [
+    "/update/check?current_version=1.4.0&channel=stable",
+    "/update/check?version=1.4.0&channel=stable&first_check=true",
+    "/update/check?current_version=1.4.0&channel=stable&first_check=true&probe=1",
+    "/update/check?current_version=1.4.0&channel=stable&first_check=true&first_check=false",
+    "/update/check?current_version=1.4.0&channel=stable&first_check=1",
+    "/update/check?current_version=1.4.0&channel=STABLE&first_check=true",
+    "/update/check?current_version=01.4.0&channel=stable&first_check=true",
+  ];
+
+  for (const path of invalidPaths) {
+    const { db, env } = createHarness({ manifestVersion: "1.4.0" });
+    const response = await dispatch(env, path, { headers: CORE_IP_A });
+    assert.equal(response.status, 200, path);
+    assert.equal(db.metricRow(todayDay()).update_checks, 0, path);
+    assert.deepEqual(db.releaseUpdateCheckRows(), [], path);
+  }
+});
+
+test("versions before the instrumented floor or ahead of the selected manifest are not counted", async () => {
+  for (const version of ["1.3.3", "1.4.1", "999.0.0"]) {
+    const { db, env } = createHarness({ manifestVersion: "1.4.0" });
+    const path = `/update/check?current_version=${version}&channel=stable&first_check=true`;
+    const response = await dispatch(env, path, { headers: CORE_IP_A });
+    assert.equal(response.status, 200);
+    assert.equal(db.metricRow(todayDay()).update_checks, 0, version);
+  }
+});
+
+test("non-stable channels count only when the manifest has an explicit matching channel", async () => {
+  const manifestRaw = JSON.stringify({
+    latest: { version: "1.4.0", download: { url: "/releases/BUS-Core-1.4.0.zip" } },
+    channels: {
+      test: { version: "1.4.0", download: { url: "/releases/BUS-Core-1.4.0.zip" } },
+    },
+  });
+  const { db, env } = createHarness({ manifestVersion: "1.4.0", manifestRaw });
+
+  await dispatch(
+    env,
+    "/update/check?current_version=1.4.0&channel=test&first_check=false",
+    { headers: CORE_IP_A },
+  );
+
+  assert.equal(db.metricRow(todayDay()).update_checks, 1);
+  assert.equal(db.releaseUpdateCheckRows()[0].channel, "test");
+
+  const { db: missingDb, env: missingEnv } = createHarness({ manifestVersion: "1.4.0" });
+  await dispatch(
+    missingEnv,
+    "/update/check?current_version=1.4.0&channel=test&first_check=false",
+    { headers: CORE_IP_A },
+  );
+  assert.equal(missingDb.metricRow(todayDay()).update_checks, 0);
+});
+
+test("counting is capped at two qualified requests per IP and UTC day", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0" });
+
+  await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
+  await dispatch(env, VALID_REPEAT_CHECK, { headers: CORE_IP_A });
+  const third = await dispatch(env, VALID_REPEAT_CHECK, { headers: CORE_IP_A });
+
+  assert.equal(third.status, 200);
+  assert.equal(db.metricRow(todayDay()).update_checks, 2);
+  assert.equal(db.releaseUpdateCheckRows()[0].checks, 2);
+  assert.equal(db.releaseUpdateCheckRows()[0].first_check_true, 1);
+  assert.equal(db.releaseUpdateCheckRows()[0].first_check_false, 1);
+
+  await dispatch(env, VALID_REPEAT_CHECK, { headers: CORE_IP_B });
+  assert.equal(db.metricRow(todayDay()).update_checks, 3);
+});
+
+test("missing client IP fails closed for counting while manifest delivery stays available", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0" });
+
+  const response = await dispatch(env, VALID_FIRST_CHECK);
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).update_checks, 0);
+});
+
+test("missing production rate secret fails closed for counting", async () => {
+  const { db, env } = createHarness({
+    manifestVersion: "1.4.0",
+    omitRateLimitSecret: true,
+  });
+
+  const response = await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).update_checks, 0);
+});
+
+test("rate-control storage failure fails closed for counting without breaking update checks", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0", failRateLimit: true });
+
+  const response = await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).update_checks, 0);
+  assert.deepEqual(db.releaseUpdateCheckRows(), []);
+});
+
+test("additive release-signal write failure does not break a qualified update check", async () => {
+  const { db, env } = createHarness({
+    manifestVersion: "1.4.0",
+    failReleaseSignalWrites: true,
+  });
+
+  const response = await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
 
   assert.equal(response.status, 200);
   assert.equal(db.metricRow(todayDay()).update_checks, 1);
   assert.deepEqual(db.releaseUpdateCheckRows(), []);
 });
 
-test("GET /update/check without client version records an unknown client-version bucket", async () => {
-  const { db, env } = createHarness();
-
-  await dispatch(env, "/update/check");
-
-  assert.deepEqual(db.releaseUpdateCheckRows(), [
-    {
-      day: todayDay(),
-      channel: "unknown",
-      client_version: "unknown",
-      latest_version: "1.1.0",
-      update_available: "unknown",
-      checks: 1,
-      first_check_true: 0,
-      first_check_false: 0,
-      first_check_unknown: 1,
-    },
-  ]);
-});
-
-test("GET /update/check?current_version=1.0.4 records update_available = true", async () => {
-  const { db, env } = createHarness();
-
-  await dispatch(env, "/update/check?current_version=1.0.4");
-
-  assert.deepEqual(db.releaseUpdateCheckRows(), [
-    {
-      day: todayDay(),
-      channel: "unknown",
-      client_version: "1.0.4",
-      latest_version: "1.1.0",
-      update_available: "true",
-      checks: 1,
-      first_check_true: 0,
-      first_check_false: 0,
-      first_check_unknown: 1,
-    },
-  ]);
-});
-
-test("GET /update/check?current_version=1.1.0 records update_available = false and /report exposes latest-version check-ins", async () => {
-  const { db, env } = createHarness();
+test("/report exposes only qualified known-version check-ins", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0" });
   const originalFetch = global.fetch;
   global.fetch = async () => {
     throw new Error("skip refresh");
   };
 
   try {
-    await dispatch(env, "/update/check?current_version=1.1.0");
-    await dispatch(env, "/releases/BUS-Core-1.1.0.zip");
-
-    assert.deepEqual(db.releaseUpdateCheckRows(), [
-      {
-        day: todayDay(),
-        channel: "unknown",
-        client_version: "1.1.0",
-        latest_version: "1.1.0",
-        update_available: "false",
-        checks: 1,
-        first_check_true: 0,
-        first_check_false: 0,
-        first_check_unknown: 1,
-      },
-    ]);
+    await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
+    await dispatch(env, VALID_REPEAT_CHECK, { headers: CORE_IP_B });
+    await dispatch(env, "/update/check", { headers: { "CF-Connecting-IP": "198.51.100.12" } });
+    await dispatch(env, "/releases/BUS-Core-1.4.0.zip");
 
     const reportResponse = await dispatch(env, "/report", {
       headers: { "X-Admin-Token": "secret-token" },
     });
     const payload = await reportResponse.json();
+    const today = payload.release_signals.today;
 
     assert.equal(reportResponse.status, 200);
-    assert.equal(typeof payload.today.downloads, "number");
-    assert.equal(typeof payload.today.update_checks, "number");
-    assert.ok("last_7_days" in payload);
-    assert.ok("last_30_days" in payload);
-    assert.ok("intent_counters" in payload);
-    assert.ok("release_signals" in payload);
-    assert.deepEqual(payload.release_signals.today, {
-      artifact_downloads: 1,
-      artifact_downloads_by_release: [
-        {
-          release_version: "1.1.0",
-          filename: "BUS-Core-1.1.0.zip",
-          downloads: 1,
-        },
-      ],
-      raw_update_checks: 1,
-      breakdown_update_checks: 1,
-      raw_breakdown_delta: 0,
-      update_checks: 1,
-      update_checks_with_known_client_version: 1,
-      update_checks_unknown_client_version: 0,
-      update_available_impressions: 0,
-      latest_version_checkins: 1,
-      first_seen_checkins: 0,
-      repeat_checkins: 0,
-      unknown_first_checkins: 1,
-      first_seen_share: 0,
-    });
+    assert.equal(today.raw_update_checks, 2);
+    assert.equal(today.breakdown_update_checks, 2);
+    assert.equal(today.raw_breakdown_delta, 0);
+    assert.equal(today.update_checks_with_known_client_version, 2);
+    assert.equal(today.update_checks_unknown_client_version, 0);
+    assert.equal(today.first_seen_checkins, 1);
+    assert.equal(today.repeat_checkins, 1);
+    assert.equal(today.unknown_first_checkins, 0);
+    assert.equal(today.first_seen_share, 0.5);
+    assert.equal(today.latest_version_checkins, 2);
+    assert.equal(today.artifact_downloads, 1);
+    assert.equal(db.metricRow(todayDay()).update_checks, 2);
   } finally {
     global.fetch = originalFetch;
   }
 });
-
 
 test("/report remains available when additive release-signal aggregate reads fail", async () => {
   const { env } = createHarness({ failReleaseSignalReads: true });
@@ -592,247 +682,41 @@ test("/report remains available when additive release-signal aggregate reads fai
     assert.equal(reportResponse.status, 200);
     assert.equal(typeof payload.today.downloads, "number");
     assert.equal(typeof payload.last_7_days.update_checks, "number");
-    assert.deepEqual(payload.release_signals.today, {
-      artifact_downloads: 0,
-      artifact_downloads_by_release: [],
-      raw_update_checks: 0,
-      breakdown_update_checks: 0,
-      raw_breakdown_delta: 0,
-      update_checks: 0,
-      update_checks_with_known_client_version: 0,
-      update_checks_unknown_client_version: 0,
-      update_available_impressions: 0,
-      latest_version_checkins: 0,
-      first_seen_checkins: 0,
-      repeat_checkins: 0,
-      unknown_first_checkins: 0,
-      first_seen_share: 0,
-    });
+    assert.equal(payload.release_signals.today.raw_update_checks, 0);
+    assert.equal(payload.release_signals.today.breakdown_update_checks, 0);
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-// --- Ticket 3: first_check aggregate contract ---------------------------------
+test("invalid manifest version prevents counting without breaking manifest delivery", async () => {
+  const { db, env } = createHarness({ manifestVersion: "v1.4.0" });
 
-test("new client first_check=true records client_version, channel, and first_check_true", async () => {
-  const { db, env } = createHarness();
-
-  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=true");
-
-  assert.deepEqual(db.releaseUpdateCheckRows(), [
-    {
-      day: todayDay(),
-      channel: "stable",
-      client_version: "1.3.3",
-      latest_version: "1.1.0",
-      update_available: "false",
-      checks: 1,
-      first_check_true: 1,
-      first_check_false: 0,
-      first_check_unknown: 0,
-    },
-  ]);
-});
-
-test("repeat check first_check=false records first_check_false", async () => {
-  const { db, env } = createHarness();
-
-  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=false");
-
-  const [row] = db.releaseUpdateCheckRows();
-  assert.equal(row.channel, "stable");
-  assert.equal(row.client_version, "1.3.3");
-  assert.equal(row.first_check_true, 0);
-  assert.equal(row.first_check_false, 1);
-  assert.equal(row.first_check_unknown, 0);
-});
-
-test("old client with no query params records unknown client/channel/first-check", async () => {
-  const { db, env } = createHarness();
-
-  await dispatch(env, "/update/check");
-
-  assert.deepEqual(db.releaseUpdateCheckRows(), [
-    {
-      day: todayDay(),
-      channel: "unknown",
-      client_version: "unknown",
-      latest_version: "1.1.0",
-      update_available: "unknown",
-      checks: 1,
-      first_check_true: 0,
-      first_check_false: 0,
-      first_check_unknown: 1,
-    },
-  ]);
-});
-
-test("invalid first_check value is bucketed as unknown first-check", async () => {
-  const { db, env } = createHarness();
-
-  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=banana");
-
-  const [row] = db.releaseUpdateCheckRows();
-  assert.equal(row.first_check_true, 0);
-  assert.equal(row.first_check_false, 0);
-  assert.equal(row.first_check_unknown, 1);
-});
-
-test("first_check accepts 1 and 0 aliases", async () => {
-  const { db: dbTrue, env: envTrue } = createHarness();
-  await dispatch(envTrue, "/update/check?current_version=1.3.3&channel=stable&first_check=1");
-  assert.equal(dbTrue.releaseUpdateCheckRows()[0].first_check_true, 1);
-
-  const { db: dbFalse, env: envFalse } = createHarness();
-  await dispatch(envFalse, "/update/check?current_version=1.3.3&channel=stable&first_check=0");
-  assert.equal(dbFalse.releaseUpdateCheckRows()[0].first_check_false, 1);
-});
-
-test("first_check is case-insensitive (TRUE)", async () => {
-  const { db, env } = createHarness();
-
-  await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=TRUE");
-
-  assert.equal(db.releaseUpdateCheckRows()[0].first_check_true, 1);
-});
-
-test("D1 write failure never breaks /update/check even with first_check present", async () => {
-  const { db, env } = createHarness({ failReleaseSignalWrites: true });
-
-  const response = await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=true");
+  const response = await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
 
   assert.equal(response.status, 200);
-  assert.equal(db.metricRow(todayDay()).update_checks, 1);
+  assert.equal(db.metricRow(todayDay()).update_checks, 0);
   assert.deepEqual(db.releaseUpdateCheckRows(), []);
 });
 
-test("/report exposes a raw-versus-breakdown update-check mismatch when additive writes fail", async () => {
-  const { env } = createHarness({ failReleaseSignalWrites: true });
+test("GET /report and scoped BUS Core report retain release-signal parity", async () => {
+  const { env } = createHarness({ manifestVersion: "1.4.0" });
   const originalFetch = global.fetch;
   global.fetch = async () => {
     throw new Error("skip refresh");
   };
 
   try {
-    const updateResponse = await dispatch(env, "/update/check?current_version=1.3.3&channel=stable&first_check=true");
-    const reportResponse = await dispatch(env, "/report", {
-      headers: { "X-Admin-Token": "secret-token" },
-    });
-    const payload = await reportResponse.json();
-
-    assert.equal(updateResponse.status, 200);
-    for (const window of Object.values(payload.release_signals)) {
-      assert.equal(window.raw_update_checks, 1);
-      assert.equal(window.breakdown_update_checks, 0);
-      assert.equal(window.raw_breakdown_delta, 1);
-    }
-  } finally {
-    global.fetch = originalFetch;
-  }
-});
-
-test("/report exposes first-check aggregates with correct sums and share", async () => {
-  const { env } = createHarness();
-  const originalFetch = global.fetch;
-  global.fetch = async () => {
-    throw new Error("skip refresh");
-  };
-
-  try {
-    // Two first-seen and one repeat check-in collapse onto the same additive row.
-    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=true");
-    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=true");
-    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=false");
-    // One unknown-first-check check-in.
-    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable");
-
-    const reportResponse = await dispatch(env, "/report", {
-      headers: { "X-Admin-Token": "secret-token" },
-    });
-    const payload = await reportResponse.json();
-
-    assert.equal(reportResponse.status, 200);
-    const today = payload.release_signals.today;
-    assert.equal(today.raw_update_checks, 4);
-    assert.equal(today.breakdown_update_checks, 4);
-    assert.equal(today.raw_breakdown_delta, 0);
-    assert.equal(today.first_seen_checkins, 2);
-    assert.equal(today.repeat_checkins, 1);
-    assert.equal(today.unknown_first_checkins, 1);
-    assert.equal(today.first_seen_share, 2 / 3);
-  } finally {
-    global.fetch = originalFetch;
-  }
-});
-
-test("first_seen_share is 0 when there are no known-status first-check check-ins", async () => {
-  const { env } = createHarness();
-  const originalFetch = global.fetch;
-  global.fetch = async () => {
-    throw new Error("skip refresh");
-  };
-
-  try {
-    await dispatch(env, "/update/check");
-
-    const reportResponse = await dispatch(env, "/report", {
-      headers: { "X-Admin-Token": "secret-token" },
-    });
-    const payload = await reportResponse.json();
-    const today = payload.release_signals.today;
-
-    assert.equal(today.raw_update_checks, 1);
-    assert.equal(today.breakdown_update_checks, 1);
-    assert.equal(today.raw_breakdown_delta, 0);
-    assert.equal(today.first_seen_checkins, 0);
-    assert.equal(today.repeat_checkins, 0);
-    assert.equal(today.unknown_first_checkins, 1);
-    assert.equal(today.first_seen_share, 0);
-  } finally {
-    global.fetch = originalFetch;
-  }
-});
-
-// --- Ticket 3: manifest latest-version parse guard ---------------------------
-
-test("manifest latest version 1.3.3 parses as a valid latest version", async () => {
-  const { db, env } = createHarness({ manifestVersion: "1.3.3" });
-
-  await dispatch(env, "/update/check");
-
-  assert.equal(db.releaseUpdateCheckRows()[0].latest_version, "1.3.3");
-});
-
-test("manifest latest version v1.3.3 is intentionally rejected and buckets as unknown", async () => {
-  // Guard: the strict semver parser rejects a leading-v tag. If the BUS Core
-  // release pipeline ever emits `vX.Y.Z`, latest-version reporting zeroes out —
-  // this test documents that behavior so the change cannot happen silently.
-  const { db, env } = createHarness({ manifestVersion: "v1.3.3" });
-
-  await dispatch(env, "/update/check");
-
-  assert.equal(db.releaseUpdateCheckRows()[0].latest_version, "unknown");
-});
-
-// --- Ticket 3: /report vs /report?site_key=buscore release-signal parity -----
-
-test("GET /report and GET /report?site_key=buscore return equivalent release_signals", async () => {
-  const { env } = createHarness();
-  const originalFetch = global.fetch;
-  global.fetch = async () => {
-    throw new Error("skip refresh");
-  };
-
-  try {
-    await dispatch(env, "/update/check?current_version=1.0.4&channel=stable&first_check=true");
-    await dispatch(env, "/update/check?current_version=1.1.0&channel=stable&first_check=false");
+    await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
+    await dispatch(env, VALID_REPEAT_CHECK, { headers: CORE_IP_B });
 
     const plain = await (
       await dispatch(env, "/report", { headers: { "X-Admin-Token": "secret-token" } })
     ).json();
     const scoped = await (
-      await dispatch(env, "/report?site_key=buscore", { headers: { "X-Admin-Token": "secret-token" } })
+      await dispatch(env, "/report?site_key=buscore", {
+        headers: { "X-Admin-Token": "secret-token" },
+      })
     ).json();
 
     assert.deepEqual(scoped.release_signals, plain.release_signals);

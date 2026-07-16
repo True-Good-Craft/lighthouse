@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.23.0] - 2026-07-15
+
+- Kept `GET /update/check` publicly available for manifest delivery while changing analytics to fail-closed qualified counting.
+- Count only the exact BUS Core request tuple `current_version`, `channel`, and `first_check`, with no missing, duplicate, legacy-alias, header-fallback, or extra query fields.
+- Require canonical SemVer at or above the first fully instrumented BUS Core version (`1.4.0`) and no newer than the selected channel's manifest version; non-stable channels require an explicit matching manifest entry.
+- Require `first_check=true|false`, a recognized BUS Core release channel, Cloudflare client IP context, and configured `TELEMETRY_RATE_LIMIT_SECRET` before counting.
+- Cap qualified counts at two requests per HMAC-scoped IP per UTC day. Raw IPs are not stored, scope hashes are isolated from product telemetry, and existing migration 0013 rate-control storage is reused without a new migration.
+- Make abuse-control storage failures skip counting without interrupting manifest responses.
+- Replace legacy unknown-client counting tests with strict-shape, plausible-version, explicit-channel, missing-secret/IP, fail-closed, and daily-cap coverage.
+
 ## [1.22.1] - 2026-07-12
 
 - Fixed Cloudflare Worker startup validation by moving the local-only random rate-secret fallback out of module initialization and lazily initializing it in request scope.
