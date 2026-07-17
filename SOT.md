@@ -1,8 +1,12 @@
 # Lighthouse — Source of Truth
 
-## Qualified BUS Core update-check counting — v1.23.0 deployment pending
+## Qualified BUS Core release-signal counting — v1.24.0 deployment pending
 
-Lighthouse remains the versioned contract and ingestion authority for limited BUS Core product telemetry. Migration `0013_add_buscore_product_telemetry.sql` is applied remotely. Repository version 1.23.0 additionally makes `/update/check` analytics fail closed: public manifest delivery is unchanged, but only exact, plausible BUS Core v1.4.0+ request tuples that pass the existing keyed rate-control storage are counted. No new migration is required. This behavior is not production reality until the Worker is explicitly deployed.
+Lighthouse remains the versioned contract and ingestion authority for limited BUS Core product telemetry. Migration `0013_add_buscore_product_telemetry.sql` and Worker version 1.23.0 are deployed. A production VPN verification on 2026-07-17 recorded two qualified BUS Core v1.4.0 stable repeat checks; four attempts from the same daily HMAC scope were reduced to the configured two-count limit, confirming the update-check chain and abuse control end to end.
+
+Repository version 1.24.0 applies the same privacy-preserving abuse-control model to release artifacts. Public artifact delivery is unchanged, but analytics count at most one qualified full request per HMAC-scoped IP, release version, and UTC day. The artifact scope is isolated from update-check and product-telemetry scopes. Missing client IP or secret, ignored IPs, `Range` requests, over-limit requests, and rate-storage failures contribute zero analytics without blocking valid artifact delivery. Raw IPs are not stored. No new migration is required because migration 0013's rate-control table is reused. This artifact-counting behavior is not production reality until the Worker is explicitly deployed.
+
+Historical download aggregates are not destructively rewritten; they remain visible until their normal report windows age out. Going forward, `downloads` means qualified, rate-bounded artifact requests, not people, installations, lifetime-unique downloaders, or proof that a response body completed transfer.
 
 The implemented contract provides:
 
@@ -16,7 +20,7 @@ The implemented contract provides:
 
 The approved BUS Core installation identifier is random and locally generated. It must not be derived from hardware, username, filesystem, network, account, or machine-fingerprint data. Lighthouse availability must remain optional and non-blocking for the self-managed product.
 
-The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible, and the server derives the category. Accepted raw events are retained for 30 UTC-day buckets, aggregates for 400, and rate buckets for 2 days. Rate keys are HMAC-SHA256 values keyed by `TELEMETRY_RATE_LIMIT_SECRET`: product telemetry rotates by UTC minute and qualified update-check counting rotates by UTC day with a separate scope. Raw IP and unsalted IP hashes are not retained. Event IDs provide idempotent retry deduplication, and migration 0013's `AFTER INSERT` trigger makes the accepted raw insert and aggregate increment atomic.
+The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible, and the server derives the category. Accepted raw events are retained for 30 UTC-day buckets, aggregates for 400, and rate buckets for 2 days. Rate keys are HMAC-SHA256 values keyed by `TELEMETRY_RATE_LIMIT_SECRET`: product telemetry rotates by UTC minute; qualified update-check and artifact-request counting use UTC-day buckets with separate scopes. Raw IP and unsalted IP hashes are not retained. Event IDs provide idempotent retry deduplication, and migration 0013's `AFTER INSERT` trigger makes the accepted raw insert and aggregate increment atomic.
 
 Bare BUS Core `/report` output includes additive `product_telemetry` windows for today, 7 days, and 30 days. Output is literal: category and event counts, version/channel/OS distributions, first-launch counts, update-check delivery observations, and counts of random installation IDs observed on at least two received UTC days within the retained raw window. It returns no installation IDs and does not call those counts people, users, active installs, or retention. The `/update/check` counter is the authoritative total of qualified, rate-bounded release-route requests; it is not proof of client authenticity. `product_telemetry.update_check_delivery_observations` remains separate.
 
@@ -168,11 +172,13 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
   - Never increments `downloads` directly.
   - Returns `503` JSON `{ "ok": false, "error": "manifest_unavailable" }` when URL is missing/invalid.
 
-- `GET /releases/:filename` — **Raw asset delivery with successful artifact-handout counting**
+- `GET /releases/:filename` — **Raw asset delivery with qualified artifact-request counting**
   - Serves release artifacts directly from `MANIFEST_R2` using key `releases/:filename`.
-  - Successful full `GET` artifact responses increment `downloads` in `metrics_daily` and the additive per-day `release_downloads_daily` breakdown, unless the request IP matches `IGNORED_IP`.
-  - `downloads` now means successful Lighthouse-served artifact handouts, not redirect intent.
-  - Does not increment counters for `404` missing artifacts, invalid filenames, non-`GET` requests, `HEAD`, ignored IPs, or conservative non-full requests carrying `Range`.
+  - An existing artifact increments `downloads` in `metrics_daily` and `release_downloads_daily` only for a full `GET` with `CF-Connecting-IP`, configured `TELEMETRY_RATE_LIMIT_SECRET`, a non-ignored IP, and allowance under the one-count-per-IP-per-release-per-UTC-day gate.
+  - The stored gate key is a daily, scope-separated HMAC. Raw IP is never stored or reported, and the artifact scope cannot consume update-check or product-telemetry allowance.
+  - Any eligibility or rate-control failure skips both download-counter writes without blocking valid artifact delivery.
+  - Does not increment counters for `404` missing artifacts, invalid filenames, non-`GET` requests, `HEAD`, ignored IPs, missing secret/IP, over-limit requests, rate-storage failures, or conservative non-full requests carrying `Range`.
+  - `downloads` means qualified, rate-bounded artifact requests, not redirect intent, people, installations, lifetime-unique downloaders, or confirmed completed transfers.
   - Allowed filename formats: `BUS-Core-<semver>.zip` (current) and `TGC-BUS-Core-<semver>.zip` (legacy, preserved for backward compatibility).
   - Returns `200` with artifact body when object exists.
   - Returns `404` JSON `{ "ok": false, "error": "not_found" }` when missing or filename is invalid.
@@ -296,7 +302,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - The raw-versus-breakdown fields are reconciliation instrumentation: a positive `raw_breakdown_delta` means raw update checks were counted but the versioned daily-breakdown total is lower for the same window. Existing `update_checks` remains the versioned breakdown total for backward compatibility.
 - `raw_update_checks` is the authoritative qualified, rate-bounded update-check total for decisions. It is not an authenticated-client count. The compatible `update_checks` field is deprecated for decision use and remains only to avoid breaking older consumers.
 - `first_seen_checkins`, `repeat_checkins`, and `unknown_first_checkins` are aggregate check-in bucket counts. Qualified v1.23.0+ counting requires `first_check=true|false`; `unknown_first_checkins` remains for historical rows written under the earlier optional-param contract. These fields are not users, installs, devices, or unique anything; there is no reported identity or install ID.
-- Lighthouse does not claim installs or successful update completion; it reports only observable check and handout signals.
+- Lighthouse does not claim installs, successful update completion, or completed artifact transfer; it reports only qualified, rate-bounded request signals.
 
 ### Fallback Behavior
 
@@ -326,7 +332,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Table: `buscore_product_events_daily`
 - Table: `buscore_telemetry_rate_limit`
 - Aggregate counters: `update_checks`, `downloads`, `errors`
-- `downloads` means successful Lighthouse-served release artifact handouts.
+- `downloads` means qualified, rate-bounded Lighthouse release artifact requests. It is not a completed-transfer counter.
 - Day key format: UTC `YYYY-MM-DD`
 - `buscore_traffic_daily` schema:
   - `day TEXT PRIMARY KEY`
@@ -348,7 +354,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `site_event_rate_limit` stores approximate per-minute IP-hash counters only for standardized event ingestion noise control and has no reporting role.
 - `site_events_raw` stores append-only multi-site event submissions with standard enrichment fields. `site_key` is the per-site discriminator for report isolation. `event_name` identifies the event type within a site. `accepted = 1` means the event was accepted and persisted. `drop_reason` currently uses `rate_limited` for standardized ingest drops. `ip_hash` and `user_agent_hash` are SHA-256 hashes when source values are present; raw values are never stored.
 - `BUSCORE_LEADS_DB` is read only by the BUS Core `operator_summary` report path. It aggregates `early_access_leads` attribution columns (`src`, `utm_source`, `utm_campaign`, `referrer_domain`, and timestamps) and never returns lead emails, workflow details, analytics IDs, IP addresses, hashed IPs, user-agent hashes, or raw lead rows.
-- `release_downloads_daily` stores one row per day, filename, and release version for successful Lighthouse-served artifact handouts.
+- `release_downloads_daily` stores one row per day, filename, and release version for qualified, rate-bounded Lighthouse artifact requests.
 - `release_update_checks_daily` stores one row per day, channel, client version bucket, latest manifest version bucket, and `update_available` state for qualified, rate-allowed `GET /update/check` responses.
 - `release_update_checks_daily` also carries the additive first-check counters `first_check_true`, `first_check_false`, and `first_check_unknown` (all `INTEGER NOT NULL DEFAULT 0`). `first_check` is not part of the row key: each qualified, rate-allowed check increments exactly one known-status counter on the existing row. The unknown counter is retained for historical compatibility, so reporting remains aggregate-only with no identity or install ID.
 
@@ -362,7 +368,7 @@ Required bindings/secrets used by code:
 - `IGNORED_IP` — optional; if set, requests whose `CF-Connecting-IP` exactly matches this value skip counter increments but receive normal responses.
 - `CF_API_TOKEN` — required for the approved daily Buscore traffic capture job.
 - `CF_ZONE_TAG` — required for the approved daily Buscore traffic capture job.
-- `TELEMETRY_RATE_LIMIT_SECRET` — required in production; keys scope-separated BUS Core product-telemetry identifiers that rotate by UTC minute and qualified update-check identifiers that rotate by UTC day. Update-check counting fails closed when this secret is absent. A random per-isolate fallback remains local-development compatibility for product telemetry only, not the production contract.
+- `TELEMETRY_RATE_LIMIT_SECRET` — required in production; keys scope-separated BUS Core product-telemetry identifiers that rotate by UTC minute and qualified update-check/artifact-request identifiers that use UTC-day buckets. Update-check and artifact-request counting fail closed when this secret is absent. A random per-isolate fallback remains local-development compatibility for product telemetry only, not the production contract.
 
 Not used by current code:
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.24.0] - 2026-07-17
+
+- Keep public release artifact delivery unchanged while making download analytics fail closed behind the existing keyed abuse-control storage.
+- Count only existing release artifacts served by full `GET` requests with Cloudflare client IP context, configured `TELEMETRY_RATE_LIMIT_SECRET`, a non-ignored IP, and no `Range` header.
+- Cap counts at one request per HMAC-scoped IP, release version, and UTC day. Raw IPs are not stored, and the artifact scope is isolated from update checks and product telemetry.
+- Skip counting when the secret, client IP, or rate-control storage is unavailable without interrupting artifact delivery.
+- Clarify that `downloads` is a qualified, rate-bounded artifact-request signal, not a person, installation, unique lifetime downloader, or proof that the response body completed transfer.
+- Reuse migration 0013 rate-control storage without a new migration. Historical aggregate rows are retained unchanged and age out of report windows normally.
+
 ## [1.23.0] - 2026-07-15
 
 - Kept `GET /update/check` publicly available for manifest delivery while changing analytics to fail-closed qualified counting.

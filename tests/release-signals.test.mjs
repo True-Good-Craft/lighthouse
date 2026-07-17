@@ -385,6 +385,11 @@ async function dispatch(env, path, init = {}) {
   return response;
 }
 
+const CORE_IP_A = { "CF-Connecting-IP": "198.51.100.10" };
+const CORE_IP_B = { "CF-Connecting-IP": "198.51.100.11" };
+const VALID_FIRST_CHECK = "/update/check?current_version=1.4.0&channel=stable&first_check=true";
+const VALID_REPEAT_CHECK = "/update/check?current_version=1.4.0&channel=stable&first_check=false";
+
 test("GET /download/latest does not increment metrics_daily.downloads by itself", async () => {
   const { db, env } = createHarness();
 
@@ -395,10 +400,10 @@ test("GET /download/latest does not increment metrics_daily.downloads by itself"
   assert.deepEqual(db.releaseDownloadRows(), []);
 });
 
-test("GET /releases/BUS-Core-1.1.0.zip increments metrics_daily.downloads", async () => {
+test("qualified GET /releases/BUS-Core-1.1.0.zip increments metrics_daily.downloads", async () => {
   const { db, env } = createHarness();
 
-  const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip");
+  const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
 
   assert.equal(response.status, 200);
   assert.equal(db.metricRow(todayDay()).downloads, 1);
@@ -415,7 +420,7 @@ test("GET /releases/BUS-Core-1.1.0.zip increments metrics_daily.downloads", asyn
 test("GET /releases/... still succeeds when additive release-signal writes fail", async () => {
   const { db, env } = createHarness({ failReleaseSignalWrites: true });
 
-  const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip");
+  const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
 
   assert.equal(response.status, 200);
   assert.equal(db.metricRow(todayDay()).downloads, 1);
@@ -429,7 +434,7 @@ test("/download/latest redirect flow followed by /releases increments downloads 
   const redirectUrl = redirectResponse.headers.get("location");
 
   assert.ok(redirectUrl);
-  await dispatch(env, new URL(redirectUrl).pathname);
+  await dispatch(env, new URL(redirectUrl).pathname, { headers: CORE_IP_A });
 
   assert.equal(db.metricRow(todayDay()).downloads, 1);
   assert.equal(db.releaseDownloadRows()[0].downloads, 1);
@@ -443,6 +448,80 @@ test("missing release artifact does not increment downloads", async () => {
   assert.equal(response.status, 404);
   assert.equal(db.metricRow(todayDay()).downloads, 0);
   assert.deepEqual(db.releaseDownloadRows(), []);
+});
+
+test("artifact counting is capped at one request per IP, release, and UTC day", async () => {
+  const { db, env } = createHarness();
+
+  for (let i = 0; i < 3; i += 1) {
+    const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
+    assert.equal(response.status, 200);
+  }
+
+  assert.equal(db.metricRow(todayDay()).downloads, 1);
+  assert.equal(db.releaseDownloadRows()[0].downloads, 1);
+
+  await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_B });
+  assert.equal(db.metricRow(todayDay()).downloads, 2);
+  assert.equal(db.releaseDownloadRows()[0].downloads, 2);
+});
+
+test("one IP may count one request for each distinct release per UTC day", async () => {
+  const { db, env } = createHarness({
+    releases: {
+      "BUS-Core-1.1.0.zip": "zip-1.1.0",
+      "BUS-Core-1.2.0.zip": "zip-1.2.0",
+    },
+  });
+
+  await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
+  await dispatch(env, "/releases/BUS-Core-1.2.0.zip", { headers: CORE_IP_A });
+
+  assert.equal(db.metricRow(todayDay()).downloads, 2);
+  assert.equal(db.releaseDownloadRows().length, 2);
+});
+
+test("artifact and update-check gates use separate scopes for the same IP and UTC day", async () => {
+  const { db, env } = createHarness({ manifestVersion: "1.4.0" });
+
+  await dispatch(env, VALID_REPEAT_CHECK, { headers: CORE_IP_A });
+  await dispatch(env, "/releases/BUS-Core-1.4.0.zip", { headers: CORE_IP_A });
+
+  assert.deepEqual(db.metricRow(todayDay()), { update_checks: 1, downloads: 1, errors: 0 });
+  assert.equal(db.rateLimits.size, 2);
+});
+
+test("missing client IP or rate secret skips counting without blocking artifact delivery", async () => {
+  const { db, env } = createHarness();
+  const withoutIp = await dispatch(env, "/releases/BUS-Core-1.1.0.zip");
+  assert.equal(withoutIp.status, 200);
+  assert.equal(db.metricRow(todayDay()).downloads, 0);
+
+  const { db: noSecretDb, env: noSecretEnv } = createHarness({ omitRateLimitSecret: true });
+  const withoutSecret = await dispatch(noSecretEnv, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
+  assert.equal(withoutSecret.status, 200);
+  assert.equal(noSecretDb.metricRow(todayDay()).downloads, 0);
+});
+
+test("rate-control storage failure skips counting without blocking artifact delivery", async () => {
+  const { db, env } = createHarness({ failRateLimit: true });
+
+  const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).downloads, 0);
+  assert.deepEqual(db.releaseDownloadRows(), []);
+});
+
+test("Range requests remain uncounted and available", async () => {
+  const { db, env } = createHarness();
+
+  const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", {
+    headers: { ...CORE_IP_A, Range: "bytes=0-0" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(db.metricRow(todayDay()).downloads, 0);
 });
 
 test("HEAD /releases/... does not increment downloads", async () => {
@@ -463,11 +542,6 @@ test("GET /manifest/core/stable.json does not increment downloads or update_chec
   assert.equal(response.status, 200);
   assert.deepEqual(db.metricRow(todayDay()), { update_checks: 0, downloads: 0, errors: 0 });
 });
-
-const CORE_IP_A = { "CF-Connecting-IP": "198.51.100.10" };
-const CORE_IP_B = { "CF-Connecting-IP": "198.51.100.11" };
-const VALID_FIRST_CHECK = "/update/check?current_version=1.4.0&channel=stable&first_check=true";
-const VALID_REPEAT_CHECK = "/update/check?current_version=1.4.0&channel=stable&first_check=false";
 
 test("ignored IP suppresses qualified update checks and artifact downloads", async () => {
   const { db, env } = createHarness({ manifestVersion: "1.4.0", ignoredIp: "203.0.113.10" });
@@ -640,7 +714,7 @@ test("/report exposes only qualified known-version check-ins", async () => {
     await dispatch(env, VALID_FIRST_CHECK, { headers: CORE_IP_A });
     await dispatch(env, VALID_REPEAT_CHECK, { headers: CORE_IP_B });
     await dispatch(env, "/update/check", { headers: { "CF-Connecting-IP": "198.51.100.12" } });
-    await dispatch(env, "/releases/BUS-Core-1.4.0.zip");
+    await dispatch(env, "/releases/BUS-Core-1.4.0.zip", { headers: CORE_IP_A });
 
     const reportResponse = await dispatch(env, "/report", {
       headers: { "X-Admin-Token": "secret-token" },

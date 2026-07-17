@@ -501,6 +501,7 @@ const EARLIEST_REPORT_DAY = "0000-01-01";
 const UNKNOWN_VERSION_BUCKET = "unknown";
 const MIN_COUNTABLE_BUSCORE_VERSION = "1.4.0";
 const UPDATE_CHECK_COUNT_LIMIT_PER_IP_PER_DAY = 2;
+const ARTIFACT_DOWNLOAD_COUNT_LIMIT_PER_IP_RELEASE_PER_DAY = 1;
 const UPDATE_CHECK_REQUIRED_QUERY_KEYS = ["current_version", "channel", "first_check"] as const;
 const UPDATE_CHECK_ALLOWED_CHANNELS = new Set<string>(BUSCORE_TELEMETRY_RELEASE_CHANNELS);
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -628,8 +629,35 @@ function resolveUpdateAvailability(
   return compareSemver(latestVersion, clientVersion) > 0 ? "true" : "false";
 }
 
-function shouldCountArtifactDownload(request: Request): boolean {
-  return request.method === "GET" && !request.headers.has("Range");
+async function shouldCountArtifactDownload(
+  request: Request,
+  env: Env,
+  day: string,
+  releaseVersion: string,
+): Promise<boolean> {
+  if (request.method !== "GET" || request.headers.has("Range")) {
+    return false;
+  }
+
+  const clientIp = getClientIp(request);
+  const rateLimitSecret = env.TELEMETRY_RATE_LIMIT_SECRET?.trim();
+  if (!clientIp || !rateLimitSecret || shouldSkipCounting(clientIp, env.IGNORED_IP)) {
+    return false;
+  }
+
+  try {
+    return await consumeScopedRateLimit(
+      env.DB,
+      rateLimitSecret,
+      `${day}T00:00`,
+      clientIp,
+      `artifact-download:${releaseVersion}`,
+      ARTIFACT_DOWNLOAD_COUNT_LIMIT_PER_IP_RELEASE_PER_DAY,
+    );
+  } catch (error) {
+    console.warn("Artifact-download count skipped because the abuse-control gate was unavailable.", error);
+    return false;
+  }
 }
 
 function getSiteByKey(siteKey: string): TrackedSite | undefined {
@@ -5275,12 +5303,10 @@ export default {
         return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
       }
 
-      if (!shouldSkipCounting(getClientIp(request), env.IGNORED_IP) && shouldCountArtifactDownload(request)) {
-        const releaseVersion = extractReleaseVersionFromFilename(filename);
-        if (releaseVersion) {
-          await incrementCounter(env.DB, day, "downloads");
-          await incrementReleaseDownloadCounterBestEffort(env.DB, day, filename, releaseVersion);
-        }
+      const releaseVersion = extractReleaseVersionFromFilename(filename);
+      if (releaseVersion && await shouldCountArtifactDownload(request, env, day, releaseVersion)) {
+        await incrementCounter(env.DB, day, "downloads");
+        await incrementReleaseDownloadCounterBestEffort(env.DB, day, filename, releaseVersion);
       }
 
       const headers = new Headers();
