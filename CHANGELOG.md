@@ -8,6 +8,7 @@
 - Skip counting when the secret, client IP, or rate-control storage is unavailable without interrupting artifact delivery.
 - Clarify that `downloads` is a qualified, rate-bounded artifact-request signal, not a person, installation, unique lifetime downloader, or proof that the response body completed transfer.
 - Reuse migration 0013 rate-control storage without a new migration. Historical aggregate rows are retained unchanged and age out of report windows normally.
+- Deployed Worker version 1.24.0 on 2026-07-17 as Cloudflare Version ID `4abf7160-518d-4474-81f2-da8a27f1182a`.
 
 ## [1.23.0] - 2026-07-15
 

@@ -2,7 +2,7 @@
 
 ## BUS Core transition direction
 
-Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migration 0013 and production version 1.23.0 provide strict BUS Core product telemetry plus qualified, rate-bounded `/update/check` analytics. Repository version 1.24.0 adds qualified, rate-bounded artifact-request counting; that change is not production behavior until the Worker is explicitly deployed.
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migration 0013 and production version 1.24.0 provide strict BUS Core product telemetry plus qualified, rate-bounded `/update/check` and artifact-request analytics.
 
 The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
 

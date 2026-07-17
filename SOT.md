@@ -1,10 +1,10 @@
 # Lighthouse — Source of Truth
 
-## Qualified BUS Core release-signal counting — v1.24.0 deployment pending
+## Qualified BUS Core release-signal counting — v1.24.0 deployed
 
 Lighthouse remains the versioned contract and ingestion authority for limited BUS Core product telemetry. Migration `0013_add_buscore_product_telemetry.sql` and Worker version 1.23.0 are deployed. A production VPN verification on 2026-07-17 recorded two qualified BUS Core v1.4.0 stable repeat checks; four attempts from the same daily HMAC scope were reduced to the configured two-count limit, confirming the update-check chain and abuse control end to end.
 
-Repository version 1.24.0 applies the same privacy-preserving abuse-control model to release artifacts. Public artifact delivery is unchanged, but analytics count at most one qualified full request per HMAC-scoped IP, release version, and UTC day. The artifact scope is isolated from update-check and product-telemetry scopes. Missing client IP or secret, ignored IPs, `Range` requests, over-limit requests, and rate-storage failures contribute zero analytics without blocking valid artifact delivery. Raw IPs are not stored. No new migration is required because migration 0013's rate-control table is reused. This artifact-counting behavior is not production reality until the Worker is explicitly deployed.
+Production Worker version 1.24.0 (Cloudflare Version ID `4abf7160-518d-4474-81f2-da8a27f1182a`) applies the same privacy-preserving abuse-control model to release artifacts. Public artifact delivery is unchanged, but analytics count at most one qualified full request per HMAC-scoped IP, release version, and UTC day. The artifact scope is isolated from update-check and product-telemetry scopes. Missing client IP or secret, ignored IPs, `Range` requests, over-limit requests, and rate-storage failures contribute zero analytics without blocking valid artifact delivery. Raw IPs are not stored. No new migration is required because migration 0013's rate-control table is reused.
 
 Historical download aggregates are not destructively rewritten; they remain visible until their normal report windows age out. Going forward, `downloads` means qualified, rate-bounded artifact requests, not people, installations, lifetime-unique downloaders, or proof that a response body completed transfer.
 
