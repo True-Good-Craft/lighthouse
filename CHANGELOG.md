@@ -3,14 +3,14 @@
 ## [1.25.0] - 2026-07-18
 
 - Added `BUS_CORE_TRAFFIC_TRUTH.md` as the authoritative definition of artifact traffic, successful responses, HMAC client-network buckets, inferred download intent, confirmed product signals, lead separation, privacy, retention, rollout thresholds, rollback, evidence, and blind spots.
-- Added pending migration `0014_add_artifact_traffic_truth.sql` with aggregate-only daily artifact and intent tables. It stores no raw IP, HMAC client key, user agent, email, or request identifier and is not applied by this repository change.
+- Added migration `0014_add_artifact_traffic_truth.sql` with aggregate-only daily artifact and intent tables. It stores no raw IP, HMAC client key, user agent, email, or request identifier. The migration was applied remotely on 2026-07-18 at `17:12:45 UTC`.
 - Kept every public manifest, update, redirect, and artifact route open. No artifact 429 or hard delivery limit is enabled because the production audit did not show repeated same-bucket traffic.
 - Added Worker-visible raw/success/full/partial/HEAD/Range/failure/declared-byte, cache hit/miss, daily HMAC client-bucket, repeated-request, and redirect counters while retaining `downloads` as an explicitly legacy compatibility field.
 - Added correct public HEAD and byte-range behavior, one-year immutable caching for canonical versioned full responses, query-free cache keys, cache diagnostics, and fail-soft D1/cache behavior.
 - Added probable-human download-intent aggregation as an explicitly labelled production-origin, accepted-event, daily HMAC/IP proxy. Raw intent rows and existing conversion events remain available under their existing retention policy.
 - Changed new report fields to be nullable with `artifact_measurement_available=false` when migration 0014 is absent, preventing a schema/read failure from becoming a false zero.
 - Added 400-day aggregate cleanup and tests for 100 repeats, different clients/versions, 404, 206 Range, HEAD, cache hit/miss, legacy fallback, and report separation.
-- Deployment and migration remain pending explicit operator approval.
+- Deployed Worker version 1.25.0 on 2026-07-18; the initial post-migration Cloudflare deployment is Version ID `1279aeb4-8904-491e-8130-b0d5a6657ef3`.
 
 ## [1.24.0] - 2026-07-17
 

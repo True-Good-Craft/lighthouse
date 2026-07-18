@@ -1,12 +1,12 @@
 # Lighthouse — Source of Truth
 
-## BUS Core traffic truth and bounded delivery work — v1.25.0 pending deployment
+## BUS Core traffic truth and bounded delivery work — v1.25.0 deployed
 
 `BUS_CORE_TRAFFIC_TRUTH.md` is the authoritative metric/privacy/retention/rollout contract for the new additive fields. Lighthouse now distinguishes Worker-visible artifact requests, successful 200/206 handoffs, full and partial responses, HEAD and Range traffic, declared response bytes, cache outcomes, daily HMAC/IP/version client-network buckets, repeats excluded from that proxy, inferred download intent, confirmed product events, and voluntary leads. None of these fields may be renamed to people, users, installations, completed downloads, or revenue.
 
 Public delivery remains open. Canonical versioned full responses use the Worker Cache API and one-year immutable cache headers; range requests use R2 byte ranges and return 206; HEAD returns metadata without a body. Cache, D1, and qualification failures fail soft for delivery. Phase 3 hard artifact limiting is disabled because the 2026-07-18 audit did not establish repeat abuse inside the existing daily HMAC bucket.
 
-Migration `0014_add_artifact_traffic_truth.sql` is required before deploying v1.25.0. It creates aggregate-only `artifact_traffic_daily` and `buscore_download_intent_daily` tables. The migration is forward-only and has not been applied by this change. New report fields return null with `artifact_measurement_available=false` until the migration exists. Daily truth aggregates retain 400 days; HMAC rate buckets retain two days. The legacy `metrics_daily.downloads` and `release_downloads_daily` fields remain compatibility data with mixed historical qualification semantics.
+Migration `0014_add_artifact_traffic_truth.sql` was applied remotely on 2026-07-18 at `17:12:45 UTC`, creating aggregate-only `artifact_traffic_daily` and `buscore_download_intent_daily` tables before Worker deployment. Production Worker version 1.25.0 was then deployed; the initial post-migration Cloudflare deployment is Version ID `1279aeb4-8904-491e-8130-b0d5a6657ef3`. New report fields return null with `artifact_measurement_available=false` only when the schema is unavailable. Daily truth aggregates retain 400 days; HMAC rate buckets retain two days. The legacy `metrics_daily.downloads` and `release_downloads_daily` fields remain compatibility data with mixed historical qualification semantics.
 
 ## Qualified BUS Core release-signal counting — v1.24.0 deployed
 
