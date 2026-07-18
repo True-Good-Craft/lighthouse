@@ -11,6 +11,13 @@ test("migration 0012 adds all first-check aggregate counters", () => {
   }
 });
 
+test("migration 0014 adds aggregate-only artifact and intent truth tables", () => {
+  const sql = readFileSync(new URL("../migrations/0014_add_artifact_traffic_truth.sql", import.meta.url), "utf8");
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS artifact_traffic_daily/i);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS buscore_download_intent_daily/i);
+  assert.doesNotMatch(sql, /\bip(?:_hash)?\b|user_agent|email|request_id/i);
+});
+
 const worker = workerModule.default?.fetch
   ? workerModule.default
   : workerModule.default?.default ?? workerModule.default ?? workerModule;
@@ -31,10 +38,12 @@ function makeManifest(version = "1.1.0") {
 }
 
 class FakeR2Object {
-  constructor(body, contentType) {
+  constructor(body, contentType, options = {}) {
     this.body = body;
     this.contentType = contentType;
     this.httpEtag = '"fake-etag"';
+    this.size = options.size ?? Buffer.byteLength(typeof body === "string" ? body : String(body));
+    this.range = options.range;
   }
 
   async text() {
@@ -50,18 +59,39 @@ class FakeR2Bucket {
   constructor(manifestRaw, releases) {
     this.manifestRaw = manifestRaw;
     this.releases = releases;
+    this.getCalls = [];
   }
 
-  async get(key) {
+  async get(key, options = {}) {
+    this.getCalls.push(key);
     if (key === "manifest/core/stable.json") {
       return new FakeR2Object(this.manifestRaw, "application/json");
     }
 
     if (this.releases.has(key)) {
-      return new FakeR2Object(this.releases.get(key), "application/zip");
+      const body = String(this.releases.get(key));
+      const rangeHeader = options.range instanceof Headers ? options.range.get("Range") : null;
+      if (rangeHeader) {
+        const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+        if (!match) throw new Error("invalid range");
+        const start = Number(match[1]);
+        const requestedEnd = match[2] ? Number(match[2]) : body.length - 1;
+        const end = Math.min(requestedEnd, body.length - 1);
+        if (start > end || start >= body.length) throw new Error("invalid range");
+        return new FakeR2Object(body.slice(start, end + 1), "application/zip", {
+          size: body.length,
+          range: { offset: start, length: end - start + 1 },
+        });
+      }
+      return new FakeR2Object(body, "application/zip");
     }
 
     return null;
+  }
+
+  async head(key) {
+    if (!this.releases.has(key)) return null;
+    return new FakeR2Object(null, "application/zip", { size: String(this.releases.get(key)).length });
   }
 }
 
@@ -95,8 +125,11 @@ class FakeD1Database {
     this.metricsDaily = new Map();
     this.releaseDownloadsDaily = new Map();
     this.releaseUpdateChecksDaily = new Map();
+    this.artifactTrafficDaily = new Map();
+    this.downloadIntentDaily = new Map();
     this.rateLimits = new Map();
     this.failReleaseSignalReads = options.failReleaseSignalReads ?? false;
+    this.failTrafficTruthReads = options.failTrafficTruthReads ?? false;
     this.failReleaseSignalWrites = options.failReleaseSignalWrites ?? false;
     this.failRateLimit = options.failRateLimit ?? false;
   }
@@ -133,6 +166,15 @@ class FakeD1Database {
     });
   }
 
+  artifactTrafficRow(day, filename = "BUS-Core-1.1.0.zip", releaseVersion = "1.1.0") {
+    return this.artifactTrafficDaily.get(`${day}|${filename}|${releaseVersion}`) ?? {
+      raw_requests: 0, successful_responses: 0, full_responses: 0, partial_responses: 0,
+      head_requests: 0, range_requests: 0, failed_requests: 0, response_bytes: 0,
+      deduplicated_clients: 0, suppressed_repetitive_requests: 0, rate_limited_requests: 0,
+      cache_hits: 0, cache_misses: 0,
+    };
+  }
+
   async run(sql, args) {
     if (sql.startsWith("INSERT INTO buscore_telemetry_rate_limit")) {
       if (this.failRateLimit) {
@@ -149,6 +191,29 @@ class FakeD1Database {
       if (!this.metricsDaily.has(day)) {
         this.metricsDaily.set(day, { update_checks: 0, downloads: 0, errors: 0 });
       }
+      return { success: true };
+    }
+
+    if (sql.startsWith("INSERT INTO artifact_traffic_daily")) {
+      if (this.failReleaseSignalWrites) throw new Error("no such table: artifact_traffic_daily");
+      const [day, filename, releaseVersion, ...values] = args;
+      const names = ["raw_requests", "successful_responses", "full_responses", "partial_responses", "head_requests", "range_requests", "failed_requests", "response_bytes", "deduplicated_clients", "suppressed_repetitive_requests", "rate_limited_requests", "cache_hits", "cache_misses"];
+      const row = this.artifactTrafficRow(day, filename, releaseVersion);
+      names.forEach((name, index) => { row[name] += values[index] ?? 0; });
+      this.artifactTrafficDaily.set(`${day}|${filename}|${releaseVersion}`, row);
+      return { success: true };
+    }
+
+    if (sql.startsWith("INSERT INTO buscore_download_intent_daily")) {
+      const day = args[0];
+      const row = this.downloadIntentDaily.get(day) ?? { raw_intent_events: 0, probable_human_intents: 0, suppressed_repetitive_intents: 0, successful_redirects: 0 };
+      if (sql.includes("successful_redirects")) row.successful_redirects += 1;
+      else {
+        row.raw_intent_events += args[1] ?? 0;
+        row.probable_human_intents += args[2] ?? 0;
+        row.suppressed_repetitive_intents += args[3] ?? 0;
+      }
+      this.downloadIntentDaily.set(day, row);
       return { success: true };
     }
 
@@ -209,6 +274,9 @@ class FakeD1Database {
 
     if (this.failReleaseSignalReads && sql.includes("FROM release_update_checks_daily")) {
       throw new Error("no such table: release_update_checks_daily");
+    }
+    if (this.failTrafficTruthReads && (sql.includes("FROM artifact_traffic_daily") || sql.includes("FROM buscore_download_intent_daily"))) {
+      throw new Error("no such table: artifact_traffic_daily");
     }
 
     if (sql.startsWith("SELECT COALESCE(SUM(update_checks),0) AS update_checks")) {
@@ -275,6 +343,44 @@ class FakeD1Database {
       }
 
       return summary;
+    }
+
+    if (sql.includes("FROM artifact_traffic_daily WHERE day >= ? AND day <= ?")) {
+      const [startDay, endDay] = args;
+      const result = {};
+      for (const [key, row] of this.artifactTrafficDaily.entries()) {
+        const [day] = key.split("|");
+        if (day < startDay || day > endDay) continue;
+        for (const [name, value] of Object.entries(row)) result[name] = (result[name] ?? 0) + value;
+      }
+      return {
+        raw_artifact_requests: result.raw_requests ?? 0,
+        successful_artifact_responses: result.successful_responses ?? 0,
+        full_artifact_responses: result.full_responses ?? 0,
+        partial_artifact_responses: result.partial_responses ?? 0,
+        head_artifact_requests: result.head_requests ?? 0,
+        range_artifact_requests: result.range_requests ?? 0,
+        failed_artifact_requests: result.failed_requests ?? 0,
+        artifact_response_bytes: result.response_bytes ?? 0,
+        deduplicated_artifact_clients: result.deduplicated_clients ?? 0,
+        suppressed_repetitive_requests: result.suppressed_repetitive_requests ?? 0,
+        rate_limited_artifact_requests: result.rate_limited_requests ?? 0,
+        artifact_cache_hits: result.cache_hits ?? 0,
+        artifact_cache_misses: result.cache_misses ?? 0,
+      };
+    }
+
+    if (sql.includes("FROM buscore_download_intent_daily WHERE day >= ? AND day <= ?")) {
+      const [startDay, endDay] = args;
+      const totals = { raw_download_intent_events: 0, probable_human_download_intents: 0, suppressed_repetitive_intents: 0, successful_download_redirects: 0 };
+      for (const [day, row] of this.downloadIntentDaily.entries()) {
+        if (day < startDay || day > endDay) continue;
+        totals.raw_download_intent_events += row.raw_intent_events;
+        totals.probable_human_download_intents += row.probable_human_intents;
+        totals.suppressed_repetitive_intents += row.suppressed_repetitive_intents;
+        totals.successful_download_redirects += row.successful_redirects;
+      }
+      return totals;
     }
 
     if (sql.startsWith("SELECT COUNT(*) AS row_count") && sql.includes("FROM buscore_traffic_daily")) {
@@ -346,6 +452,7 @@ function createHarness(options = {}) {
 
   const db = new FakeD1Database({
     failReleaseSignalReads: options.failReleaseSignalReads,
+    failTrafficTruthReads: options.failTrafficTruthReads,
     failReleaseSignalWrites: options.failReleaseSignalWrites,
     failRateLimit: options.failRateLimit,
   });
@@ -398,6 +505,7 @@ test("GET /download/latest does not increment metrics_daily.downloads by itself"
   assert.equal(response.status, 302);
   assert.equal(db.metricRow(todayDay()).downloads, 0);
   assert.deepEqual(db.releaseDownloadRows(), []);
+  assert.equal(db.downloadIntentDaily.get(todayDay()).successful_redirects, 1);
 });
 
 test("qualified GET /releases/BUS-Core-1.1.0.zip increments metrics_daily.downloads", async () => {
@@ -415,6 +523,34 @@ test("qualified GET /releases/BUS-Core-1.1.0.zip increments metrics_daily.downlo
       downloads: 1,
     },
   ]);
+});
+
+test("versioned full responses use Worker cache without hiding raw request truth", async () => {
+  const { db, env } = createHarness();
+  const entries = new Map();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "caches");
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: {
+        async match(request) { return entries.get(request.url)?.clone(); },
+        async put(request, response) { entries.set(request.url, response.clone()); },
+      },
+    },
+  });
+  try {
+    const first = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
+    const second = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
+    assert.equal(first.headers.get("X-BUS-Artifact-Cache"), "MISS");
+    assert.equal(second.headers.get("X-BUS-Artifact-Cache"), "HIT");
+    assert.equal(env.MANIFEST_R2.getCalls.filter((key) => key.startsWith("releases/")).length, 1);
+    assert.equal(db.artifactTrafficRow(todayDay()).raw_requests, 2);
+    assert.equal(db.artifactTrafficRow(todayDay()).cache_misses, 1);
+    assert.equal(db.artifactTrafficRow(todayDay()).cache_hits, 1);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "caches", previous);
+    else delete globalThis.caches;
+  }
 });
 
 test("GET /releases/... still succeeds when additive release-signal writes fail", async () => {
@@ -448,22 +584,29 @@ test("missing release artifact does not increment downloads", async () => {
   assert.equal(response.status, 404);
   assert.equal(db.metricRow(todayDay()).downloads, 0);
   assert.deepEqual(db.releaseDownloadRows(), []);
+  assert.equal(db.artifactTrafficRow(todayDay()).raw_requests, 1);
+  assert.equal(db.artifactTrafficRow(todayDay()).failed_requests, 1);
 });
 
-test("artifact counting is capped at one request per IP, release, and UTC day", async () => {
+test("100 repeated full requests stay public while one client bucket is credited", async () => {
   const { db, env } = createHarness();
 
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < 100; i += 1) {
     const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_A });
     assert.equal(response.status, 200);
   }
 
   assert.equal(db.metricRow(todayDay()).downloads, 1);
   assert.equal(db.releaseDownloadRows()[0].downloads, 1);
+  assert.equal(db.artifactTrafficRow(todayDay()).raw_requests, 100);
+  assert.equal(db.artifactTrafficRow(todayDay()).successful_responses, 100);
+  assert.equal(db.artifactTrafficRow(todayDay()).deduplicated_clients, 1);
+  assert.equal(db.artifactTrafficRow(todayDay()).suppressed_repetitive_requests, 99);
 
   await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { headers: CORE_IP_B });
   assert.equal(db.metricRow(todayDay()).downloads, 2);
   assert.equal(db.releaseDownloadRows()[0].downloads, 2);
+  assert.equal(db.artifactTrafficRow(todayDay()).deduplicated_clients, 2);
 });
 
 test("one IP may count one request for each distinct release per UTC day", async () => {
@@ -513,25 +656,34 @@ test("rate-control storage failure skips counting without blocking artifact deli
   assert.deepEqual(db.releaseDownloadRows(), []);
 });
 
-test("Range requests remain uncounted and available", async () => {
+test("Range requests return 206 and remain outside client-bucket credit", async () => {
   const { db, env } = createHarness();
 
   const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", {
     headers: { ...CORE_IP_A, Range: "bytes=0-0" },
   });
 
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get("Content-Range"), "bytes 0-0/8");
+  assert.equal(await response.text(), "z");
   assert.equal(db.metricRow(todayDay()).downloads, 0);
+  assert.equal(db.artifactTrafficRow(todayDay()).partial_responses, 1);
+  assert.equal(db.artifactTrafficRow(todayDay()).range_requests, 1);
+  assert.equal(db.artifactTrafficRow(todayDay()).response_bytes, 1);
 });
 
-test("HEAD /releases/... does not increment downloads", async () => {
+test("HEAD /releases/... serves metadata without download credit", async () => {
   const { db, env } = createHarness();
 
   const response = await dispatch(env, "/releases/BUS-Core-1.1.0.zip", { method: "HEAD" });
 
-  assert.equal(response.status, 405);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Length"), "8");
+  assert.equal(await response.text(), "");
   assert.equal(db.metricRow(todayDay()).downloads, 0);
   assert.deepEqual(db.releaseDownloadRows(), []);
+  assert.equal(db.artifactTrafficRow(todayDay()).head_requests, 1);
+  assert.equal(db.artifactTrafficRow(todayDay()).successful_responses, 0);
 });
 
 test("GET /manifest/core/stable.json does not increment downloads or update_checks", async () => {
@@ -734,6 +886,11 @@ test("/report exposes only qualified known-version check-ins", async () => {
     assert.equal(today.first_seen_share, 0.5);
     assert.equal(today.latest_version_checkins, 2);
     assert.equal(today.artifact_downloads, 1);
+    assert.equal(today.artifact_measurement_available, true);
+    assert.equal(today.raw_artifact_requests, 1);
+    assert.equal(today.successful_artifact_responses, 1);
+    assert.equal(today.deduplicated_artifact_clients, 1);
+    assert.equal(today.suppressed_repetitive_requests, 0);
     assert.equal(db.metricRow(todayDay()).update_checks, 2);
   } finally {
     global.fetch = originalFetch;
@@ -758,6 +915,27 @@ test("/report remains available when additive release-signal aggregate reads fai
     assert.equal(typeof payload.last_7_days.update_checks, "number");
     assert.equal(payload.release_signals.today.raw_update_checks, 0);
     assert.equal(payload.release_signals.today.breakdown_update_checks, 0);
+    assert.equal(payload.release_signals.today.artifact_measurement_available, false);
+    assert.equal(payload.release_signals.today.raw_artifact_requests, null);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("/report keeps legacy release signals but returns null truth fields before migration 0014", async () => {
+  const { env } = createHarness({ failTrafficTruthReads: true });
+  const originalFetch = global.fetch;
+  global.fetch = async () => { throw new Error("skip refresh"); };
+  try {
+    const response = await dispatch(env, "/report?site_key=buscore", {
+      headers: { "X-Admin-Token": "secret-token" },
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.release_signals.today.artifact_downloads, 0);
+    assert.equal(payload.release_signals.today.artifact_measurement_available, false);
+    assert.equal(payload.release_signals.today.raw_artifact_requests, null);
+    assert.equal(payload.release_signals.today.probable_human_download_intents, null);
   } finally {
     global.fetch = originalFetch;
   }

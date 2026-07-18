@@ -31,6 +31,24 @@ type ReleaseFirstCheck = "true" | "false" | "unknown";
 type ReleaseSignalWindow = {
   artifact_downloads: number;
   artifact_downloads_by_release: ReleaseDownloadSummaryRow[];
+  artifact_measurement_available: boolean;
+  raw_artifact_requests: number | null;
+  successful_artifact_responses: number | null;
+  full_artifact_responses: number | null;
+  partial_artifact_responses: number | null;
+  head_artifact_requests: number | null;
+  range_artifact_requests: number | null;
+  failed_artifact_requests: number | null;
+  artifact_response_bytes: number | null;
+  deduplicated_artifact_clients: number | null;
+  suppressed_repetitive_requests: number | null;
+  rate_limited_artifact_requests: number | null;
+  artifact_cache_hits: number | null;
+  artifact_cache_misses: number | null;
+  raw_download_intent_events: number | null;
+  probable_human_download_intents: number | null;
+  suppressed_repetitive_intents: number | null;
+  successful_download_redirects: number | null;
   raw_update_checks: number;
   breakdown_update_checks: number;
   raw_breakdown_delta: number;
@@ -58,6 +76,42 @@ type ReleaseUpdateSignalAggregateRow = {
   first_seen_checkins?: number | null;
   repeat_checkins?: number | null;
   unknown_first_checkins?: number | null;
+};
+type ArtifactTrafficDelta = {
+  rawRequests?: number;
+  successfulResponses?: number;
+  fullResponses?: number;
+  partialResponses?: number;
+  headRequests?: number;
+  rangeRequests?: number;
+  failedRequests?: number;
+  responseBytes?: number;
+  deduplicatedClients?: number;
+  suppressedRepetitiveRequests?: number;
+  rateLimitedRequests?: number;
+  cacheHits?: number;
+  cacheMisses?: number;
+};
+type ArtifactTrafficAggregateRow = {
+  raw_artifact_requests?: number | null;
+  successful_artifact_responses?: number | null;
+  full_artifact_responses?: number | null;
+  partial_artifact_responses?: number | null;
+  head_artifact_requests?: number | null;
+  range_artifact_requests?: number | null;
+  failed_artifact_requests?: number | null;
+  artifact_response_bytes?: number | null;
+  deduplicated_artifact_clients?: number | null;
+  suppressed_repetitive_requests?: number | null;
+  rate_limited_artifact_requests?: number | null;
+  artifact_cache_hits?: number | null;
+  artifact_cache_misses?: number | null;
+};
+type DownloadIntentAggregateRow = {
+  raw_download_intent_events?: number | null;
+  probable_human_download_intents?: number | null;
+  suppressed_repetitive_intents?: number | null;
+  successful_download_redirects?: number | null;
 };
 type TrafficTotals = { row_count: number; visits: number | null; requests: number | null };
 type TrafficRow = { day: string; visits: number | null; requests: number; captured_at: string };
@@ -502,6 +556,8 @@ const UNKNOWN_VERSION_BUCKET = "unknown";
 const MIN_COUNTABLE_BUSCORE_VERSION = "1.4.0";
 const UPDATE_CHECK_COUNT_LIMIT_PER_IP_PER_DAY = 2;
 const ARTIFACT_DOWNLOAD_COUNT_LIMIT_PER_IP_RELEASE_PER_DAY = 1;
+const TRAFFIC_TRUTH_RETENTION_DAYS = 400;
+const VERSIONED_ARTIFACT_CACHE_CONTROL = "public, max-age=31536000, s-maxage=31536000, immutable, no-transform";
 const UPDATE_CHECK_REQUIRED_QUERY_KEYS = ["current_version", "channel", "first_check"] as const;
 const UPDATE_CHECK_ALLOWED_CHANNELS = new Set<string>(BUSCORE_TELEMETRY_RELEASE_CHANNELS);
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -629,24 +685,29 @@ function resolveUpdateAvailability(
   return compareSemver(latestVersion, clientVersion) > 0 ? "true" : "false";
 }
 
-async function shouldCountArtifactDownload(
+type ArtifactClientCredit = "credited" | "repeat" | "unavailable" | "ignored";
+
+async function classifyArtifactClientCredit(
   request: Request,
   env: Env,
   day: string,
   releaseVersion: string,
-): Promise<boolean> {
+): Promise<ArtifactClientCredit> {
   if (request.method !== "GET" || request.headers.has("Range")) {
-    return false;
+    return "unavailable";
   }
 
   const clientIp = getClientIp(request);
   const rateLimitSecret = env.TELEMETRY_RATE_LIMIT_SECRET?.trim();
-  if (!clientIp || !rateLimitSecret || shouldSkipCounting(clientIp, env.IGNORED_IP)) {
-    return false;
+  if (clientIp && shouldSkipCounting(clientIp, env.IGNORED_IP)) {
+    return "ignored";
+  }
+  if (!clientIp || !rateLimitSecret) {
+    return "unavailable";
   }
 
   try {
-    return await consumeScopedRateLimit(
+    const credited = await consumeScopedRateLimit(
       env.DB,
       rateLimitSecret,
       `${day}T00:00`,
@@ -654,10 +715,198 @@ async function shouldCountArtifactDownload(
       `artifact-download:${releaseVersion}`,
       ARTIFACT_DOWNLOAD_COUNT_LIMIT_PER_IP_RELEASE_PER_DAY,
     );
+    return credited ? "credited" : "repeat";
   } catch (error) {
     console.warn("Artifact-download count skipped because the abuse-control gate was unavailable.", error);
+    return "unavailable";
+  }
+}
+
+async function incrementArtifactTrafficDaily(
+  db: D1Database,
+  day: string,
+  filename: string,
+  releaseVersion: string,
+  delta: ArtifactTrafficDelta,
+): Promise<void> {
+  const values = [
+    delta.rawRequests ?? 0,
+    delta.successfulResponses ?? 0,
+    delta.fullResponses ?? 0,
+    delta.partialResponses ?? 0,
+    delta.headRequests ?? 0,
+    delta.rangeRequests ?? 0,
+    delta.failedRequests ?? 0,
+    Math.max(0, Math.trunc(delta.responseBytes ?? 0)),
+    delta.deduplicatedClients ?? 0,
+    delta.suppressedRepetitiveRequests ?? 0,
+    delta.rateLimitedRequests ?? 0,
+    delta.cacheHits ?? 0,
+    delta.cacheMisses ?? 0,
+  ];
+  await db.prepare(
+    "INSERT INTO artifact_traffic_daily(day, filename, release_version, raw_requests, successful_responses, full_responses, partial_responses, head_requests, range_requests, failed_requests, response_bytes, deduplicated_clients, suppressed_repetitive_requests, rate_limited_requests, cache_hits, cache_misses) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(day, filename, release_version) DO UPDATE SET raw_requests = raw_requests + excluded.raw_requests, successful_responses = successful_responses + excluded.successful_responses, full_responses = full_responses + excluded.full_responses, partial_responses = partial_responses + excluded.partial_responses, head_requests = head_requests + excluded.head_requests, range_requests = range_requests + excluded.range_requests, failed_requests = failed_requests + excluded.failed_requests, response_bytes = response_bytes + excluded.response_bytes, deduplicated_clients = deduplicated_clients + excluded.deduplicated_clients, suppressed_repetitive_requests = suppressed_repetitive_requests + excluded.suppressed_repetitive_requests, rate_limited_requests = rate_limited_requests + excluded.rate_limited_requests, cache_hits = cache_hits + excluded.cache_hits, cache_misses = cache_misses + excluded.cache_misses"
+  ).bind(day, filename, releaseVersion, ...values).run();
+}
+
+async function incrementArtifactTrafficBestEffort(
+  db: D1Database,
+  day: string,
+  filename: string,
+  releaseVersion: string,
+  delta: ArtifactTrafficDelta,
+): Promise<void> {
+  try {
+    await incrementArtifactTrafficDaily(db, day, filename, releaseVersion, delta);
+  } catch (error) {
+    console.warn("Artifact traffic measurement skipped after D1 failure.", error);
+  }
+}
+
+async function incrementSuccessfulDownloadRedirectBestEffort(db: D1Database, day: string): Promise<void> {
+  try {
+    await db.prepare(
+      "INSERT INTO buscore_download_intent_daily(day, successful_redirects) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET successful_redirects = successful_redirects + 1"
+    ).bind(day).run();
+  } catch (error) {
+    console.warn("Download redirect measurement skipped after D1 failure.", error);
+  }
+}
+
+async function incrementDownloadIntentDaily(
+  db: D1Database,
+  day: string,
+  raw: number,
+  probable: number,
+  suppressed: number,
+): Promise<void> {
+  await db.prepare(
+    "INSERT INTO buscore_download_intent_daily(day, raw_intent_events, probable_human_intents, suppressed_repetitive_intents) VALUES (?,?,?,?) ON CONFLICT(day) DO UPDATE SET raw_intent_events = raw_intent_events + excluded.raw_intent_events, probable_human_intents = probable_human_intents + excluded.probable_human_intents, suppressed_repetitive_intents = suppressed_repetitive_intents + excluded.suppressed_repetitive_intents"
+  ).bind(day, raw, probable, suppressed).run();
+}
+
+function isEligibleDownloadIntent(input: SiteEventInput, context: PageviewRequestContext): boolean {
+  if (
+    input.site_key !== "buscore" ||
+    input.event_name !== "download_click" ||
+    input.test_mode !== 0 ||
+    !PAGEVIEW_ALLOWED_ORIGINS.has(context.origin ?? "")
+  ) {
     return false;
   }
+  try {
+    const eventUrl = new URL(input.url ?? "");
+    return PAGEVIEW_ALLOWED_ORIGINS.has(eventUrl.origin) && eventUrl.pathname === input.path;
+  } catch {
+    return false;
+  }
+}
+
+async function recordDownloadIntentBestEffort(
+  input: SiteEventInput,
+  context: PageviewRequestContext,
+  env: Env,
+  day: string,
+  accepted: number,
+): Promise<void> {
+  if (input.site_key !== "buscore" || input.event_name !== "download_click") {
+    return;
+  }
+
+  let probable = 0;
+  let suppressed = 0;
+  if (accepted === 1 && isEligibleDownloadIntent(input, context)) {
+    const clientIp = context.clientIp;
+    const secret = env.TELEMETRY_RATE_LIMIT_SECRET?.trim();
+    if (clientIp && secret && !shouldSkipCounting(clientIp, env.IGNORED_IP)) {
+      try {
+        const credited = await consumeScopedRateLimit(
+          env.DB,
+          secret,
+          `${day}T00:00`,
+          clientIp,
+          "download-intent",
+          1,
+        );
+        probable = credited ? 1 : 0;
+        suppressed = credited ? 0 : 1;
+      } catch (error) {
+        console.warn("Probable download-intent deduplication unavailable.", error);
+      }
+    }
+  }
+
+  try {
+    await incrementDownloadIntentDaily(env.DB, day, 1, probable, suppressed);
+  } catch (error) {
+    console.warn("Download intent measurement skipped after D1 failure.", error);
+  }
+}
+
+function artifactBodyLength(object: R2ObjectBody): number {
+  const range = object.range as { length?: number } | undefined;
+  if (typeof range?.length === "number") {
+    return range.length;
+  }
+  return object.size;
+}
+
+function writeArtifactHeaders(object: R2Object, headers: Headers): void {
+  object.writeHttpMetadata(headers);
+  headers.set("ETag", object.httpEtag);
+  headers.set("Accept-Ranges", "bytes");
+  headers.set("Cache-Control", VERSIONED_ARTIFACT_CACHE_CONTROL);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/zip");
+  }
+  headers.set("Content-Length", String(object.size));
+}
+
+function workerArtifactCache(): Cache | null {
+  const candidate = (globalThis as typeof globalThis & { caches?: { default?: Cache } }).caches?.default;
+  return candidate ?? null;
+}
+
+async function recordArtifactOutcome(
+  request: Request,
+  env: Env,
+  day: string,
+  filename: string,
+  releaseVersion: string,
+  status: number,
+  responseBytes: number,
+  cacheOutcome: "hit" | "miss" | "bypass",
+): Promise<void> {
+  const isHead = request.method === "HEAD";
+  const isRange = request.method === "GET" && request.headers.has("Range");
+  const isSuccessfulGet = request.method === "GET" && (status === 200 || status === 206);
+  const credit = isSuccessfulGet && status === 200
+    ? await classifyArtifactClientCredit(request, env, day, releaseVersion)
+    : "unavailable";
+
+  if (credit === "credited") {
+    try {
+      await incrementCounter(env.DB, day, "downloads");
+    } catch (error) {
+      console.warn("Legacy artifact compatibility counter skipped after D1 failure.", error);
+    }
+    await incrementReleaseDownloadCounterBestEffort(env.DB, day, filename, releaseVersion);
+  }
+
+  await incrementArtifactTrafficBestEffort(env.DB, day, filename, releaseVersion, {
+    rawRequests: 1,
+    successfulResponses: isSuccessfulGet ? 1 : 0,
+    fullResponses: isSuccessfulGet && status === 200 ? 1 : 0,
+    partialResponses: isSuccessfulGet && status === 206 ? 1 : 0,
+    headRequests: isHead ? 1 : 0,
+    rangeRequests: isRange ? 1 : 0,
+    failedRequests: status >= 400 ? 1 : 0,
+    responseBytes: isSuccessfulGet ? responseBytes : 0,
+    deduplicatedClients: credit === "credited" ? 1 : 0,
+    suppressedRepetitiveRequests: credit === "repeat" ? 1 : 0,
+    cacheHits: cacheOutcome === "hit" ? 1 : 0,
+    cacheMisses: cacheOutcome === "miss" ? 1 : 0,
+  });
 }
 
 function getSiteByKey(siteKey: string): TrackedSite | undefined {
@@ -1462,9 +1711,17 @@ async function queryReleaseUpdateSignalsInRange(
   db: D1Database,
   startDay: string,
   endDay: string
-): Promise<Omit<
+): Promise<Pick<
   ReleaseSignalWindow,
-  "artifact_downloads" | "artifact_downloads_by_release" | "raw_update_checks" | "breakdown_update_checks" | "raw_breakdown_delta"
+  | "update_checks"
+  | "update_checks_with_known_client_version"
+  | "update_checks_unknown_client_version"
+  | "update_available_impressions"
+  | "latest_version_checkins"
+  | "first_seen_checkins"
+  | "repeat_checkins"
+  | "unknown_first_checkins"
+  | "first_seen_share"
 >> {
   const row = await db
     .prepare(
@@ -1496,6 +1753,24 @@ function emptyReleaseSignalWindow(): ReleaseSignalWindow {
   return {
     artifact_downloads: 0,
     artifact_downloads_by_release: [],
+    artifact_measurement_available: false,
+    raw_artifact_requests: null,
+    successful_artifact_responses: null,
+    full_artifact_responses: null,
+    partial_artifact_responses: null,
+    head_artifact_requests: null,
+    range_artifact_requests: null,
+    failed_artifact_requests: null,
+    artifact_response_bytes: null,
+    deduplicated_artifact_clients: null,
+    suppressed_repetitive_requests: null,
+    rate_limited_artifact_requests: null,
+    artifact_cache_hits: null,
+    artifact_cache_misses: null,
+    raw_download_intent_events: null,
+    probable_human_download_intents: null,
+    suppressed_repetitive_intents: null,
+    successful_download_redirects: null,
     raw_update_checks: 0,
     breakdown_update_checks: 0,
     raw_breakdown_delta: 0,
@@ -1508,6 +1783,62 @@ function emptyReleaseSignalWindow(): ReleaseSignalWindow {
     repeat_checkins: 0,
     unknown_first_checkins: 0,
     first_seen_share: 0,
+  };
+}
+
+async function queryTrafficTruthInRange(
+  db: D1Database,
+  startDay: string,
+  endDay: string,
+): Promise<Pick<
+  ReleaseSignalWindow,
+  | "artifact_measurement_available"
+  | "raw_artifact_requests"
+  | "successful_artifact_responses"
+  | "full_artifact_responses"
+  | "partial_artifact_responses"
+  | "head_artifact_requests"
+  | "range_artifact_requests"
+  | "failed_artifact_requests"
+  | "artifact_response_bytes"
+  | "deduplicated_artifact_clients"
+  | "suppressed_repetitive_requests"
+  | "rate_limited_artifact_requests"
+  | "artifact_cache_hits"
+  | "artifact_cache_misses"
+  | "raw_download_intent_events"
+  | "probable_human_download_intents"
+  | "suppressed_repetitive_intents"
+  | "successful_download_redirects"
+>> {
+  const [artifact, intent] = await Promise.all([
+    db.prepare(
+      "SELECT COALESCE(SUM(raw_requests),0) AS raw_artifact_requests, COALESCE(SUM(successful_responses),0) AS successful_artifact_responses, COALESCE(SUM(full_responses),0) AS full_artifact_responses, COALESCE(SUM(partial_responses),0) AS partial_artifact_responses, COALESCE(SUM(head_requests),0) AS head_artifact_requests, COALESCE(SUM(range_requests),0) AS range_artifact_requests, COALESCE(SUM(failed_requests),0) AS failed_artifact_requests, COALESCE(SUM(response_bytes),0) AS artifact_response_bytes, COALESCE(SUM(deduplicated_clients),0) AS deduplicated_artifact_clients, COALESCE(SUM(suppressed_repetitive_requests),0) AS suppressed_repetitive_requests, COALESCE(SUM(rate_limited_requests),0) AS rate_limited_artifact_requests, COALESCE(SUM(cache_hits),0) AS artifact_cache_hits, COALESCE(SUM(cache_misses),0) AS artifact_cache_misses FROM artifact_traffic_daily WHERE day >= ? AND day <= ?"
+    ).bind(startDay, endDay).first<ArtifactTrafficAggregateRow>(),
+    db.prepare(
+      "SELECT COALESCE(SUM(raw_intent_events),0) AS raw_download_intent_events, COALESCE(SUM(probable_human_intents),0) AS probable_human_download_intents, COALESCE(SUM(suppressed_repetitive_intents),0) AS suppressed_repetitive_intents, COALESCE(SUM(successful_redirects),0) AS successful_download_redirects FROM buscore_download_intent_daily WHERE day >= ? AND day <= ?"
+    ).bind(startDay, endDay).first<DownloadIntentAggregateRow>(),
+  ]);
+
+  return {
+    artifact_measurement_available: true,
+    raw_artifact_requests: artifact?.raw_artifact_requests ?? 0,
+    successful_artifact_responses: artifact?.successful_artifact_responses ?? 0,
+    full_artifact_responses: artifact?.full_artifact_responses ?? 0,
+    partial_artifact_responses: artifact?.partial_artifact_responses ?? 0,
+    head_artifact_requests: artifact?.head_artifact_requests ?? 0,
+    range_artifact_requests: artifact?.range_artifact_requests ?? 0,
+    failed_artifact_requests: artifact?.failed_artifact_requests ?? 0,
+    artifact_response_bytes: artifact?.artifact_response_bytes ?? 0,
+    deduplicated_artifact_clients: artifact?.deduplicated_artifact_clients ?? 0,
+    suppressed_repetitive_requests: artifact?.suppressed_repetitive_requests ?? 0,
+    rate_limited_artifact_requests: artifact?.rate_limited_artifact_requests ?? 0,
+    artifact_cache_hits: artifact?.artifact_cache_hits ?? 0,
+    artifact_cache_misses: artifact?.artifact_cache_misses ?? 0,
+    raw_download_intent_events: intent?.raw_download_intent_events ?? 0,
+    probable_human_download_intents: intent?.probable_human_download_intents ?? 0,
+    suppressed_repetitive_intents: intent?.suppressed_repetitive_intents ?? 0,
+    successful_download_redirects: intent?.successful_download_redirects ?? 0,
   };
 }
 
@@ -1524,9 +1855,38 @@ async function buildReleaseSignalWindow(
       queryReleaseUpdateSignalsInRange(db, startDay, endDay),
     ]);
 
+    let trafficTruth: Awaited<ReturnType<typeof queryTrafficTruthInRange>>;
+    try {
+      trafficTruth = await queryTrafficTruthInRange(db, startDay, endDay);
+    } catch (error) {
+      console.warn("Artifact traffic truth unavailable; preserving nullable additive fields.", error);
+      const empty = emptyReleaseSignalWindow();
+      trafficTruth = {
+        artifact_measurement_available: false,
+        raw_artifact_requests: empty.raw_artifact_requests,
+        successful_artifact_responses: empty.successful_artifact_responses,
+        full_artifact_responses: empty.full_artifact_responses,
+        partial_artifact_responses: empty.partial_artifact_responses,
+        head_artifact_requests: empty.head_artifact_requests,
+        range_artifact_requests: empty.range_artifact_requests,
+        failed_artifact_requests: empty.failed_artifact_requests,
+        artifact_response_bytes: empty.artifact_response_bytes,
+        deduplicated_artifact_clients: empty.deduplicated_artifact_clients,
+        suppressed_repetitive_requests: empty.suppressed_repetitive_requests,
+        rate_limited_artifact_requests: empty.rate_limited_artifact_requests,
+        artifact_cache_hits: empty.artifact_cache_hits,
+        artifact_cache_misses: empty.artifact_cache_misses,
+        raw_download_intent_events: empty.raw_download_intent_events,
+        probable_human_download_intents: empty.probable_human_download_intents,
+        suppressed_repetitive_intents: empty.suppressed_repetitive_intents,
+        successful_download_redirects: empty.successful_download_redirects,
+      };
+    }
+
     return {
       artifact_downloads: artifactDownloads,
       artifact_downloads_by_release: artifactDownloadBreakdown,
+      ...trafficTruth,
       raw_update_checks: rawTotals.update_checks,
       breakdown_update_checks: updateSignals.update_checks,
       raw_breakdown_delta: rawTotals.update_checks - updateSignals.update_checks,
@@ -2735,6 +3095,14 @@ async function prunePageviewData(db: D1Database, now: Date = new Date()): Promis
   ]);
 }
 
+async function pruneTrafficTruthData(db: D1Database, now: Date = new Date()): Promise<void> {
+  const cutoffDay = utcDay(addUtcDays(now, -TRAFFIC_TRUTH_RETENTION_DAYS));
+  await Promise.all([
+    db.prepare("DELETE FROM artifact_traffic_daily WHERE day < ?").bind(cutoffDay).run(),
+    db.prepare("DELETE FROM buscore_download_intent_daily WHERE day < ?").bind(cutoffDay).run(),
+  ]);
+}
+
 function buildPageviewRawEvent(
   input: PageviewInput,
   metadata: {
@@ -3088,6 +3456,7 @@ async function processSiteEventIngest(
   };
 
   await insertSiteEventRaw(env.DB, record);
+  await recordDownloadIntentBestEffort(normalized, requestContext, env, receivedDay, accepted);
 }
 
 function trafficWindowFromTotals(totals: TrafficTotals): {
@@ -5026,6 +5395,9 @@ export default {
           prunePageviewData(env.DB).catch((error) => {
             console.warn("Pageview retention cleanup skipped after D1 failure.", error);
           }),
+          pruneTrafficTruthData(env.DB).catch((error) => {
+            console.warn("Artifact traffic truth retention cleanup skipped after D1 failure.", error);
+          }),
           pruneBuscoreTelemetry(env.DB).catch((error) => {
             console.warn("BUS Core product telemetry retention cleanup skipped after D1 failure.", error);
           }),
@@ -5054,7 +5426,7 @@ export default {
       const allowMethods =
         url.pathname === PAGEVIEW_METRICS_PATH || url.pathname === SITE_EVENT_METRICS_PATH || url.pathname === BUSCORE_TELEMETRY_PATH
           ? "POST, OPTIONS"
-          : "GET, OPTIONS";
+          : RELEASE_PATH.test(url.pathname) ? "GET, HEAD, OPTIONS" : "GET, OPTIONS";
       return withCors(request, new Response(null, { status: 200 }), allowMethods);
     }
 
@@ -5167,7 +5539,8 @@ export default {
       return withCors(request, Response.json({ ok: true, id: row.id }, { status: 201 }), "POST, OPTIONS");
     }
 
-    if (request.method !== "GET") {
+    const isReleaseHead = request.method === "HEAD" && RELEASE_PATH.test(url.pathname);
+    if (request.method !== "GET" && !isReleaseHead) {
       return withCors(request, Response.json({ ok: false, error: "method_not_allowed" }, { status: 405 }));
     }
 
@@ -5283,6 +5656,7 @@ export default {
           return withCors(request, Response.json({ ok: false, error: "manifest_unavailable" }, { status: 503 }));
         }
 
+        ctx.waitUntil(incrementSuccessfulDownloadRedirectBestEffort(env.DB, day));
         return withCors(request, Response.redirect(redirectUrl, 302));
       } catch {
         await incrementErrorCounterBestEffort(env.DB, day);
@@ -5298,32 +5672,107 @@ export default {
         return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
       }
 
-      const object = await env.MANIFEST_R2.get(`releases/${filename}`);
+      const releaseVersion = extractReleaseVersionFromFilename(filename);
+      if (!releaseVersion) {
+        return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
+      }
+      const objectKey = `releases/${filename}`;
+      const isHead = request.method === "HEAD";
+      const isRange = request.method === "GET" && request.headers.has("Range");
+      const cache = !isHead && !isRange ? workerArtifactCache() : null;
+      const cacheKey = new Request(`${url.origin}${url.pathname}`, { method: "GET" });
+
+      if (cache) {
+        try {
+          const cached = await cache.match(cacheKey);
+          if (cached) {
+            const headers = new Headers(cached.headers);
+            headers.set("X-BUS-Artifact-Cache", "HIT");
+            const bytes = Number.parseInt(headers.get("Content-Length") ?? "0", 10) || 0;
+            ctx.waitUntil(recordArtifactOutcome(request, env, day, filename, releaseVersion, 200, bytes, "hit"));
+            return withCors(request, new Response(cached.body, { status: 200, headers }));
+          }
+        } catch (error) {
+          console.warn("Artifact cache lookup failed; falling back to R2.", error);
+        }
+      }
+
+      let object: R2Object | R2ObjectBody | null;
+      try {
+        if (isHead) {
+          object = await env.MANIFEST_R2.head(objectKey);
+        } else if (isRange) {
+          object = await env.MANIFEST_R2.get(objectKey, { range: request.headers });
+        } else {
+          object = await env.MANIFEST_R2.get(objectKey);
+        }
+      } catch (error) {
+        const status = isRange ? 416 : 503;
+        ctx.waitUntil(recordArtifactOutcome(request, env, day, filename, releaseVersion, status, 0, "bypass"));
+        console.warn("Artifact read failed.", error);
+        return withCors(request, Response.json(
+          { ok: false, error: isRange ? "range_not_satisfiable" : "artifact_unavailable" },
+          { status, headers: isRange ? { "Content-Range": "bytes */*" } : undefined },
+        ));
+      }
+
       if (!object) {
+        ctx.waitUntil(recordArtifactOutcome(request, env, day, filename, releaseVersion, 404, 0, "bypass"));
         return withCors(request, Response.json({ ok: false, error: "not_found" }, { status: 404 }));
       }
 
-      const releaseVersion = extractReleaseVersionFromFilename(filename);
-      if (releaseVersion && await shouldCountArtifactDownload(request, env, day, releaseVersion)) {
-        await incrementCounter(env.DB, day, "downloads");
-        await incrementReleaseDownloadCounterBestEffort(env.DB, day, filename, releaseVersion);
-      }
-
       const headers = new Headers();
-      object.writeHttpMetadata(headers);
-      headers.set("ETag", object.httpEtag);
-      headers.set("Cache-Control", "public, max-age=300, s-maxage=300");
-      if (!headers.has("Content-Type")) {
-        headers.set("Content-Type", "application/zip");
+      writeArtifactHeaders(object, headers);
+
+      if (isHead) {
+        headers.set("X-BUS-Artifact-Cache", "BYPASS");
+        ctx.waitUntil(recordArtifactOutcome(request, env, day, filename, releaseVersion, 200, 0, "bypass"));
+        return withCors(request, new Response(null, { status: 200, headers }));
       }
 
-      return withCors(
+      const bodyObject = object as R2ObjectBody;
+      let status = 200;
+      let bytes = artifactBodyLength(bodyObject);
+      if (isRange) {
+        const servedRange = bodyObject.range as { offset?: number; length?: number } | undefined;
+        const offset = servedRange?.offset;
+        const length = servedRange?.length;
+        if (typeof offset !== "number" || typeof length !== "number") {
+          ctx.waitUntil(recordArtifactOutcome(request, env, day, filename, releaseVersion, 416, 0, "bypass"));
+          return withCors(request, Response.json(
+            { ok: false, error: "range_not_satisfiable" },
+            { status: 416, headers: { "Content-Range": `bytes */${bodyObject.size}` } },
+          ));
+        }
+        status = 206;
+        bytes = length;
+        headers.set(
+          "Content-Range",
+          `bytes ${offset}-${offset + length - 1}/${bodyObject.size}`,
+        );
+        headers.set("Content-Length", String(bytes));
+        headers.set("X-BUS-Artifact-Cache", "BYPASS");
+      } else {
+        headers.set("X-BUS-Artifact-Cache", cache ? "MISS" : "BYPASS");
+      }
+
+      const response = new Response(bodyObject.body, { status, headers });
+      if (cache && status === 200) {
+        ctx.waitUntil(cache.put(cacheKey, response.clone()).catch((error) => {
+          console.warn("Artifact cache population failed.", error);
+        }));
+      }
+      ctx.waitUntil(recordArtifactOutcome(
         request,
-        new Response(object.body, {
-          status: 200,
-          headers,
-        })
-      );
+        env,
+        day,
+        filename,
+        releaseVersion,
+        status,
+        bytes,
+        cache && status === 200 ? "miss" : "bypass",
+      ));
+      return withCors(request, response);
     }
 
     if (url.pathname === "/report") {

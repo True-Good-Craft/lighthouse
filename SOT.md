@@ -1,5 +1,13 @@
 # Lighthouse — Source of Truth
 
+## BUS Core traffic truth and bounded delivery work — v1.25.0 pending deployment
+
+`BUS_CORE_TRAFFIC_TRUTH.md` is the authoritative metric/privacy/retention/rollout contract for the new additive fields. Lighthouse now distinguishes Worker-visible artifact requests, successful 200/206 handoffs, full and partial responses, HEAD and Range traffic, declared response bytes, cache outcomes, daily HMAC/IP/version client-network buckets, repeats excluded from that proxy, inferred download intent, confirmed product events, and voluntary leads. None of these fields may be renamed to people, users, installations, completed downloads, or revenue.
+
+Public delivery remains open. Canonical versioned full responses use the Worker Cache API and one-year immutable cache headers; range requests use R2 byte ranges and return 206; HEAD returns metadata without a body. Cache, D1, and qualification failures fail soft for delivery. Phase 3 hard artifact limiting is disabled because the 2026-07-18 audit did not establish repeat abuse inside the existing daily HMAC bucket.
+
+Migration `0014_add_artifact_traffic_truth.sql` is required before deploying v1.25.0. It creates aggregate-only `artifact_traffic_daily` and `buscore_download_intent_daily` tables. The migration is forward-only and has not been applied by this change. New report fields return null with `artifact_measurement_available=false` until the migration exists. Daily truth aggregates retain 400 days; HMAC rate buckets retain two days. The legacy `metrics_daily.downloads` and `release_downloads_daily` fields remain compatibility data with mixed historical qualification semantics.
+
 ## Qualified BUS Core release-signal counting — v1.24.0 deployed
 
 Lighthouse remains the versioned contract and ingestion authority for limited BUS Core product telemetry. Migration `0013_add_buscore_product_telemetry.sql` and Worker version 1.23.0 are deployed. A production VPN verification on 2026-07-17 recorded two qualified BUS Core v1.4.0 stable repeat checks; four attempts from the same daily HMAC scope were reduced to the configured two-count limit, confirming the update-check chain and abuse control end to end.

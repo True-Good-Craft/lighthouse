@@ -1,5 +1,7 @@
 # buscore-lighthouse
 
+BUS Core artifact delivery and demand semantics are defined in `BUS_CORE_TRAFFIC_TRUTH.md`. Version 1.25.0 keeps downloads public while separating raw Worker traffic, successful artifact responses, privacy-preserving daily client-network buckets, probable-human intent proxies, confirmed product telemetry, and leads. Migration `0014_add_artifact_traffic_truth.sql` must be applied before deploying this version; it is not applied automatically.
+
 ## BUS Core transition direction
 
 Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migration 0013 and production version 1.24.0 provide strict BUS Core product telemetry plus qualified, rate-bounded `/update/check` and artifact-request analytics.
