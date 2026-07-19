@@ -6,6 +6,8 @@ Version 1.26.0 adds an explicitly consented commercial analytics lane for `site_
 
 The view reports today, 7-day, and 30-day page execution, new/returning and session counts, acquisition, content, engagement, service-funnel outcomes, performance, and health. It never returns visitor/session/rate identifiers or form contents. Raw TGC events are retained for 90 days; rotating keyed rate identifiers are retained for two days. See `TGC_SITE_ANALYTICS_POLICY.md` for the product-specific justification and prohibitions.
 
+Production deploys use the gated `.github/workflows/deploy.yml`: full tests first, then Wrangler only on manual dispatch or an explicitly marked release merge. Migrations remain separate and are never implied by deployment.
+
 BUS Core artifact delivery and demand semantics are defined in `BUS_CORE_TRAFFIC_TRUTH.md`. Version 1.25.0 keeps downloads public while separating raw Worker traffic, successful artifact responses, privacy-preserving daily client-network buckets, probable-human intent proxies, confirmed product telemetry, and leads. Migration `0014_add_artifact_traffic_truth.sql` was applied remotely before the 2026-07-18 v1.25.0 deployment.
 
 ## BUS Core transition direction
