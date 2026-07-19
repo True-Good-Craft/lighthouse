@@ -5,7 +5,7 @@
 - Added the protected `GET /report?view=tgc` commercial analytics view with today, 7-day, and 30-day acquisition, audience, engagement, funnel, performance, content, and health summaries.
 - Enforced a TGC-specific site/event allowlist, production-origin matching, path/URL consistency, bounded context, and query/fragment stripping at ingestion.
 - Added explicit support for consent-created TGC visitor/session IDs while keeping all identifiers out of operator reports and downstream-summary contracts.
-- Replaced stored unsalted site-event IP/user-agent hashes with minute-scoped keyed abuse identifiers kept only in the two-day rate table; raw events no longer store IP hashes, user-agent hashes, or request IDs.
+- Replaced stored unsalted site-event IP/user-agent hashes with minute-scoped keyed abuse identifiers kept only in the two-day rate table; raw events no longer store IP hashes, user-agent hashes, or request IDs, and scheduled maintenance scrubs those legacy columns from existing rows.
 - Added raw site-event retention: 90 days for `tgc_site`, 30 days for other site-event properties.
 - Reused the existing D1 schema; no migration was added or applied.
 
