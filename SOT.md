@@ -10,6 +10,8 @@ The server enforces the TGC event allowlist, production-origin match, path/URL c
 
 Lighthouse remains the source of truth. Agent Smith may present this protected aggregate view through `/tgc`. Airtable may receive curated periodic KPI/campaign/content/experiment summaries later, but must not receive raw events or stable identifiers.
 
+Production deployment is governed by `.github/workflows/deploy.yml`. It runs the complete typecheck/test gate and deploys only on manual dispatch or a main-branch commit explicitly marked `[deploy lighthouse]`; ordinary pushes do not deploy. Wrangler deployment preserves separately provisioned Worker secrets. Schema migrations remain a separate, explicit operation and this release requires none.
+
 ## BUS Core traffic truth and bounded delivery work — v1.25.0 deployed
 
 `BUS_CORE_TRAFFIC_TRUTH.md` is the authoritative metric/privacy/retention/rollout contract for the new additive fields. Lighthouse now distinguishes Worker-visible artifact requests, successful 200/206 handoffs, full and partial responses, HEAD and Range traffic, declared response bytes, cache outcomes, daily HMAC/IP/version client-network buckets, repeats excluded from that proxy, inferred download intent, confirmed product events, and voluntary leads. None of these fields may be renamed to people, users, installations, completed downloads, or revenue.
