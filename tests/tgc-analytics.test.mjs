@@ -69,6 +69,7 @@ test("source declares bounded retention and no raw request identifiers for TGC e
   assert.match(source, /ip_hash: null/);
   assert.match(source, /user_agent_hash: null/);
   assert.match(source, /request_id: null/);
+  assert.match(source, /UPDATE site_events_raw SET ip_hash = NULL, user_agent_hash = NULL, request_id = NULL/);
   assert.match(source, /view: "tgc" as const/);
   assert.match(source, /identifiers_exposed: false/);
 });
