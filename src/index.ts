@@ -3120,6 +3120,7 @@ async function prunePageviewData(db: D1Database, now: Date = new Date()): Promis
     db.prepare("DELETE FROM pageview_events_raw WHERE received_day < ?").bind(rawCutoffDay).run(),
     db.prepare("DELETE FROM pageview_rate_limit WHERE minute_bucket < ?").bind(rateLimitCutoffMinute).run(),
     db.prepare("DELETE FROM site_event_rate_limit WHERE minute_bucket < ?").bind(siteEventRateLimitCutoffMinute).run(),
+    db.prepare("UPDATE site_events_raw SET ip_hash = NULL, user_agent_hash = NULL, request_id = NULL WHERE ip_hash IS NOT NULL OR user_agent_hash IS NOT NULL OR request_id IS NOT NULL").run(),
     db.prepare("DELETE FROM site_events_raw WHERE site_key = 'tgc_site' AND received_day < ?").bind(tgcRawCutoffDay).run(),
     db.prepare("DELETE FROM site_events_raw WHERE site_key <> 'tgc_site' AND received_day < ?").bind(siteEventRawCutoffDay).run(),
   ]);
