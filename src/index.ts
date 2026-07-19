@@ -3454,7 +3454,13 @@ async function processSiteEventIngest(
 
   const normalized = parseCanonicalEventPayload(parsedBody.payload);
   const site = normalized ? getSiteByKey(normalized.site_key) : undefined;
-  if (!normalized || !site || !requestContext.origin || !site.allowed_origins.includes(requestContext.origin)) {
+  if (!normalized || !site) {
+    return;
+  }
+  if (
+    normalized.site_key === "tgc_site"
+    && (!requestContext.origin || !site.allowed_origins.includes(requestContext.origin))
+  ) {
     return;
   }
 
