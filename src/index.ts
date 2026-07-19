@@ -350,7 +350,7 @@ type SiteSectionAvailability = {
   identity: boolean;
   read: boolean;
 };
-type ReportView = "legacy" | "fleet" | "site" | "source_health" | "asset" | "monthly";
+type ReportView = "legacy" | "fleet" | "site" | "tgc" | "source_health" | "asset" | "monthly";
 type ReportWindow = {
   start_day: string;
   end_day: string;
@@ -438,6 +438,7 @@ type ReportRequestResolution =
   | { ok: true; view: "legacy"; siteEventFilter: SiteEventFilter | null }
   | { ok: true; view: "fleet" }
   | { ok: true; view: "site"; siteEventFilter: SiteEventFilter }
+  | { ok: true; view: "tgc" }
   | { ok: true; view: "source_health" }
   | { ok: true; view: "asset" }
   | { ok: true; view: "monthly" }
@@ -541,7 +542,7 @@ const PAGEVIEW_ALLOWED_ORIGINS: Set<string> = new Set(
   TRACKED_SITES.find((s) => s.site_key === "buscore")?.allowed_origins ?? []
 );
 const PAGEVIEW_INGEST_VERSION = "1.9.0";
-const SITE_EVENT_INGEST_VERSION = "1.11.0";
+const SITE_EVENT_INGEST_VERSION = "1.12.0";
 const PAGEVIEW_INVALID_JSON_DEBUG_ENABLED = true;
 const PAGEVIEW_INVALID_JSON_DEBUG_PREVIEW_CHARS = 500;
 const PAGEVIEW_RATE_LIMIT_PER_MINUTE = 50;
@@ -549,6 +550,8 @@ const PAGEVIEW_RAW_RETENTION_DAYS = 30;
 const PAGEVIEW_RATE_LIMIT_RETENTION_DAYS = 2;
 const SITE_EVENT_RATE_LIMIT_PER_MINUTE = 50;
 const SITE_EVENT_RATE_LIMIT_RETENTION_DAYS = 2;
+const SITE_EVENT_RAW_RETENTION_DAYS = 30;
+const TGC_SITE_EVENT_RAW_RETENTION_DAYS = 90;
 const TOP_PAGEVIEW_DIMENSION_LIMIT = 5;
 const DIRECT_SOURCE_LABEL = "(direct)";
 const EARLIEST_REPORT_DAY = "0000-01-01";
@@ -561,6 +564,17 @@ const VERSIONED_ARTIFACT_CACHE_CONTROL = "public, max-age=31536000, s-maxage=315
 const UPDATE_CHECK_REQUIRED_QUERY_KEYS = ["current_version", "channel", "first_check"] as const;
 const UPDATE_CHECK_ALLOWED_CHANNELS = new Set<string>(BUSCORE_TELEMETRY_RELEASE_CHANNELS);
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TGC_ANONYMOUS_ID_PATTERN = /^[vs]_(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+const TGC_SITE_EVENT_ALLOWLIST = new Set([
+  "page_view", "session_start", "first_visit", "returning_visit",
+  "internal_navigation", "outbound_click", "contact_click", "email_click", "buscore_outbound_click",
+  "services_interest", "infrastructure_cta_click", "infrastructure_package_interest", "ops_care_interest",
+  "audit_cta_click", "infrastructure_form_start", "infrastructure_form_submit", "audit_form_start", "audit_form_submit",
+  "form_start", "form_field_complete", "form_validation_error", "form_submit_attempt",
+  "form_submit_success", "form_submit_failure", "form_submit_fallback",
+  "scroll_depth", "engaged_time", "section_view",
+  "web_vital_page_load_ms", "web_vital_fcp_ms", "web_vital_lcp_ms", "web_vital_cls", "js_error",
+]);
 const PAGEVIEW_ALLOWED_DEVICES = new Set(["desktop", "mobile", "tablet"]);
 const PAGEVIEW_VIEWPORT_PATTERN = /^\d+x\d+$/;
 const BUSCORE_TRAFFIC_QUERY = `query DailyBuscoreTraffic($zoneTag: string, $start: Time!, $end: Time!, $host: string!) {
@@ -1093,6 +1107,7 @@ export function normalizeReportView(value: string | null): ReportView | null {
   if (
     normalized === "fleet" ||
     normalized === "site" ||
+    normalized === "tgc" ||
     normalized === "source_health" ||
     normalized === "asset" ||
     normalized === "monthly"
@@ -1180,7 +1195,7 @@ export function normalizeOptionalAnonymousId(value: unknown): string | null {
   }
 
   // Keep ingest permissive for backward compatibility while filtering obvious garbage.
-  if (!UUID_V4_PATTERN.test(normalized)) {
+  if (!UUID_V4_PATTERN.test(normalized) && !TGC_ANONYMOUS_ID_PATTERN.test(normalized)) {
     return null;
   }
 
@@ -1313,84 +1328,82 @@ export function parseCanonicalPageviewPayload(payload: unknown): PageviewInput |
   };
 }
 
+export function sanitizeAnalyticsLocation(value: string, allowEmpty: boolean = false): string | null {
+  if (!value.trim()) {
+    return allowEmpty ? "" : null;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return null;
+    }
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
 export function parseCanonicalEventPayload(payload: unknown): SiteEventInput | null {
   const root = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
   const siteKey = readRequiredString(root, "site_key");
   const eventName = readRequiredString(root, "event_name");
   const clientTs = readRequiredString(root, "client_ts");
   const path = readRequiredString(root, "path");
-  const url = readRequiredString(root, "url");
-  const referrer = readRequiredString(root, "referrer", true);
+  const rawUrl = readRequiredString(root, "url");
+  const rawReferrer = readRequiredString(root, "referrer", true);
   const device = readRequiredString(root, "device");
   const viewport = readRequiredString(root, "viewport");
   const lang = readRequiredString(root, "lang", true);
   const tz = readRequiredString(root, "tz", true);
   const utmRaw = root.utm;
 
-  if (
-    !siteKey ||
-    !eventName ||
-    !clientTs ||
-    !path ||
-    !url ||
-    referrer === null ||
-    !device ||
-    !viewport ||
-    lang === null ||
-    tz === null ||
-    typeof utmRaw !== "object" ||
-    utmRaw === null ||
-    Array.isArray(utmRaw)
-  ) {
+  if (!siteKey || !eventName || !clientTs || !path || !rawUrl || rawReferrer === null || !device || !viewport
+      || lang === null || tz === null || typeof utmRaw !== "object" || utmRaw === null || Array.isArray(utmRaw)) {
     return null;
   }
 
-  if (!Number.isFinite(Date.parse(clientTs))) {
+  const site = getSiteByKey(siteKey);
+  const url = sanitizeAnalyticsLocation(rawUrl);
+  const referrer = sanitizeAnalyticsLocation(rawReferrer, true);
+  if (!site || !url || referrer === null || !Number.isFinite(Date.parse(clientTs)) || !path.startsWith("/")
+      || !PAGEVIEW_ALLOWED_DEVICES.has(device) || !PAGEVIEW_VIEWPORT_PATTERN.test(viewport)) {
     return null;
   }
 
-  if (!path.startsWith("/")) {
+  const parsedUrl = new URL(url);
+  if (!site.allowed_origins.includes(parsedUrl.origin) || parsedUrl.pathname !== path) {
     return null;
   }
-
-  if (!isValidAbsoluteUrl(url)) {
-    return null;
-  }
-
-  if (!PAGEVIEW_ALLOWED_DEVICES.has(device)) {
-    return null;
-  }
-
-  if (!PAGEVIEW_VIEWPORT_PATTERN.test(viewport)) {
-    return null;
-  }
-
-  if (!getSiteByKey(siteKey)) {
+  if (siteKey === "tgc_site" && !TGC_SITE_EVENT_ALLOWLIST.has(eventName)) {
     return null;
   }
 
   const utm = utmRaw as Record<string, unknown>;
+  const bounded = (value: unknown, max: number): string | null => {
+    const normalized = readOptionalString(value);
+    return normalized ? normalized.slice(0, max) : null;
+  };
 
   return {
     site_key: siteKey,
-    event_name: eventName,
+    event_name: eventName.slice(0, 80),
     client_ts: clientTs,
-    path,
+    path: path.slice(0, 500),
     url,
     referrer,
-    src: readOptionalString(root.src),
-    utm_source: readOptionalString(utm.source),
-    utm_medium: readOptionalString(utm.medium),
-    utm_campaign: readOptionalString(utm.campaign),
-    utm_content: readOptionalString(utm.content),
+    src: bounded(root.src, 120),
+    utm_source: bounded(utm.source, 120),
+    utm_medium: bounded(utm.medium, 120),
+    utm_campaign: bounded(utm.campaign, 160),
+    utm_content: bounded(utm.content, 160),
     device,
     viewport,
-    lang,
-    tz,
+    lang: lang.slice(0, 35),
+    tz: tz.slice(0, 80),
     anon_user_id: normalizeOptionalAnonymousId(root.anon_user_id),
     session_id: normalizeOptionalAnonymousId(root.session_id),
     is_new_user: coerceBooleanLikeToInt(root.is_new_user),
-    event_value: readOptionalString(root.event_value),
+    event_value: bounded(root.event_value, 160),
     test_mode: coerceBooleanLikeToInt(root.test_mode),
   };
 }
@@ -1423,6 +1436,19 @@ function errorToMessage(error: unknown): string {
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (chunk) => chunk.toString(16).padStart(2, "0")).join("");
+}
+
+async function keyedRateIdentifier(secret: string, minuteBucket: string, clientIp: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(`${minuteBucket}:${clientIp}`));
+  return Array.from(new Uint8Array(signature), (chunk) => chunk.toString(16).padStart(2, "0")).join("");
 }
 
 async function incrementCounter(db: D1Database, day: string, column: CounterColumn): Promise<void> {
@@ -3087,11 +3113,15 @@ async function prunePageviewData(db: D1Database, now: Date = new Date()): Promis
   const siteEventRateLimitCutoffMinute = utcMinuteBucket(
     new Date(now.getTime() - SITE_EVENT_RATE_LIMIT_RETENTION_DAYS * 24 * 60 * 60 * 1000)
   );
+  const siteEventRawCutoffDay = utcDay(addUtcDays(now, -SITE_EVENT_RAW_RETENTION_DAYS));
+  const tgcRawCutoffDay = utcDay(addUtcDays(now, -TGC_SITE_EVENT_RAW_RETENTION_DAYS));
 
   await Promise.all([
     db.prepare("DELETE FROM pageview_events_raw WHERE received_day < ?").bind(rawCutoffDay).run(),
     db.prepare("DELETE FROM pageview_rate_limit WHERE minute_bucket < ?").bind(rateLimitCutoffMinute).run(),
     db.prepare("DELETE FROM site_event_rate_limit WHERE minute_bucket < ?").bind(siteEventRateLimitCutoffMinute).run(),
+    db.prepare("DELETE FROM site_events_raw WHERE site_key = 'tgc_site' AND received_day < ?").bind(tgcRawCutoffDay).run(),
+    db.prepare("DELETE FROM site_events_raw WHERE site_key <> 'tgc_site' AND received_day < ?").bind(siteEventRawCutoffDay).run(),
   ]);
 }
 
@@ -3414,10 +3444,7 @@ async function processSiteEventIngest(
   const receivedAt = new Date();
   const receivedAtIso = receivedAt.toISOString();
   const receivedDay = utcDay(receivedAt);
-  const [ipHash, userAgentHash] = await Promise.all([
-    requestContext.clientIp ? sha256Hex(requestContext.clientIp) : Promise.resolve(null),
-    requestContext.userAgent ? sha256Hex(requestContext.userAgent) : Promise.resolve(null),
-  ]);
+  const minuteBucket = utcMinuteBucket(receivedAt);
 
   const parsedBody = readAndParsePageviewBody(capture.raw);
   if (!parsedBody.ok) {
@@ -3425,15 +3452,17 @@ async function processSiteEventIngest(
   }
 
   const normalized = parseCanonicalEventPayload(parsedBody.payload);
-  if (!normalized) {
+  const site = normalized ? getSiteByKey(normalized.site_key) : undefined;
+  if (!normalized || !site || !requestContext.origin || !site.allowed_origins.includes(requestContext.origin)) {
     return;
   }
 
   let accepted = 1;
   let dropReason: string | null = null;
-
-  if (ipHash) {
-    const rateLimitCount = await incrementSiteEventRateLimitBucket(env.DB, utcMinuteBucket(receivedAt), ipHash);
+  const rateLimitSecret = env.TELEMETRY_RATE_LIMIT_SECRET?.trim();
+  if (requestContext.clientIp && rateLimitSecret) {
+    const rateIdentifier = await keyedRateIdentifier(rateLimitSecret, minuteBucket, requestContext.clientIp);
+    const rateLimitCount = await incrementSiteEventRateLimitBucket(env.DB, minuteBucket, rateIdentifier);
     if (rateLimitCount > SITE_EVENT_RATE_LIMIT_PER_MINUTE) {
       accepted = 0;
       dropReason = "rate_limited";
@@ -3447,11 +3476,11 @@ async function processSiteEventIngest(
     received_day: receivedDay,
     referrer_domain: parseReferrerDomain(normalized.referrer),
     country: requestContext.country,
-    ip_hash: ipHash,
-    user_agent_hash: userAgentHash,
+    ip_hash: null,
+    user_agent_hash: null,
     accepted,
     drop_reason: dropReason,
-    request_id: requestContext.requestId,
+    request_id: null,
     ingest_version: SITE_EVENT_INGEST_VERSION,
   };
 
@@ -3943,6 +3972,149 @@ async function buildSiteReport(
       production_only_default: site.production_only_default,
     },
   });
+}
+
+type TgcAnalyticsAggregateRow = {
+  events: number | null;
+  page_views: number | null;
+  sessions: number | null;
+  visitors: number | null;
+  first_visits: number | null;
+  returning_visits: number | null;
+  service_interest: number | null;
+  form_starts: number | null;
+  submit_attempts: number | null;
+  submit_successes: number | null;
+  submit_failures: number | null;
+  scroll_90: number | null;
+  engaged_60: number | null;
+  avg_page_load_ms: number | null;
+  avg_lcp_ms: number | null;
+  avg_cls: number | null;
+};
+
+type TgcTopRow = { value: string | null; events: number | null };
+
+async function queryTgcAnalyticsWindow(db: D1Database, startDay: string, endDay: string) {
+  const row = await db.prepare(
+    `SELECT
+      COUNT(*) AS events,
+      SUM(CASE WHEN event_name = 'page_view' THEN 1 ELSE 0 END) AS page_views,
+      COUNT(DISTINCT CASE WHEN session_id IS NOT NULL THEN session_id END) AS sessions,
+      COUNT(DISTINCT CASE WHEN anon_user_id IS NOT NULL THEN anon_user_id END) AS visitors,
+      SUM(CASE WHEN event_name = 'first_visit' THEN 1 ELSE 0 END) AS first_visits,
+      SUM(CASE WHEN event_name = 'returning_visit' THEN 1 ELSE 0 END) AS returning_visits,
+      SUM(CASE WHEN event_name IN ('services_interest','infrastructure_cta_click','infrastructure_package_interest','ops_care_interest','audit_cta_click') THEN 1 ELSE 0 END) AS service_interest,
+      SUM(CASE WHEN event_name IN ('form_start','infrastructure_form_start','audit_form_start') THEN 1 ELSE 0 END) AS form_starts,
+      SUM(CASE WHEN event_name = 'form_submit_attempt' THEN 1 ELSE 0 END) AS submit_attempts,
+      SUM(CASE WHEN event_name = 'form_submit_success' THEN 1 ELSE 0 END) AS submit_successes,
+      SUM(CASE WHEN event_name IN ('form_submit_failure','form_submit_fallback') THEN 1 ELSE 0 END) AS submit_failures,
+      SUM(CASE WHEN event_name = 'scroll_depth' AND CAST(event_value AS INTEGER) >= 90 THEN 1 ELSE 0 END) AS scroll_90,
+      SUM(CASE WHEN event_name = 'engaged_time' AND CAST(event_value AS INTEGER) >= 60 THEN 1 ELSE 0 END) AS engaged_60,
+      AVG(CASE WHEN event_name = 'web_vital_page_load_ms' THEN CAST(event_value AS REAL) END) AS avg_page_load_ms,
+      AVG(CASE WHEN event_name = 'web_vital_lcp_ms' THEN CAST(event_value AS REAL) END) AS avg_lcp_ms,
+      AVG(CASE WHEN event_name = 'web_vital_cls' THEN CAST(event_value AS REAL) END) AS avg_cls
+    FROM site_events_raw
+    WHERE site_key = 'tgc_site' AND accepted = 1 AND test_mode = 0 AND received_day BETWEEN ? AND ?`
+  ).bind(startDay, endDay).first<TgcAnalyticsAggregateRow>();
+
+  const count = (value: number | null | undefined) => Number(value ?? 0);
+  const attempts = count(row?.submit_attempts);
+  const successes = count(row?.submit_successes);
+  return {
+    start_day: startDay,
+    end_day: endDay,
+    events: count(row?.events),
+    page_views: count(row?.page_views),
+    sessions: count(row?.sessions),
+    visitors: count(row?.visitors),
+    first_visits: count(row?.first_visits),
+    returning_visits: count(row?.returning_visits),
+    commercial_intent: count(row?.service_interest),
+    funnel: {
+      form_starts: count(row?.form_starts),
+      submit_attempts: attempts,
+      submit_successes: successes,
+      submit_failures_or_fallbacks: count(row?.submit_failures),
+      submit_success_rate: attempts > 0 ? successes / attempts : null,
+    },
+    engagement: {
+      scroll_90: count(row?.scroll_90),
+      engaged_60_seconds: count(row?.engaged_60),
+    },
+    performance: {
+      avg_page_load_ms: row?.avg_page_load_ms === null || row?.avg_page_load_ms === undefined ? null : Number(row.avg_page_load_ms),
+      avg_lcp_ms: row?.avg_lcp_ms === null || row?.avg_lcp_ms === undefined ? null : Number(row.avg_lcp_ms),
+      avg_cls: row?.avg_cls === null || row?.avg_cls === undefined ? null : Number(row.avg_cls),
+    },
+  };
+}
+
+async function queryTgcTop(
+  db: D1Database,
+  expression: "event_name" | "path" | "source" | "utm_campaign" | "section",
+  startDay: string,
+  endDay: string
+) {
+  const sqlExpression = expression === "source"
+    ? "COALESCE(NULLIF(src, ''), NULLIF(utm_source, ''), '(direct)')"
+    : expression === "section"
+      ? "event_value"
+      : expression;
+  const extra = expression === "section" ? " AND event_name = 'section_view'" : "";
+  const result = await db.prepare(
+    `SELECT ${sqlExpression} AS value, COUNT(*) AS events
+     FROM site_events_raw
+     WHERE site_key = 'tgc_site' AND accepted = 1 AND test_mode = 0
+       AND received_day BETWEEN ? AND ?${extra}
+       AND ${sqlExpression} IS NOT NULL AND ${sqlExpression} <> ''
+     GROUP BY ${sqlExpression}
+     ORDER BY events DESC, value ASC
+     LIMIT 8`
+  ).bind(startDay, endDay).all<TgcTopRow>();
+  return (result.results ?? []).map((row) => ({ value: row.value ?? "(unknown)", events: Number(row.events ?? 0) }));
+}
+
+async function buildTgcAnalyticsReport(db: D1Database, now: Date) {
+  const today = utcDay(now);
+  const last7Start = utcDay(addUtcDays(now, -6));
+  const last30Start = utcDay(addUtcDays(now, -29));
+  const [todayWindow, last7, last30, topEvents, topPaths, topSources, topCampaigns, topSections, health] = await Promise.all([
+    queryTgcAnalyticsWindow(db, today, today),
+    queryTgcAnalyticsWindow(db, last7Start, today),
+    queryTgcAnalyticsWindow(db, last30Start, today),
+    queryTgcTop(db, "event_name", last30Start, today),
+    queryTgcTop(db, "path", last30Start, today),
+    queryTgcTop(db, "source", last30Start, today),
+    queryTgcTop(db, "utm_campaign", last30Start, today),
+    queryTgcTop(db, "section", last30Start, today),
+    db.prepare(
+      "SELECT MAX(received_at) AS last_received_at, SUM(CASE WHEN accepted = 0 AND drop_reason = 'rate_limited' THEN 1 ELSE 0 END) AS dropped_rate_limited FROM site_events_raw WHERE site_key = 'tgc_site' AND received_day BETWEEN ? AND ?"
+    ).bind(last30Start, today).first<{ last_received_at: string | null; dropped_rate_limited: number | null }>(),
+  ]);
+
+  return {
+    view: "tgc" as const,
+    generated_at: now.toISOString(),
+    site_key: "tgc_site",
+    semantics: "consented_page_execution_events_not_edge_traffic",
+    windows: { today: todayWindow, last_7_days: last7, last_30_days: last30 },
+    top_30_days: {
+      events: topEvents,
+      paths: topPaths,
+      sources: topSources,
+      campaigns: topCampaigns,
+      sections: topSections,
+    },
+    health: {
+      last_received_at: health?.last_received_at ?? null,
+      dropped_rate_limited_30d: Number(health?.dropped_rate_limited ?? 0),
+      test_mode_excluded: true,
+      identifiers_exposed: false,
+      raw_event_retention_days: TGC_SITE_EVENT_RAW_RETENTION_DAYS,
+      rate_identifier_retention_days: SITE_EVENT_RATE_LIMIT_RETENTION_DAYS,
+    },
+  };
 }
 
 async function buildSourceHealthReport(
@@ -5792,7 +5964,8 @@ export default {
         if (
           reportRequest.view !== "source_health" &&
           reportRequest.view !== "asset" &&
-          reportRequest.view !== "monthly"
+          reportRequest.view !== "monthly" &&
+          reportRequest.view !== "tgc"
         ) {
           await refreshPreviousCompletedTrafficBestEffort(env, now);
         }
@@ -5804,6 +5977,8 @@ export default {
               ? await buildFleetReport(env.DB, now)
               : reportRequest.view === "site"
                 ? await buildSiteReport(env.DB, env.BUSCORE_LEADS_DB, now, reportRequest.siteEventFilter)
+                : reportRequest.view === "tgc"
+                  ? await buildTgcAnalyticsReport(env.DB, now)
                 : reportRequest.view === "asset"
                   ? await buildAssetReport(env.DB, env.BUSCORE_LEADS_DB, now)
                   : reportRequest.view === "monthly"
