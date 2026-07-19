@@ -8,6 +8,7 @@
 - Replaced stored unsalted site-event IP/user-agent hashes with minute-scoped keyed abuse identifiers kept only in the two-day rate table; raw events no longer store IP hashes, user-agent hashes, or request IDs, and scheduled maintenance scrubs those legacy columns from existing rows.
 - Added raw site-event retention: 90 days for `tgc_site`, 30 days for other site-event properties.
 - Reused the existing D1 schema; no migration was added or applied.
+- Added a gated Cloudflare deployment workflow that runs the full validation suite and deploys only on manual dispatch or an explicitly marked release merge, preserving provisioned Worker secrets.
 
 ## [1.25.0] - 2026-07-18
 
