@@ -1,5 +1,15 @@
 # Lighthouse — Source of Truth
 
+## TGC consented commercial analytics — v1.26.0 branch implementation
+
+The protected `GET /report?view=tgc` view is the canonical on-demand source for True Good Craft website analytics. It reads existing `site_events_raw` storage and returns consented page-execution metrics for today, 7 days, and 30 days: page views, sessions, visitors, first/returning visits, commercial intent, form funnel outcomes, deep-scroll and engaged-time milestones, average page-load/LCP/CLS, top events, paths, sources, campaigns, and sections. It never returns visitor IDs, session IDs, rate identifiers, user-agent hashes, request IDs, or form contents.
+
+TGC site ingestion is an explicitly approved exception to the company-wide aggregate-only default. Random first-party visitor and session IDs are justified because aggregate counters alone cannot measure new versus returning visits, sessions per visitor, multi-page journeys, attribution continuity, or funnel progression. The visitor ID is created only after explicit analytics consent and persists in the browser for at most 395 days; the session ID renews after 30 minutes of inactivity. They are used only for TGC website measurement, are not linked to intake identity or other properties, and are not exposed downstream.
+
+The server enforces the TGC event allowlist, production-origin match, path/URL consistency, origin-and-path-only URL storage, bounded context, and test-mode exclusion. Form values, typed content, keystrokes, raw IP addresses, user-agent hashes, exact location, fingerprints, cross-site advertising identifiers, and session replay are prohibited. Minute-scoped abuse identifiers use keyed HMAC and are retained for two days; they are not copied into raw events. Raw TGC events are pruned after 90 days; other site-event raw rows are pruned after 30 days. No new D1 migration is required because the existing site-event schema is reused.
+
+Lighthouse remains the source of truth. Agent Smith may present this protected aggregate view through `/tgc`. Airtable may receive curated periodic KPI/campaign/content/experiment summaries later, but must not receive raw events or stable identifiers.
+
 ## BUS Core traffic truth and bounded delivery work — v1.25.0 deployed
 
 `BUS_CORE_TRAFFIC_TRUTH.md` is the authoritative metric/privacy/retention/rollout contract for the new additive fields. Lighthouse now distinguishes Worker-visible artifact requests, successful 200/206 handoffs, full and partial responses, HEAD and Range traffic, declared response bytes, cache outcomes, daily HMAC/IP/version client-network buckets, repeats excluded from that proxy, inferred download intent, confirmed product events, and voluntary leads. None of these fields may be renamed to people, users, installations, completed downloads, or revenue.
