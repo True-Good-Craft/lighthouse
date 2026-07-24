@@ -1,5 +1,11 @@
 # buscore-lighthouse
 
+## BUS Core minimal product telemetry
+
+Production Worker 1.27.0 uses exact event-ID acknowledgement with bounded deduplication and aggregate-only product reporting. Current BUS Core product events contain no persistent installation identifier and are limited to first launch, locally deduplicated release/first-success milestones, startup/manual update checks, staged updates, and reliability. Module opens, active days, returning-installation measures, engagement, sessions, retention, and cross-day profiles are prohibited.
+
+Migration `0015_minimize_buscore_product_telemetry.sql` was applied before the 2026-07-24 Worker deployment. Product telemetry retains event-ID deduplication keys for 30 UTC-day buckets, aggregate counters for 400 UTC-day buckets, and rate-control buckets for two days. It retains no raw product-event history.
+
 ## TGC website analytics
 
 Version 1.26.0 adds an explicitly consented commercial analytics lane for `site_key=tgc_site`. Lighthouse is the raw-event and aggregate-report source of truth; the protected operator view is `GET /report?view=tgc` using the existing `X-Admin-Token` contract.
@@ -12,7 +18,7 @@ BUS Core artifact delivery and demand semantics are defined in `BUS_CORE_TRAFFIC
 
 ## BUS Core transition direction
 
-Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migration 0013 and production version 1.24.0 provide strict BUS Core product telemetry plus qualified, rate-bounded `/update/check` and artifact-request analytics.
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migrations 0013 and 0015 plus production Worker 1.27.0 provide strict aggregate-only BUS Core product telemetry and qualified, rate-bounded `/update/check` and artifact-request analytics.
 
 The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
 
@@ -20,9 +26,10 @@ Contract artifacts:
 
 - `contracts/buscore-product-telemetry-v1.json`
 - `migrations/0013_add_buscore_product_telemetry.sql`
+- `migrations/0015_minimize_buscore_product_telemetry.sql`
 - `tests/product-telemetry-contract.test.mjs`
 
-Retention is 30 UTC-day buckets for accepted raw product events, 400 UTC-day buckets for daily aggregates, and 2 days for rate-control buckets. Rate identifiers are scope-separated HMAC-SHA256 values keyed with `TELEMETRY_RATE_LIMIT_SECRET`: product telemetry rotates by UTC minute; qualified update-check and artifact-request counting use UTC-day buckets. Raw IP addresses and unsalted IP hashes are never stored. Production must configure the secret; update-check and artifact-request counting fail closed without it.
+Retention is 30 UTC-day buckets for product event-ID deduplication keys, 400 UTC-day buckets for daily aggregates, and 2 days for rate-control buckets. Rate identifiers are scope-separated HMAC-SHA256 values keyed with `TELEMETRY_RATE_LIMIT_SECRET`: product telemetry rotates by UTC minute; qualified update-check and artifact-request counting use UTC-day buckets. Raw IP addresses, unsalted IP hashes, raw product-event history, and persistent BUS Core installation identifiers are never stored. Production must configure the secret; update-check and artifact-request counting fail closed without it.
 
 Lighthouse is a single Cloudflare Worker that provides a small, deterministic, privacy-first, aggregate-first metrics primitive with one narrow first-party JS-fired pageview ingestion path.
 

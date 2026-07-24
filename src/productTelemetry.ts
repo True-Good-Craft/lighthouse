@@ -9,7 +9,7 @@ export const BUSCORE_TELEMETRY_LIMITS = {
 } as const;
 
 export const BUSCORE_TELEMETRY_RETENTION = {
-  raw: 30,
+  dedup: 30,
   aggregate: 400,
   rate_limit: 2,
 } as const;
@@ -21,25 +21,22 @@ const STRICT_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 export const BUSCORE_TELEMETRY_EVENT_CATEGORIES = {
   installation_release: [
     "installation_first_launch",
+    "version_first_seen",
     "update_check",
-    "update_success",
+    "update_check_startup",
+    "update_check_manual",
+    "update_staged",
     "update_failure",
   ],
-  module_use: [
-    "inventory_opened",
-    "recipes_opened",
-    "manufacturing_opened",
-    "jobs_opened",
-    "invoices_opened",
-    "settings_opened",
-  ],
   workflow_milestone: [
-    "first_inventory_item_created",
+    "first_stock_recorded",
+    "first_contact_created",
     "first_recipe_created",
     "first_manufacturing_run_completed",
     "first_job_completed",
-    "first_invoice_created",
-    "backup_completed",
+    "first_invoice_issued",
+    "first_finance_entry_recorded",
+    "first_backup_exported",
     "restore_attempted",
     "restore_completed",
     "import_completed",
@@ -58,8 +55,9 @@ export type BuscoreTelemetryCategory = keyof typeof BUSCORE_TELEMETRY_EVENT_CATE
 export const BUSCORE_TELEMETRY_EVENT_NAMES = Object.values(BUSCORE_TELEMETRY_EVENT_CATEGORIES).flat();
 export const BUSCORE_TELEMETRY_RELEASE_CHANNELS = ["stable", "test", "partner-3dque", "lts-1.1", "security-hotfix"] as const;
 export const BUSCORE_TELEMETRY_OS_CATEGORIES = ["windows", "linux", "macos", "other"] as const;
-export const BUSCORE_TELEMETRY_ROOT_FIELDS = ["schema_version", "event_id", "event_name", "installation_id", "client_ts", "context"] as const;
+export const BUSCORE_TELEMETRY_ROOT_FIELDS = ["schema_version", "event_id", "event_name", "client_ts", "context"] as const;
 export const BUSCORE_TELEMETRY_CONTEXT_FIELDS = ["app_version", "release_channel", "os_category"] as const;
+const LEGACY_ROOT_FIELDS = new Set<string>([...BUSCORE_TELEMETRY_ROOT_FIELDS, "installation_id"]);
 
 type EventName = (typeof BUSCORE_TELEMETRY_EVENT_NAMES)[number];
 const EVENT_NAMES = new Set<string>(BUSCORE_TELEMETRY_EVENT_NAMES);
@@ -87,7 +85,6 @@ export type BuscoreTelemetryEvent = {
   schema_version: "1.0";
   event_id: string;
   event_name: EventName;
-  installation_id: string;
   client_ts: string;
   context: {
     app_version: string;
@@ -109,16 +106,22 @@ export type BuscoreProductTelemetryWindow = {
   by_release_channel: BuscoreProductTelemetryBreakdown[];
   by_os_category: BuscoreProductTelemetryBreakdown[];
   first_launches: number;
-  returning_installation_signals: number;
+  version_first_seen: number;
   update_check_delivery_observations: number;
+  update_check_startup: number;
+  update_check_manual: number;
+  update_staged: number;
 };
 
 export type BuscoreProductTelemetryReport =
   | {
       available: true;
       semantics: {
+        first_launches: string;
+        version_first_seen: string;
         update_check_delivery_observations: string;
-        returning_installation_signals: string;
+        update_check_startup: string;
+        update_check_manual: string;
       };
       today: BuscoreProductTelemetryWindow;
       last_7_days: BuscoreProductTelemetryWindow;
@@ -144,10 +147,11 @@ export function categoryForBuscoreTelemetryEvent(eventName: string): BuscoreTele
 export function parseBuscoreTelemetryEvent(value: unknown): BuscoreTelemetryParseResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "invalid_payload" };
   const root = value as Record<string, unknown>;
-  if (!hasExactFields(root, ROOT_FIELDS)) return { ok: false, error: "unexpected_fields" };
+  if (!hasExactFields(root, ROOT_FIELDS) && !hasExactFields(root, LEGACY_ROOT_FIELDS)) {
+    return { ok: false, error: "unexpected_fields" };
+  }
   if (root.schema_version !== BUSCORE_TELEMETRY_SCHEMA_VERSION) return { ok: false, error: "unsupported_schema_version" };
   if (typeof root.event_id !== "string" || !UUID_V4.test(root.event_id)) return { ok: false, error: "invalid_event_id" };
-  if (typeof root.installation_id !== "string" || !UUID_V4.test(root.installation_id)) return { ok: false, error: "invalid_installation_id" };
   if (typeof root.event_name !== "string" || !EVENT_NAMES.has(root.event_name)) return { ok: false, error: "invalid_event_name" };
   if (typeof root.client_ts !== "string" || !isStrictUtcTimestamp(root.client_ts)) return { ok: false, error: "invalid_client_ts" };
   if (!root.context || typeof root.context !== "object" || Array.isArray(root.context)) return { ok: false, error: "invalid_context" };
@@ -163,7 +167,17 @@ export function parseBuscoreTelemetryEvent(value: unknown): BuscoreTelemetryPars
 
   return {
     ok: true,
-    event: root as BuscoreTelemetryEvent,
+    event: {
+      schema_version: "1.0",
+      event_id: root.event_id,
+      event_name: root.event_name as EventName,
+      client_ts: root.client_ts,
+      context: {
+        app_version: context.app_version,
+        release_channel: context.release_channel as BuscoreTelemetryEvent["context"]["release_channel"],
+        os_category: context.os_category as BuscoreTelemetryEvent["context"]["os_category"],
+      },
+    },
     category: categoryForBuscoreTelemetryEvent(root.event_name) as BuscoreTelemetryCategory,
   };
 }
@@ -244,12 +258,25 @@ async function readBodyBounded(request: Request): Promise<{ ok: true; raw: strin
   return { ok: true, raw: new TextDecoder().decode(body) };
 }
 
-async function persistEvent(db: D1Database, event: BuscoreTelemetryEvent, category: BuscoreTelemetryCategory, receivedAt: string, receivedDay: string): Promise<"accepted" | "duplicate"> {
-  // Migration 0013 owns the AFTER INSERT trigger that increments the aggregate
-  // in the same SQLite transaction. INSERT OR IGNORE does not fire it for retries.
-  const result = await db.prepare("INSERT OR IGNORE INTO buscore_product_events_raw(event_id, schema_version, category, event_name, installation_id, client_ts, app_version, release_channel, os_category, received_at, received_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(event.event_id, event.schema_version, category, event.event_name, event.installation_id, event.client_ts, event.context.app_version, event.context.release_channel, event.context.os_category, receivedAt, receivedDay).run();
-  return (result.meta?.changes ?? 0) === 0 ? "duplicate" : "accepted";
+async function persistEvent(db: D1Database, event: BuscoreTelemetryEvent, category: BuscoreTelemetryCategory, receivedDay: string): Promise<"accepted" | "duplicate"> {
+  const [dedupResult] = await db.batch([
+    db.prepare("INSERT OR IGNORE INTO buscore_product_event_dedup(event_id, received_day) VALUES (?, ?)")
+      .bind(event.event_id, receivedDay),
+    db.prepare(
+      "INSERT INTO buscore_product_events_daily(day, category, event_name, app_version, release_channel, os_category, event_count) " +
+      "SELECT ?, ?, ?, ?, ?, ?, 1 WHERE changes() = 1 " +
+      "ON CONFLICT(day, category, event_name, app_version, release_channel, os_category) " +
+      "DO UPDATE SET event_count = event_count + 1"
+    ).bind(
+      receivedDay,
+      category,
+      event.event_name,
+      event.context.app_version,
+      event.context.release_channel,
+      event.context.os_category
+    ),
+  ]);
+  return (dedupResult.meta?.changes ?? 0) === 0 ? "duplicate" : "accepted";
 }
 
 export async function handleBuscoreTelemetryRequest(
@@ -289,8 +316,11 @@ export async function handleBuscoreTelemetryRequest(
     const parsed = parseBuscoreTelemetryEvent(body);
     if (!parsed.ok) return Response.json({ ok: false, error: parsed.error }, { status: 400 });
 
-    const outcome = await persistEvent(db, parsed.event, parsed.category, now.toISOString(), utcDay(now));
-    return Response.json({ ok: true, outcome }, { status: outcome === "accepted" ? 202 : 200 });
+    const outcome = await persistEvent(db, parsed.event, parsed.category, utcDay(now));
+    return Response.json(
+      { ok: true, outcome, acknowledged_event_ids: [parsed.event.event_id] },
+      { status: outcome === "accepted" ? 202 : 200 }
+    );
   } catch (error) {
     console.warn("BUS Core product telemetry ingest unavailable.", error);
     return Response.json({ ok: false, error: "ingest_unavailable" }, { status: 503 });
@@ -313,18 +343,16 @@ async function queryBreakdown(
 }
 
 async function queryProductTelemetryWindow(db: D1Database, startDay: string, endDay: string): Promise<BuscoreProductTelemetryWindow> {
-  const [total, categoryRows, byEventName, byVersion, byChannel, byOs, returning] = await Promise.all([
+  const [total, categoryRows, byEventName, byVersion, byChannel, byOs] = await Promise.all([
     db.prepare("SELECT COALESCE(SUM(event_count), 0) AS events FROM buscore_product_events_daily WHERE day >= ? AND day <= ?").bind(startDay, endDay).first<{ events: number }>(),
     queryBreakdown(db, "category", startDay, endDay, 4),
     queryBreakdown(db, "event_name", startDay, endDay, BUSCORE_TELEMETRY_EVENT_NAMES.length),
     queryBreakdown(db, "app_version", startDay, endDay, 20),
     queryBreakdown(db, "release_channel", startDay, endDay, BUSCORE_TELEMETRY_RELEASE_CHANNELS.length),
     queryBreakdown(db, "os_category", startDay, endDay, BUSCORE_TELEMETRY_OS_CATEGORIES.length),
-    db.prepare("SELECT COUNT(*) AS installations FROM (SELECT installation_id FROM buscore_product_events_raw WHERE received_day >= ? AND received_day <= ? GROUP BY installation_id HAVING COUNT(DISTINCT received_day) >= 2)").bind(startDay, endDay).first<{ installations: number }>(),
   ]);
   const categories: Record<BuscoreTelemetryCategory, number> = {
     installation_release: 0,
-    module_use: 0,
     workflow_milestone: 0,
     reliability: 0,
   };
@@ -340,8 +368,12 @@ async function queryProductTelemetryWindow(db: D1Database, startDay: string, end
     by_release_channel: byChannel,
     by_os_category: byOs,
     first_launches: countEvent("installation_first_launch"),
-    returning_installation_signals: returning?.installations ?? 0,
-    update_check_delivery_observations: countEvent("update_check"),
+    version_first_seen: countEvent("version_first_seen"),
+    update_check_delivery_observations:
+      countEvent("update_check") + countEvent("update_check_startup") + countEvent("update_check_manual"),
+    update_check_startup: countEvent("update_check_startup"),
+    update_check_manual: countEvent("update_check_manual"),
+    update_staged: countEvent("update_staged"),
   };
 }
 
@@ -359,8 +391,11 @@ export async function buildBuscoreProductTelemetryReport(
     return {
       available: true,
       semantics: {
-        update_check_delivery_observations: "accepted telemetry update_check events; not the authoritative /update/check release-route total",
-        returning_installation_signals: "distinct random installation IDs observed on at least two received UTC days in the selected retained-raw window; not people, users, or retention",
+        first_launches: "accepted installation_first_launch events acknowledged by this receiver; opted-in installations only",
+        version_first_seen: "accepted locally deduplicated version_first_seen events; not downloads or successful update staging",
+        update_check_delivery_observations: "accepted startup, manual, and legacy-unspecified update-check events; not the authoritative /update/check release-route total",
+        update_check_startup: "accepted update_check_startup events",
+        update_check_manual: "accepted update_check_manual events",
       },
       today: todayWindow,
       last_7_days: last7Days,
@@ -373,11 +408,11 @@ export async function buildBuscoreProductTelemetryReport(
 }
 
 export async function pruneBuscoreTelemetry(db: D1Database, now: Date = new Date()): Promise<void> {
-  const rawCutoff = utcDay(addUtcDays(now, -BUSCORE_TELEMETRY_RETENTION.raw));
+  const dedupCutoff = utcDay(addUtcDays(now, -BUSCORE_TELEMETRY_RETENTION.dedup));
   const rateCutoff = utcMinute(addUtcDays(now, -BUSCORE_TELEMETRY_RETENTION.rate_limit));
   const aggregateCutoff = utcDay(addUtcDays(now, -BUSCORE_TELEMETRY_RETENTION.aggregate));
   await Promise.all([
-    db.prepare("DELETE FROM buscore_product_events_raw WHERE received_day <= ?").bind(rawCutoff).run(),
+    db.prepare("DELETE FROM buscore_product_event_dedup WHERE received_day <= ?").bind(dedupCutoff).run(),
     db.prepare("DELETE FROM buscore_telemetry_rate_limit WHERE minute_bucket <= ?").bind(rateCutoff).run(),
     db.prepare("DELETE FROM buscore_product_events_daily WHERE day <= ?").bind(aggregateCutoff).run(),
   ]);

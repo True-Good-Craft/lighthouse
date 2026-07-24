@@ -3,7 +3,7 @@
   "endpoint": "/telemetry/v1/events",
   "strict": true,
   "common_fields": {
-    "root": ["schema_version", "event_id", "event_name", "installation_id", "client_ts", "context"],
+    "root": ["schema_version", "event_id", "event_name", "client_ts", "context"],
     "context": ["app_version", "release_channel", "os_category"]
   },
   "event_fields": "all v1 events use exactly the common root and context fields; no event-specific content fields are accepted",
@@ -16,30 +16,28 @@
     "semver_component_max_digits": 6
   },
   "retention_days": {
-    "raw": 30,
+    "dedup": 30,
     "aggregate": 400,
     "rate_limit": 2
   },
   "event_categories": {
     "installation_release": [
-      "installation_first_launch", "update_check", "update_success", "update_failure"
-    ],
-    "module_use": [
-      "inventory_opened", "recipes_opened", "manufacturing_opened", "jobs_opened", "invoices_opened", "settings_opened"
+      "installation_first_launch", "version_first_seen", "update_check", "update_check_startup", "update_check_manual", "update_staged", "update_failure"
     ],
     "workflow_milestone": [
-      "first_inventory_item_created", "first_recipe_created", "first_manufacturing_run_completed", "first_job_completed", "first_invoice_created",
-      "backup_completed", "restore_attempted", "restore_completed", "import_completed", "import_failed"
+      "first_stock_recorded", "first_contact_created", "first_recipe_created", "first_manufacturing_run_completed", "first_job_completed",
+      "first_invoice_issued", "first_finance_entry_recorded", "first_backup_exported",
+      "restore_attempted", "restore_completed", "import_completed", "import_failed"
     ],
     "reliability": [
       "startup_failure", "backup_failure", "restore_failure", "unhandled_application_error", "migration_failure"
     ]
   },
   "event_names": [
-    "installation_first_launch", "update_check", "update_success", "update_failure",
-    "inventory_opened", "recipes_opened", "manufacturing_opened", "jobs_opened", "invoices_opened", "settings_opened",
-    "first_inventory_item_created", "first_recipe_created", "first_manufacturing_run_completed", "first_job_completed", "first_invoice_created",
-    "backup_completed", "restore_attempted", "restore_completed", "import_completed", "import_failed",
+    "installation_first_launch", "version_first_seen", "update_check", "update_check_startup", "update_check_manual", "update_staged", "update_failure",
+    "first_stock_recorded", "first_contact_created", "first_recipe_created", "first_manufacturing_run_completed", "first_job_completed",
+    "first_invoice_issued", "first_finance_entry_recorded", "first_backup_exported",
+    "restore_attempted", "restore_completed", "import_completed", "import_failed",
     "startup_failure", "backup_failure", "restore_failure", "unhandled_application_error", "migration_failure"
   ]
 }

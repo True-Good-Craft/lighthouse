@@ -22,8 +22,7 @@ import {
 const validEvent = (overrides = {}) => ({
   schema_version: "1.0",
   event_id: "11111111-1111-4111-8111-111111111111",
-  event_name: "inventory_opened",
-  installation_id: "22222222-2222-4222-8222-222222222222",
+  event_name: "first_stock_recorded",
   client_ts: "2026-07-10T12:00:00.000Z",
   context: {
     app_version: "1.3.2",
@@ -40,7 +39,7 @@ test("production-like fixture is accepted without extra fields", () => {
   ));
   const parsed = parseBuscoreTelemetryEvent(fixture);
   assert.equal(parsed.ok, true);
-  assert.equal(parsed.ok && parsed.category, "module_use");
+  assert.equal(parsed.ok && parsed.category, "workflow_milestone");
 });
 
 const workerModule = workerModuleImport.default?.fetch
@@ -57,13 +56,22 @@ class FakeStatement {
       this.db.rate.set(key, (this.db.rate.get(key) ?? 0) + 1);
       return { meta: { changes: 1 } };
     }
-    if (this.sql.startsWith("INSERT OR IGNORE INTO buscore_product_events_raw")) {
-      if (this.db.failRaw) throw new Error("raw unavailable");
-      const [event_id, schema_version, category, event_name, installation_id, client_ts, app_version, release_channel, os_category, received_at, received_day] = this.args;
-      if (this.db.events.has(event_id)) return { meta: { changes: 0 } };
-      this.db.events.set(event_id, { event_id, schema_version, category, event_name, installation_id, client_ts, app_version, release_channel, os_category, received_at, received_day });
+    if (this.sql.startsWith("INSERT OR IGNORE INTO buscore_product_event_dedup")) {
+      if (this.db.failDedup) throw new Error("dedup unavailable");
+      const [event_id, received_day] = this.args;
+      if (this.db.events.has(event_id)) {
+        this.db.lastChanges = 0;
+        return { meta: { changes: 0 } };
+      }
+      this.db.events.set(event_id, { event_id, received_day });
+      this.db.lastChanges = 1;
+      return { meta: { changes: 1 } };
+    }
+    if (this.sql.startsWith("INSERT INTO buscore_product_events_daily")) {
+      if (this.db.lastChanges === 0) return { meta: { changes: 0 } };
+      const [received_day, category, event_name, app_version, release_channel, os_category] = this.args;
       const key = [received_day, category, event_name, app_version, release_channel, os_category].join("|");
-      this.db.daily.set(key, (this.db.daily.get(key) ?? 0) + 1); // migration trigger
+      this.db.daily.set(key, (this.db.daily.get(key) ?? 0) + 1);
       return { meta: { changes: 1 } };
     }
     if (this.sql.startsWith("DELETE FROM")) {
@@ -77,16 +85,6 @@ class FakeStatement {
       return { count: this.db.rate.get(`${this.args[0]}:${this.args[1]}`) ?? 0 };
     }
     const [startDay, endDay] = this.args;
-    if (this.sql.includes("COUNT(*) AS installations")) {
-      const daysByInstall = new Map();
-      for (const row of this.db.events.values()) {
-        if (row.received_day < startDay || row.received_day > endDay) continue;
-        const days = daysByInstall.get(row.installation_id) ?? new Set();
-        days.add(row.received_day);
-        daysByInstall.set(row.installation_id, days);
-      }
-      return { installations: [...daysByInstall.values()].filter((days) => days.size >= 2).length };
-    }
     if (this.sql.includes("SUM(event_count)")) {
       return { events: this.db.dailyRows(startDay, endDay).reduce((sum, row) => sum + row.events, 0) };
     }
@@ -110,9 +108,15 @@ class FakeDb {
     this.daily = new Map();
     this.deletes = [];
     this.failRate = false;
-    this.failRaw = false;
+    this.failDedup = false;
+    this.lastChanges = 0;
   }
   prepare(sql) { return new FakeStatement(this, sql); }
+  async batch(statements) {
+    const results = [];
+    for (const statement of statements) results.push(await statement.run());
+    return results;
+  }
   dailyRows(startDay, endDay) {
     return [...this.daily].flatMap(([key, events]) => {
       const [day, category, event_name, app_version, release_channel, os_category] = key.split("|");
@@ -160,7 +164,7 @@ test("strict parser rejects prohibited field families and unexpected nesting", (
 });
 
 test("strict parser enforces UUID shape, bounded SemVer, dimensions, and canonical UTC timestamps", () => {
-  assert.equal(parseBuscoreTelemetryEvent(validEvent({ installation_id: "machine-name" })).ok, false);
+  assert.equal(parseBuscoreTelemetryEvent(validEvent({ event_id: "machine-name" })).ok, false);
   assert.equal(parseBuscoreTelemetryEvent(validEvent({ context: { ...validEvent().context, app_version: "000001.2.3" } })).ok, false);
   assert.equal(parseBuscoreTelemetryEvent(validEvent({ context: { ...validEvent().context, app_version: "1234567.2.3" } })).ok, false);
   assert.equal(parseBuscoreTelemetryEvent(validEvent({ context: { ...validEvent().context, release_channel: "private-customer" } })).ok, false);
@@ -209,18 +213,31 @@ test("standalone fallback rate secret initializes in request scope and remains s
   assert.equal(db.rate.size, 1, "the isolate-local fallback must not rotate between requests");
 });
 
-test("endpoint persists once; the migration trigger makes retry aggregation idempotent", async () => {
+test("legacy payload IDs are accepted for compatibility but discarded before persistence", () => {
+  const parsed = parseBuscoreTelemetryEvent({
+    ...validEvent(),
+    installation_id: "22222222-2222-4222-8222-222222222222",
+  });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.ok && "installation_id" in parsed.event, false);
+});
+
+test("endpoint persists only a bounded dedup key and aggregates retries idempotently", async () => {
   const db = new FakeDb();
   const now = new Date("2026-07-12T12:00:00.000Z");
-  assert.equal((await handleBuscoreTelemetryRequest(requestFor(), db, "secret", now)).status, 202);
-  assert.equal((await handleBuscoreTelemetryRequest(requestFor(), db, "secret", now)).status, 200);
+  const accepted = await handleBuscoreTelemetryRequest(requestFor(), db, "secret", now);
+  assert.equal(accepted.status, 202);
+  assert.deepEqual((await accepted.json()).acknowledged_event_ids, [validEvent().event_id]);
+  const duplicate = await handleBuscoreTelemetryRequest(requestFor(), db, "secret", now);
+  assert.equal(duplicate.status, 200);
+  assert.deepEqual((await duplicate.json()).acknowledged_event_ids, [validEvent().event_id]);
   assert.equal(db.events.size, 1);
   assert.equal([...db.daily.values()].reduce((a, b) => a + b, 0), 1);
 });
 
 test("persistence failures return a bounded unavailable response and cannot write an aggregate", async () => {
   const db = new FakeDb();
-  db.failRaw = true;
+  db.failDedup = true;
   const response = await handleBuscoreTelemetryRequest(requestFor(), db, "secret", new Date("2026-07-12T12:00:00.000Z"));
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { ok: false, error: "ingest_unavailable" });
@@ -237,38 +254,41 @@ test("rate limit rejects the first request above the configured threshold", asyn
   assert.equal((await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "33333333-3333-4333-8333-333333333333" })), db, "secret", now)).status, 429);
 });
 
-test("report exposes literal aggregates and returning installation signals without IDs", async () => {
+test("report exposes only acknowledged release, first-use, and update aggregates", async () => {
   const db = new FakeDb();
-  const install = "22222222-2222-4222-8222-222222222222";
-  await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "11111111-1111-4111-8111-111111111111", installation_id: install, event_name: "installation_first_launch" })), db, "secret", new Date("2026-07-11T12:00:00.000Z"));
-  await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "33333333-3333-4333-8333-333333333333", installation_id: install, event_name: "update_check" })), db, "secret", new Date("2026-07-12T12:00:00.000Z"));
+  await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "11111111-1111-4111-8111-111111111111", event_name: "installation_first_launch" })), db, "secret", new Date("2026-07-11T12:00:00.000Z"));
+  await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "33333333-3333-4333-8333-333333333333", event_name: "version_first_seen" })), db, "secret", new Date("2026-07-12T12:01:00.000Z"));
+  await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "44444444-4444-4444-8444-444444444444", event_name: "update_staged" })), db, "secret", new Date("2026-07-12T12:02:00.000Z"));
+  await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "55555555-5555-4555-8555-555555555555", event_name: "update_check_startup" })), db, "secret", new Date("2026-07-12T12:03:00.000Z"));
+  await handleBuscoreTelemetryRequest(requestFor(validEvent({ event_id: "66666666-6666-4666-8666-666666666666", event_name: "update_check_manual" })), db, "secret", new Date("2026-07-12T12:04:00.000Z"));
   const report = await buildBuscoreProductTelemetryReport(db, new Date("2026-07-12T13:00:00.000Z"));
   assert.equal(report.available, true);
-  assert.equal(report.last_7_days.total_events, 2);
-  assert.equal(report.last_7_days.categories.installation_release, 2);
+  assert.equal(report.last_7_days.total_events, 5);
+  assert.equal(report.last_7_days.categories.installation_release, 5);
   assert.equal(report.last_7_days.first_launches, 1);
-  assert.equal(report.last_7_days.update_check_delivery_observations, 1);
-  assert.equal(report.last_7_days.returning_installation_signals, 1);
-  assert.doesNotMatch(JSON.stringify(report), new RegExp(install));
+  assert.equal(report.last_7_days.version_first_seen, 1);
+  assert.equal(report.last_7_days.update_staged, 1);
+  assert.equal(report.last_7_days.update_check_delivery_observations, 2);
+  assert.equal(report.last_7_days.update_check_startup, 1);
+  assert.equal(report.last_7_days.update_check_manual, 1);
+  assert.doesNotMatch(JSON.stringify(report), /active_day|returning_installation|installation_id/);
 });
 
 test("retention deletes cutoff buckets inclusively for exact retained windows", async () => {
   const db = new FakeDb();
   await pruneBuscoreTelemetry(db, new Date("2026-07-12T12:34:00.000Z"));
   assert.deepEqual(db.deletes, [
-    { sql: "DELETE FROM buscore_product_events_raw WHERE received_day <= ?", cutoff: "2026-06-12" },
+    { sql: "DELETE FROM buscore_product_event_dedup WHERE received_day <= ?", cutoff: "2026-06-12" },
     { sql: "DELETE FROM buscore_telemetry_rate_limit WHERE minute_bucket <= ?", cutoff: "2026-07-10T12:34" },
     { sql: "DELETE FROM buscore_product_events_daily WHERE day <= ?", cutoff: "2025-06-07" },
   ]);
 });
 
-test("migration defines category storage and an atomic AFTER INSERT aggregate trigger", () => {
-  const sql = fs.readFileSync(new URL("../migrations/0013_add_buscore_product_telemetry.sql", import.meta.url), "utf8");
-  assert.match(sql, /category TEXT NOT NULL/);
-  assert.match(sql, /CREATE TRIGGER IF NOT EXISTS trg_buscore_product_events_daily_after_insert/i);
-  assert.match(sql, /AFTER INSERT ON buscore_product_events_raw/i);
-  assert.match(sql, /ON CONFLICT\(day, category, event_name, app_version, release_channel, os_category\)/i);
-  assert.doesNotMatch(sql, /customer_name|invoice_contents|file_path|raw_ip/i);
+test("migration removes raw event history and retains only bounded event-ID deduplication", () => {
+  const sql = fs.readFileSync(new URL("../migrations/0015_minimize_buscore_product_telemetry.sql", import.meta.url), "utf8");
+  assert.match(sql, /DROP TABLE IF EXISTS buscore_product_events_raw/i);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS buscore_product_event_dedup/i);
+  assert.doesNotMatch(sql, /installation_id|client_ts|app_version|event_name/i);
 });
 
 test("Worker route integrates telemetry secret and CORS without touching other services", async () => {

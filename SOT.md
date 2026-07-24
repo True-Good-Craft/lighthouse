@@ -1,5 +1,15 @@
 # Lighthouse — Source of Truth
 
+## BUS Core acknowledged minimal product signals — v1.27.0 deployed
+
+`POST /telemetry/v1/events` acknowledges the submitted `event_id` only after its bounded deduplication key and aggregate increment have atomically succeeded, or the ID is recognized as a duplicate. BUS Core may remove a queued event only when that exact ID appears in `acknowledged_event_ids`; a generic 2xx response is not delivery proof. Receiver errors and rate limits remain unacknowledged. Migration 0015 removes raw BUS Core product-event history and persistent installation identifiers, retaining only bounded event-ID deduplication keys and aggregate counters.
+
+Current events contain only `event_id`, `event_name`, client timestamp, app version, release channel, and OS category. No persistent installation identifier or event-specific content is accepted into persistence. Legacy payloads containing an installation ID are accepted temporarily for rollout compatibility, but that field is discarded before persistence. The allowlist is limited to first launch, locally deduplicated version adoption and successful feature-use milestones, startup/manual update checks, successful update staging, and reliability events.
+
+Lighthouse must not collect or report module opens, active days, sessions, returning installations, engagement, retention, cross-day profiles, or any measure built by linking unrelated events from one machine. Bare BUS Core reports return literal accepted aggregate counts only. Route-level `/update/check` requests remain separate request counts; acknowledged product events distinguish startup and manual checks.
+
+Migration `0015_minimize_buscore_product_telemetry.sql` was applied remotely on 2026-07-24 before Worker deployment. Remote verification confirmed the raw table and legacy trigger were removed, the bounded dedup table exists, and the existing aggregate remained unchanged. Worker 1.27.0 was deployed at `2026-07-24T16:17:29.479Z` as Cloudflare Version ID `bff7362e-1896-4a1c-b104-ff2afc2351bc`. Non-persisting production probes confirmed the current no-installation-ID payload shape and rejection of removed `active_day`; dedup and aggregate product-event counts remained unchanged.
+
 ## TGC consented commercial analytics — v1.26.0 branch implementation
 
 The protected `GET /report?view=tgc` view is the canonical on-demand source for True Good Craft website analytics. It reads existing `site_events_raw` storage and returns consented page-execution metrics for today, 7 days, and 30 days: page views, sessions, visitors, first/returning visits, commercial intent, form funnel outcomes, deep-scroll and engaged-time milestones, average page-load/LCP/CLS, top events, paths, sources, campaigns, and sections. It never returns visitor IDs, session IDs, rate identifiers, user-agent hashes, request IDs, or form contents.
@@ -10,7 +20,7 @@ The server enforces the TGC event allowlist, production-origin match, path/URL c
 
 Lighthouse remains the source of truth. Agent Smith may present this protected aggregate view through `/tgc`. Airtable may receive curated periodic KPI/campaign/content/experiment summaries later, but must not receive raw events or stable identifiers.
 
-Production deployment is governed by `.github/workflows/deploy.yml`. It runs the complete typecheck/test gate and deploys only on manual dispatch or a main-branch commit explicitly marked `[deploy lighthouse]`; ordinary pushes do not deploy. Wrangler deployment preserves separately provisioned Worker secrets. Schema migrations remain a separate, explicit operation and this release requires none.
+Production deployment is governed by `.github/workflows/deploy.yml`. It runs the complete typecheck/test gate and deploys only on manual dispatch or a main-branch commit explicitly marked `[deploy lighthouse]`; ordinary pushes do not deploy. Wrangler deployment preserves separately provisioned Worker secrets. Schema migrations remain a separate, explicit operation. Migration 0015 was remotely verified before Worker 1.27.0 deployment.
 
 ## BUS Core traffic truth and bounded delivery work — v1.25.0 deployed
 
@@ -35,16 +45,16 @@ The implemented contract provides:
 - rejection of unknown events and unexpected fields;
 - separation of release/update signals from product-usage events;
 - bounded retention and privacy-preserving rate controls;
-- literal aggregates for installation/release observations, version distribution, coarse module use, workflow milestones, and reliability; voluntary Managed BUS inquiries remain a separate lead-system contract and are not product telemetry;
+- literal aggregates for first-launch/release observations, version distribution, one-time successful feature-use milestones, startup/manual update checks, staged updates, and reliability; voluntary Managed BUS inquiries remain a separate lead-system contract and are not product telemetry;
 - a prohibition on customer, supplier, employee, item, recipe, invoice, document, filepath, exact financial, exact quantity, raw database, machine-fingerprint, or persistent raw-IP content.
 
-The approved BUS Core installation identifier is random and locally generated. It must not be derived from hardware, username, filesystem, network, account, or machine-fingerprint data. Lighthouse availability must remain optional and non-blocking for the self-managed product.
+Current BUS Core product events contain no persistent installation identifier. Legacy payloads may be accepted during rollout compatibility, but any legacy installation-ID field is discarded before persistence and cannot be used for linking. Lighthouse availability must remain optional and non-blocking for the self-managed product.
 
-The contract endpoint is `POST /telemetry/v1/events`. Its exact payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible, and the server derives the category. Accepted raw events are retained for 30 UTC-day buckets, aggregates for 400, and rate buckets for 2 days. Rate keys are HMAC-SHA256 values keyed by `TELEMETRY_RATE_LIMIT_SECRET`: product telemetry rotates by UTC minute; qualified update-check and artifact-request counting use UTC-day buckets with separate scopes. Raw IP and unsalted IP hashes are not retained. Event IDs provide idempotent retry deduplication, and migration 0013's `AFTER INSERT` trigger makes the accepted raw insert and aggregate increment atomic.
+The contract endpoint is `POST /telemetry/v1/events`. Its current payload is defined by `contracts/buscore-product-telemetry-v1.json`; root and context keys are exact, not extensible, and the server derives the category. Event-ID deduplication keys are retained for 30 UTC-day buckets, aggregates for 400, and rate buckets for 2 days. No persistent installation identifier or raw product-event history is retained. Rate keys are HMAC-SHA256 values keyed by `TELEMETRY_RATE_LIMIT_SECRET`. Event IDs provide idempotent retry deduplication, and the batched deduplication insert plus conditional aggregate increment is atomic.
 
-Bare BUS Core `/report` output includes additive `product_telemetry` windows for today, 7 days, and 30 days. Output is literal: category and event counts, version/channel/OS distributions, first-launch counts, update-check delivery observations, and counts of random installation IDs observed on at least two received UTC days within the retained raw window. It returns no installation IDs and does not call those counts people, users, active installs, or retention. The `/update/check` counter is the authoritative total of qualified, rate-bounded release-route requests; it is not proof of client authenticity. `product_telemetry.update_check_delivery_observations` remains separate.
+Bare BUS Core `/report` output includes additive `product_telemetry` windows for today, 7 days, and 30 days. Output is literal: category and event counts, version/channel/OS distributions, acknowledged first-launch and first-success counts, version-first-seen events, startup/manual update-check observations, staged updates, and reliability events. It contains no installation IDs, active-day counts, returning-installation measures, sessions, engagement, or retention. The route-level `/update/check` counter remains a qualified request total rather than an authenticated-client count.
 
-Existing public-site `/metrics/event` and legacy `/metrics/pageview` behavior remain unchanged. BUS Core client telemetry must not ship until this Lighthouse migration and Worker version are deployed and production payload verification passes.
+Existing public-site `/metrics/event` and legacy `/metrics/pageview` behavior remain unchanged. The Lighthouse migration, Worker deployment, and non-persisting production contract verification required before the narrowed BUS Core client ships are complete.
 
 ## 1. System Overview
 

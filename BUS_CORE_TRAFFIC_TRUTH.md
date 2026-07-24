@@ -22,6 +22,7 @@ This document is the source of truth for BUS Core public artifact delivery and d
 | Site `download_click` | BUS Core site -> Lighthouse event ingest | Best-effort anonymous intent event | Raw intent; probable-human proxy only after acceptance and daily deduplication |
 | `POST /api/early-access` | BUS Core site Worker + leads D1 | Same-origin, Turnstile-validated production lead | Voluntary lead only |
 | `POST /api/managed-bus-inquiry` | BUS Core site Worker + leads D1 | Same-origin, Turnstile-validated production inquiry | Voluntary lead only |
+| `POST /telemetry/v1/events` | BUS Core app -> Lighthouse Worker + D1 | Optional strict event ingest with exact event-ID acknowledgement after idempotent persistence | Acknowledged opted-in product signal |
 
 Known health checks, update checks, manifest reads, and internal/test traffic are excluded from artifact counters because they do not match the canonical release route. The configured ignored IP is also excluded from deduplicated-client credit, while raw delivery counters remain truthful about Worker traffic.
 
@@ -45,11 +46,12 @@ Known health checks, update checks, manifest reads, and internal/test traffic ar
 - `successful_download_redirects`: successful 302 responses from `/download/latest`. These are not artifact responses.
 - `artifact_downloads`: legacy compatibility counter. Historical values have changed qualification rules over time. New reporting must label it `legacy qualified artifact count` when the new measurement tables are unavailable; it must never be silently presented as raw traffic, people, installs, or completion.
 
-Confirmed product signals remain separate and outrank all proxies: first launches, returning-installation telemetry signals, known-version update checks, update successes, and update failures. Lead records remain separate from analytics and contain only voluntarily submitted form data plus documented point-in-time attribution.
+Confirmed product signals remain separate and outrank all proxies. They are limited to acknowledged first launch, locally deduplicated version adoption, startup/manual update checks, successful update staging, reliability, and one-time successful use of major product areas. Workflow outcomes may remain unobserved when telemetry is off or delivery is not acknowledged. Product events contain no persistent installation identifier and cannot be linked into active-day, returning-installation, session, engagement, retention, or cross-day profiles. Qualified route-level update checks are request counts only. Lead records remain separate from analytics and contain only voluntarily submitted form data plus documented point-in-time attribution.
 
 ## Privacy and retention
 
 - New artifact and intent truth tables contain daily aggregates only. No raw IP address, HMAC client key, user agent, email, or request identifier is stored in them.
+- BUS Core product telemetry retains only event-ID deduplication keys for 30 days and aggregate counters for 400 days. It retains no raw product-event history or persistent installation identifier.
 - HMAC inputs use `TELEMETRY_RATE_LIMIT_SECRET`, are scoped by purpose/version/day, and are retained only in the existing short-lived abuse-control table. The secret is never logged or returned.
 - Daily artifact and intent aggregates are retained for 400 days, then pruned by the scheduled Worker. The existing short-lived rate buckets remain on their two-day retention policy.
 - Raw site-event retention remains 30 days under the existing policy. Lead retention and deletion remain governed by the BUS Core site privacy/SOT documents and are not joined to analytics identity.

@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.27.0] - 2026-07-24
+
+- Added explicit event-ID acknowledgements to successful and duplicate BUS Core product-telemetry responses so clients retain queued events until Lighthouse confirms idempotent persistence.
+- Limited the event contract to release/update/reliability evidence and locally deduplicated first successful use of major product areas. Removed active-day, module-open, returning-installation, and retention reporting.
+- Removed the persistent installation identifier from current payloads and reporting. Legacy payloads are accepted only for rollout compatibility and the identifier is discarded before persistence.
+- Added migration 0015 to remove raw product-event history and retain only bounded event-ID deduplication keys plus aggregate counters.
+- Split accepted update checks into startup and manual event counts while retaining legacy unspecified update-check acceptance.
+- Applied migration 0015 remotely on 2026-07-24; verification confirmed the raw product-event table and trigger were removed, the dedup table exists, and the existing aggregate remained unchanged.
+- Deployed Worker 1.27.0 at `2026-07-24T16:17:29.479Z` as Cloudflare Version ID `bff7362e-1896-4a1c-b104-ff2afc2351bc`.
+- Verified the production canonical endpoint with non-persisting probes: the no-installation-ID payload shape reaches current validation, removed `active_day` is rejected, and no dedup or aggregate product event was added.
+
 ## [1.26.0] - 2026-07-18
 
 - Added the protected `GET /report?view=tgc` commercial analytics view with today, 7-day, and 30-day acquisition, audience, engagement, funnel, performance, content, and health summaries.
