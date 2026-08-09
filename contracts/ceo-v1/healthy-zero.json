@@ -1,7 +1,7 @@
 {
   "view": "ceo",
-  "report_contract_version": "1.0",
-  "metric_definition_version": "1.0",
+  "report_contract_version": "1.1",
+  "metric_definition_version": "1.1",
   "report_id": "00000000-0000-4000-8000-000000000001",
   "generated_at": "2026-08-08T13:00:00.000Z",
   "display_timezone": "America/Toronto",
@@ -79,7 +79,7 @@
       "availability": "available",
       "freshness": "unknown",
       "data_through": null,
-      "definition_start_day": "2026-07-18",
+      "definition_start_day": "2026-08-10",
       "coverage": {
         "today": "partial",
         "latest_complete_day": "partial",
@@ -138,10 +138,10 @@
       "definition_start_day": "2026-07-06",
       "coverage": {
         "today": "partial",
-        "latest_complete_day": "full",
-        "last_7_complete_days": "full",
-        "previous_7_complete_days": "full",
-        "last_30_complete_days": "full"
+        "latest_complete_day": "partial",
+        "last_7_complete_days": "partial",
+        "previous_7_complete_days": "partial",
+        "last_30_complete_days": "partial"
       },
       "reason_code": null
     }
@@ -155,11 +155,11 @@
       "last_30_complete_days": 0
     },
     "possible_download_interest_actions": {
-      "today": 0,
-      "latest_complete_day": 0,
-      "last_7_complete_days": 0,
-      "previous_7_complete_days": 0,
-      "last_30_complete_days": 0
+      "today": null,
+      "latest_complete_day": null,
+      "last_7_complete_days": null,
+      "previous_7_complete_days": null,
+      "last_30_complete_days": null
     },
     "full_artifact_responses_offered": {
       "today": 0,
@@ -303,7 +303,8 @@
     "artifact_transfer_completion_known": false,
     "source_credits_are_people": false,
     "source_credits_are_unique_across_days": false,
-    "download_interest_distinguishes_page_visit_from_file_click": false,
+    "download_interest_distinguishes_page_visit_from_file_click": true,
+    "download_interest_includes_pre_definition_history": false,
     "product_telemetry_is_opt_in_only": true
   }
 }

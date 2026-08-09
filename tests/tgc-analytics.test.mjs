@@ -21,7 +21,7 @@ function payload(overrides = {}) {
     src: "newsletter",
     utm: { source: "newsletter", medium: "email", campaign: "summer" },
     device: "desktop",
-    viewport: "1440x900",
+    viewport: "medium",
     lang: "en-CA",
     tz: "America/Toronto",
     anon_user_id: "v_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
@@ -49,6 +49,55 @@ test("TGC payload discards superseded identity and strips URL detail", () => {
   assert.equal(parsed.anon_user_id, null);
   assert.equal(parsed.session_id, null);
   assert.equal(parsed.is_new_user, 0);
+  assert.equal(parsed.viewport, "medium");
+  assert.equal(parsed.event_value, null);
+});
+
+test("TGC stores coarse viewport buckets while accepting the rolling exact-dimension producer", () => {
+  for (const viewport of ["small", "medium", "large"]) {
+    assert.equal(parseCanonicalEventPayload(payload({ viewport }))?.viewport, viewport);
+  }
+  assert.equal(parseCanonicalEventPayload(payload({ viewport: "767x900" }))?.viewport, "small");
+  assert.equal(parseCanonicalEventPayload(payload({ viewport: "768x900" }))?.viewport, "medium");
+  assert.equal(parseCanonicalEventPayload(payload({ viewport: "1199x900" }))?.viewport, "medium");
+  assert.equal(parseCanonicalEventPayload(payload({ viewport: "1200x900" }))?.viewport, "large");
+  assert.equal(parseCanonicalEventPayload(payload({ viewport: "1440x900" }))?.viewport, "large");
+  assert.equal(parseCanonicalEventPayload(payload({ viewport: "wide" })), null);
+
+  const buscore = parseCanonicalEventPayload(payload({
+    site_key: "buscore",
+    path: "/downloads",
+    url: "https://buscore.ca/downloads",
+    viewport: "1440x900",
+  }));
+  assert.equal(buscore?.viewport, "1440x900");
+});
+
+test("TGC event values are reduced to event-specific safe enums", () => {
+  assert.equal(parseCanonicalEventPayload(payload({
+    event_name: "form_start",
+    event_value: "audit-form",
+  }))?.event_value, "audit");
+  assert.equal(parseCanonicalEventPayload(payload({
+    event_name: "form_submit_failure",
+    event_value: "person@example.com typed this",
+  }))?.event_value, "other");
+  assert.equal(parseCanonicalEventPayload(payload({
+    event_name: "js_error",
+    event_value: "unhandled_rejection",
+  }))?.event_value, "unhandled_rejection");
+  assert.equal(parseCanonicalEventPayload(payload({
+    event_name: "js_error",
+    event_value: "ReferenceError at /private/person@example.com",
+  }))?.event_value, "other");
+  assert.equal(parseCanonicalEventPayload(payload({
+    event_name: "outbound_click",
+    event_value: "https://private.example/users/alice",
+  }))?.event_value, "other");
+  assert.equal(parseCanonicalEventPayload(payload({
+    event_name: "services_interest",
+    event_value: "person@example.com",
+  }))?.event_value, null);
 });
 
 test("TGC payload rejects unknown events, mismatched paths, and foreign origins", () => {

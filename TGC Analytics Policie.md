@@ -47,11 +47,11 @@ TGC does **not** collect unnecessary personal information just because it is ava
 
 BUS Core Self-Managed remains free, open-source, customer-operated, and fully usable without a subscription or forced hosted service. TGC Managed BUS is the optional paid operating service direction.
 
-Limited BUS Core product telemetry is approved for future implementation only through a versioned Lighthouse contract. The current BUS Core release does not yet emit that broader product telemetry.
+BUS Core product telemetry is implemented through a versioned, optional Lighthouse contract. BUS Core remains fully functional when telemetry is disabled or Lighthouse is unavailable, and Lighthouse acknowledges an event ID only after idempotent aggregate persistence or recognition of that exact duplicate.
 
-Permitted future categories are installation/release state, coarse module openings, first-workflow milestones, backup/restore/import outcomes, and reliability failures. The contract must reject customer or supplier names, employee names, item or recipe names, invoice contents, email addresses, business documents, file paths, exact financial values, exact inventory or production quantities, raw database records, machine fingerprints, persistent raw IP identifiers, and detailed clickstream histories.
+The current allowlist is first launch, locally deduplicated version-adoption and first-success milestones, startup/manual update checks, successful update staging, and reliability events. Module openings, active days, sessions, returning-installation measures, engagement, retention, and cross-day profiles are not collected. The contract rejects customer or supplier names, employee names, item or recipe names, invoice contents, email addresses, business documents, file paths, exact financial values, exact inventory or production quantities, raw database records, machine fingerprints, persistent raw IP identifiers, and detailed clickstream histories.
 
-A random local installation identifier may be used only for installation-level product signals. It must not be hardware-derived or secretly joined to voluntary contact data. Identity and commercial interest must come from separate voluntary managed-service, support, feedback, or signup actions.
+The current payload and persistence contract contains no persistent installation identifier. Legacy payloads may include one only for rollout compatibility, but Lighthouse discards it before persistence. Event-ID deduplication keys expire after 30 UTC-day buckets and must not be used to build an installation profile. Identity and commercial interest remain separate voluntary managed-service, support, feedback, or signup actions.
 
 ## Types of Analytics
 * Pageviews
@@ -314,8 +314,8 @@ Any event not on this list must be declared as a site-specific Layer 5 Extension
   * Layer 2 (Event): Yes
   * Layer 3 (Traffic): No
   * Layer 4 (Identity): No
-  * Layer 5 (Extension): No active extensions currently
-* **Report Expectations:** Event telemetry only. No traffic layer or identity layer.
+  * Layer 5 (Extension): Yes — the bounded `email_click`, `buscore_outbound_click`, `services_interest`, `infrastructure_cta_click`, `infrastructure_package_interest`, `ops_care_interest`, `audit_cta_click`, form-outcome, and `js_error` events outside the shared fleet taxonomy
+* **Report Expectations:** Event telemetry only. The active Layer-5 allowlist adds no traffic or identity layer.
 
 ## 3. Global Filter Rules
 * **Production Default:** `production_only` defaults to `true`.
@@ -323,11 +323,15 @@ Any event not on this list must be declared as a site-specific Layer 5 Extension
 * **Null Honesty:** Unsupported metrics must remain null or omitted by rule. Normalization does NOT mean manufacturing parity. Do not fake identity or traffic data to make reports look uniform.
 
 ## 4. Report View Families
-Lighthouse is the single source of truth for reporting data. The `GET /report` endpoint supports four strict view families.
+Lighthouse is the single source of truth for reporting data. The protected `GET /report` endpoint supports the following current report families.
+* **Legacy Mode (Bare `/report`)**: The older, BUS Core-centric shape. Activated only when `view` is omitted or blank. Explicit `view=legacy` is strictly invalid.
 * **`view=site`**: The normalized, single-site reporting shape. Requires a valid `site_key`. Returns `{ view: "site", generated_at, scope, summary, traffic, events, identity, health }`.
 * **`view=fleet`**: The normalized fleet-wide summary shape. Returns `{ view: "fleet", generated_at, sites }`.
+* **`view=tgc`**: The TGC-specific protected diagnostic and rollback-compatible aggregate shape.
 * **`view=source_health`**: The telemetry-integrity shape, focused on dropped/invalid rates. Returns `{ view: "source_health", generated_at, sites }`.
-* **Legacy Mode (Bare `/report`)**: The older, BUS Core-centric shape. Activated only when `view` is omitted or blank. Explicit `view=legacy` is strictly invalid.
+* **`view=asset`**: The protected asset-report contract.
+* **`view=monthly`**: The protected monthly-report contract.
+* **`view=ceo`**: The protected CEO decision-report contract with source availability, freshness, and coverage.
 
 ## 5. Normative JSON Examples
 The top-level schema for `view=site` is identical across all properties. The difference between a `legacy_hybrid` and an `event_only` site is dictated by `null` values and boolean flags inside the payload, not by a different JSON structure.

@@ -2,7 +2,7 @@
 
 ## Status
 
-This is the product-specific declaration for `site_key=tgc_site`. It follows the company-wide aggregate-only and no-persistent-identifier defaults. It does not change BUS Core, Star Map, or service-intake data policy.
+This is the product-specific declaration for `site_key=tgc_site`. It follows the company-wide aggregate-only and no-persistent-identifier defaults. It does not change BUS Core, Star Map, or service-intake data policy. Worker 1.29.0 deployed this bounded lane; 1.29.1 adds ingestion-level viewport and event-value conformance without a schema migration.
 
 ## Purpose and levels
 
@@ -24,13 +24,15 @@ Essential-only choice, Global Privacy Control, and Do Not Track keep optional an
 - production origin and path, with query and fragment removed
 - origin-and-path-only referrer
 - current `src` and bounded UTM attribution
-- allowlisted semantic event name and bounded event value
+- allowlisted semantic event name and an event-specific sanitized enum/category where that event needs a value; otherwise `null`
 - coarse device, `small`/`medium`/`large` viewport bucket, language, timezone, and edge country
 - form identifier and start, submit-attempt, success, failure, or fallback outcome
 - sanitized error category
 - test-mode marker
 
-Allowed events are `page_view`; selected outbound/contact/email/BUS Core/service-interest actions; `form_start`; `form_submit_attempt`; `form_submit_success`; `form_submit_failure`; `form_submit_fallback`; and `js_error`.
+The exact allowlist is `page_view`, `outbound_click`, `contact_click`, `email_click`, `buscore_outbound_click`, `services_interest`, `infrastructure_cta_click`, `infrastructure_package_interest`, `ops_care_interest`, `audit_cta_click`, `form_start`, `form_submit_attempt`, `form_submit_success`, `form_submit_failure`, `form_submit_fallback`, and `js_error`. Events outside the shared fleet taxonomy are the active, bounded TGC Layer-5 extension; this classification does not add a traffic or identity layer.
+
+Producers should send viewport as `small`, `medium`, or `large`. During the rolling producer update, Lighthouse also accepts exact lowercase `WIDTHxHEIGHT`, immediately normalizes it by width (`small` below 768, `medium` from 768 through 1199, `large` from 1200 upward), and stores only the bucket. Lighthouse normalizes form identifiers to `infrastructure`, `audit`, `contact`, `general`, or `other`. `js_error` values are limited to `script_error`, `unhandled_rejection`, `resource_error`, `network_error`, `form_error`, `unknown`, or `other`. `outbound_click` values are limited to `buscore`, `github`, `contact`, `email`, `partner`, or `other`. Unrecognized non-empty values in those three valued families become `other`; absent/blank values and values for all remaining accepted TGC event names are stored as `null`.
 
 ## Prohibited data
 

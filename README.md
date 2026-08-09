@@ -1,22 +1,28 @@
 # buscore-lighthouse
 
+## 1.29.1 trust/privacy conformance
+
+Version 1.29.1 keeps scheduled/public metadata `HEAD` probe failures out of the general Lighthouse error counter while genuine manifest `GET` failures remain counted; service-probe records remain authoritative and raw/HEAD artifact accounting is unchanged. CEO contract and metric-definition version `1.1` require a canonical Lighthouse artifact URL for possible download interest and start that trusted metric on `2026-08-10`; earlier intent rows are excluded rather than relabeled. Available sparse sources report partial—not full—coverage, and unavailable source-dependent detail is `null` instead of a plausible empty array. For `tgc_site`, Lighthouse stores only coarse `small`/`medium`/`large` viewport buckets and event-specific sanitized values. It does not change the D1 schema and requires no migration.
+
+Worker 1.29.1 was deployed on `2026-08-09T16:41:20.004814Z` as Cloudflare Version ID `ee320e1a-9ceb-4d88-a848-fd7ae0e9e3bc` after the full gate and a no-pending-migration check. The prior 1.29.0 deployment was Cloudflare Version ID `757c24b7-fa98-40a5-8ea0-0e551d69c64f`.
+
 ## CEO decision report
 
-Version 1.28.0 adds authenticated `GET /report?view=ceo`, a strict additive contract for the BUS Core + TGC CEO dashboard. It reports exact UTC windows, source availability/freshness/coverage, literal BUS Core discovery/distribution/product/reliability facts, consented TGC page views, and voluntary inquiry aggregates. Query failures are `null` and unavailable, never zero; a successful source with no observation history is explicitly `unknown`, not believable fresh zero. The contract and aggregate-only fixtures live in `contracts/ceo-v1/`.
+Version 1.28.0 introduced authenticated `GET /report?view=ceo`; contract 1.0 was deployed with Worker 1.29.0, and strict contract and metric-definition version 1.1 are deployed with Worker 1.29.1. It reports exact UTC windows, source availability/freshness/coverage, literal BUS Core discovery/distribution/product/reliability facts, consented TGC page views, and voluntary inquiry aggregates. Query failures are `null` and unavailable, never zero; a successful source with no observation history is explicitly `unknown`, not believable fresh zero. The contract and aggregate-only fixtures live in `contracts/ceo-v1/`.
 
 The CEO lane changes no existing report view or database table. It uses the current UTC day only for explicit partial activity, uses completed UTC days for daily and weekly decisions, and never calls artifact responses or daily source credits people, installations, completed downloads, or adoption. Agent Smith owns the final status and wording.
 
 ## BUS Core minimal product telemetry
 
-Production Worker 1.27.0 uses exact event-ID acknowledgement with bounded deduplication and aggregate-only product reporting. Current BUS Core product events contain no persistent installation identifier and are limited to first launch, locally deduplicated release/first-success milestones, startup/manual update checks, staged updates, and reliability. Module opens, active days, returning-installation measures, engagement, sessions, retention, and cross-day profiles are prohibited.
+Production Worker 1.29.0 retains the 1.27.0 exact event-ID acknowledgement contract with bounded deduplication and aggregate-only product reporting. Current BUS Core product events contain no persistent installation identifier and are limited to first launch, locally deduplicated release/first-success milestones, startup/manual update checks, staged updates, and reliability. Module opens, active days, returning-installation measures, engagement, sessions, retention, and cross-day profiles are prohibited.
 
 Migration `0015_minimize_buscore_product_telemetry.sql` was applied before the 2026-07-24 Worker deployment. Product telemetry retains event-ID deduplication keys for 30 UTC-day buckets, aggregate counters for 400 UTC-day buckets, and rate-control buckets for two days. It retains no raw product-event history.
 
 ## TGC website analytics
 
-Version 1.29.0 narrows the consented `site_key=tgc_site` lane to aggregate, decision-useful events. Lighthouse is the raw-event and aggregate-report source of truth; the protected operator view remains `GET /report?view=tgc` using the existing `X-Admin-Token` contract.
+Production Worker 1.29.0 narrows the consented `site_key=tgc_site` lane to aggregate, decision-useful events. Lighthouse is the raw-event and aggregate-report source of truth; the protected operator view remains `GET /report?view=tgc` using the existing `X-Admin-Token` contract.
 
-The server accepts page views, selected commercial/contact/outbound interest, form start/attempt/outcome, and sanitized errors. It discards visitor/session fields and rejects the superseded lifecycle, field-level form, scroll/engagement/section, and first-party web-vital event families. The existing TGC report shape remains available for rollback and historical rows; Smith's CEO lane uses page views and voluntary inquiries only. Raw TGC events are retained for 90 days; rotating keyed rate identifiers are retained for two days. See `TGC_SITE_ANALYTICS_POLICY.md` for the current boundaries.
+The server accepts page views, selected commercial/contact/outbound interest, form start/attempt/outcome, and sanitized errors. Version 1.29.1 accepts a producer-supplied coarse viewport label or, for rolling compatibility, exact lowercase `WIDTHxHEIGHT`; exact dimensions are immediately normalized by width to `small` below 768, `medium` from 768 through 1199, or `large` from 1200 upward, and only that bucket is stored. Event-specific value sanitization turns recognized form, error, and outbound values into bounded categories, unrecognized non-empty values into `other`, and discards absent/blank values or values on the remaining TGC events. Lighthouse discards visitor/session fields and rejects the superseded lifecycle, field-level form, scroll/engagement/section, and first-party web-vital event families. The existing TGC report shape remains available for rollback and historical rows; Smith's CEO lane uses page views and voluntary inquiries only. Raw TGC events are retained for 90 days; other standardized-site raw events retain the general 30-day policy, and rotating keyed rate identifiers are retained for two days. See `TGC_SITE_ANALYTICS_POLICY.md` for the current boundaries.
 
 Production deploys use the gated `.github/workflows/deploy.yml`: full tests first, then Wrangler only on manual dispatch or an explicitly marked release merge. Migrations remain separate and are never implied by deployment.
 
@@ -24,7 +30,7 @@ BUS Core artifact delivery and demand semantics are defined in `BUS_CORE_TRAFFIC
 
 ## BUS Core transition direction
 
-Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migrations 0013 and 0015 plus production Worker 1.27.0 provide strict aggregate-only BUS Core product telemetry and qualified, rate-bounded `/update/check` and artifact-request analytics.
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migrations 0013 and 0015 plus production Worker 1.29.0 provide strict aggregate-only BUS Core product telemetry and qualified, rate-bounded `/update/check` and artifact-request analytics.
 
 The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
 
@@ -71,7 +77,7 @@ Lighthouse currently does seven things:
 6. Pulls one daily Buscore traffic snapshot from the Cloudflare GraphQL Analytics API into D1 on a scheduled cron.
 7. Accepts strict BUS Core product telemetry and exposes literal aggregate product-telemetry windows when migration 0013 is present.
 
-For BUS Core, the authenticated site report also includes an aggregate-only `operator_summary` that combines Lighthouse counted-intent events with early-access lead attribution totals when the optional `BUSCORE_LEADS_DB` binding is configured. It does not post to Discord.
+For BUS Core, the authenticated site report also includes an aggregate-only `operator_summary` that combines Lighthouse counted-intent events with early-access lead attribution totals when the optional `BUSCORE_LEADS_DB` binding is configured. The CEO report uses the same optional read binding for voluntary-inquiry totals and fixed privacy-safe attribution buckets. It does not post to Discord.
 
 It does not implement retries, unload analytics, or a broad analytics warehouse.
 It exposes limited anonymous continuity and identity-style reporting only where supported (BUS Core legacy_hybrid), while `event_only` sites keep identity as `null`.
@@ -141,7 +147,7 @@ Current site capability matrix:
 |---|---|---|---|---|---|---|---|
 | BUS Core (`buscore`) | `legacy_hybrid` | Yes | Yes | Yes | Yes | Not active by default | Intentionally richer; do not force false parity. |
 | Star Map Generator (`star_map_generator`) | `event_only` | Yes | Yes | No | No | Yes | No traffic layer and no identity layer by current design. |
-| True Good Craft (`tgc_site`) | `event_only` | Yes | Yes | No | No | No (currently) | No active extension layer right now. |
+| True Good Craft (`tgc_site`) | `event_only` | Yes | Yes | No | No | Yes | Active bounded commercial-interest, form-outcome, and sanitized-reliability extensions; no identity layer. |
 
 Operator request language standard:
 - Future telemetry requests should be expressed with support classes and layers.
@@ -200,18 +206,20 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 
 | Method | Path | Behavior |
 |--------|------|----------|
-| GET | `/manifest/core/stable.json` | Return manifest JSON from R2 (no counting) |
+| GET | `/manifest/core/stable.json` | Return manifest JSON from R2; success is uncounted, while a genuine GET miss/error increments the error counter |
+| HEAD | `/manifest/core/stable.json` | Return public manifest metadata with no body; scheduled liveness uses this route and a miss/error does not increment the error counter |
 | GET | `/update/check` | Always return public manifest JSON; count only strict, plausible, rate-allowed BUS Core v1.4.0+ request tuples |
 | GET | `/download/latest` | Validate latest manifest download URL and return `302` redirect intent only |
 | GET | `/releases/:filename` | Serve a release artifact and count at most one qualified full request per IP, release, and UTC day |
+| HEAD | `/releases/:filename` | Return public release metadata with no body; record raw/HEAD truth but never a successful artifact response or daily source credit |
 | POST | `/metrics/pageview` | Accept first-party JS-fired pageview JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | POST | `/metrics/event` | Accept standardized multi-site event JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | POST | `/telemetry/v1/events` | Accept one strict BUS Core schema-1.0 event, apply a keyed rotating rate control, and return `202 accepted`, `200 duplicate`, or a bounded error |
 | GET | `/report` | Return protected aggregate report; legacy BUS Core output includes literal `product_telemetry` windows when migration 0013 is available |
-| GET | `/report?view=ceo` | Return the protected CEO contract `1.0` with exact windows and per-source availability; no legacy view is changed |
+| GET | `/report?view=ceo` | Return the protected CEO contract and metric-definition version `1.1` with exact windows and per-source availability; no legacy view is changed |
 
 Notes:
-- `/manifest/core/stable.json` never increments counters.
+- Successful `/manifest/core/stable.json` requests are uncounted. A genuine GET miss/error increments `metrics_daily.errors`; a HEAD miss/error does not.
 - `/download/latest` never increments `downloads` directly.
 - `/releases/:filename` increments `downloads` only when an existing artifact receives a full `GET` with Cloudflare client IP context, the configured rate secret, a non-ignored IP, and allowance under the one-count-per-IP-per-release-per-UTC-day gate.
 - Artifact delivery remains public and independent from counting. Missing-secret/IP, ignored-IP, over-limit, `Range`, and rate-storage-failure cases contribute zero analytics without blocking a valid artifact response.
@@ -226,14 +234,17 @@ Notes:
 - `POST /metrics/pageview` and its `OPTIONS` preflight only grant browser CORS access to `https://buscore.ca` and `https://www.buscore.ca`; Lighthouse does not use wildcard allow-origin on that route.
 - The deployed site emitter contract is accepted as-is: page-load-only, beacon-first, `fetch(..., { keepalive: true })` fallback, no retries, and no session logic.
 - `POST /metrics/event` is site-aware through the tracked-site registry in `src/index.ts`: each site entry defines `site_key`, `production_hosts`, `allowed_origins`, `staging_hosts`, and `production_only_default`.
+- Standardized-event rows store `ip_hash`, `user_agent_hash`, and `request_id` as `null`. When a client IP and `TELEMETRY_RATE_LIMIT_SECRET` are available, a purpose-scoped keyed HMAC identifier rotates each minute and exists only in the two-day `site_event_rate_limit` abuse-control table.
 
 ## Report Response
 
-### CEO V1
+### CEO V1.1
 
 `GET /report?view=ceo` is the preferred decision-report input. Its strict schema is `contracts/ceo-v1/report.schema.json`. The window keys are `today`, `latest_complete_day`, `last_7_complete_days`, `previous_7_complete_days`, and `last_30_complete_days`. Every metric carries those same keys and is either a finite aggregate or `null` when its source is unavailable.
 
-Source state distinguishes `available` from `unavailable`, `fresh` from `stale` or `unknown`, and `full` from `partial` or `unavailable` coverage. A successful aggregate query can return numeric zero, but without an all-history watermark its source is `unknown` with `source_history_missing`; an old watermark is `stale` with `source_data_stale`. Voluntary-inquiry attribution uses only 14 fixed privacy-safe buckets and never emits a raw label. The endpoint is independently guarded per source, aggregate-only, admin-token protected, and contains no PII or persistent identifiers. Its configured-leads path uses nine D1 statements in batches of at most three; client-supplied app versions are SQL-ranked and limited to ten before reaching Worker memory. Strict Ajv 2020 tests validate all fixtures plus representative live producer outputs. Existing views remain available for diagnostics and rollback.
+Source state distinguishes `available` from `unavailable`, `fresh` from `stale` or `unknown`, and `full`, `partial`, or `unavailable` coverage. The contract retains `full` for a future source with explicit completeness proof. Current sparse event/counter sources do not prove that every day in a decision window was observable, so available current windows remain partial; they do not claim full coverage from a recent watermark alone. Trusted artifact-click interest begins on `2026-08-10`: earlier intent rows are excluded from sums and the watermark, wholly earlier windows are `null`, and spanning or later windows contain partial totals from the boundary forward. The `buscore_site` source definition reflects that boundary and the limitations explicitly state that pre-definition history is excluded. A successful aggregate query can return numeric zero, but without an all-history watermark its source is `unknown` with `source_history_missing`; an old watermark is `stale` with `source_data_stale`. When a source is unavailable, dependent inquiry-attribution, product-version/failure, or service-probe detail is `null`, not an empty list. Voluntary-inquiry attribution uses only 14 fixed privacy-safe buckets and never emits a raw label. The endpoint is independently guarded per source, aggregate-only, admin-token protected, and contains no PII or persistent identifiers. Its configured-leads path uses nine D1 statements in batches of at most three; client-supplied app versions are SQL-ranked and limited to ten before reaching Worker memory. Strict Ajv 2020 tests validate all fixtures plus representative live producer outputs. Existing views remain available for diagnostics and rollback.
+
+The current protected report families are bare legacy `/report`, `view=fleet`, `view=site`, `view=tgc`, `view=source_health`, `view=asset`, `view=monthly`, and `view=ceo`. `view=site` requires a registered `site_key`; the specialized views retain their existing required parameters and response contracts. Explicit `view=legacy` is invalid; omit `view` for the legacy contract.
 
 ### Legacy
 
@@ -707,7 +718,8 @@ Required bindings/secrets:
 - `IGNORED_IP` (optional)
 - `CF_API_TOKEN` (required for scheduled Buscore traffic capture)
 - `CF_ZONE_TAG` (required for scheduled Buscore traffic capture)
-- `TELEMETRY_RATE_LIMIT_SECRET` (required in production for keyed, minute-rotating BUS Core product-telemetry rate controls)
+- `TELEMETRY_RATE_LIMIT_SECRET` (required in production for keyed standardized-site and BUS Core product-telemetry minute controls and qualified update/artifact daily controls)
+- `BUSCORE_LEADS_DB` (optional external D1 read binding for aggregate BUS Core operator reporting and CEO voluntary-inquiry totals)
 
 No new bindings or secrets are introduced by pageview ingestion.
 

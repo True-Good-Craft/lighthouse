@@ -500,8 +500,8 @@ type CeoMetricMap = {
 };
 type CeoReportPayload = {
   view: "ceo";
-  report_contract_version: "1.0";
-  metric_definition_version: "1.0";
+  report_contract_version: "1.1";
+  metric_definition_version: "1.1";
   report_id: string;
   generated_at: string;
   display_timezone: "America/Toronto";
@@ -520,18 +520,19 @@ type CeoReportPayload = {
   business: {
     tgc_consented_page_views: CeoWindowValues;
     voluntary_inquiries: CeoWindowValues;
-    inquiry_sources_last_7_complete_days: Array<{ source: string; count: number }>;
+    inquiry_sources_last_7_complete_days: Array<{ source: string; count: number }> | null;
   };
   details: {
-    versions_observed_last_30_complete_days: Array<{ version: string; count: number }>;
-    recent_product_failures_by_name: Array<{ name: string; count: number }>;
-    service_probes: Array<{ target: string; state: "pass" | "fail"; checked_at: string }>;
+    versions_observed_last_30_complete_days: Array<{ version: string; count: number }> | null;
+    recent_product_failures_by_name: Array<{ name: string; count: number }> | null;
+    service_probes: Array<{ target: string; state: "pass" | "fail"; checked_at: string }> | null;
   };
   limitations: {
     artifact_transfer_completion_known: false;
     source_credits_are_people: false;
     source_credits_are_unique_across_days: false;
-    download_interest_distinguishes_page_visit_from_file_click: false;
+    download_interest_distinguishes_page_visit_from_file_click: true;
+    download_interest_includes_pre_definition_history: false;
     product_telemetry_is_opt_in_only: true;
   };
 };
@@ -664,6 +665,46 @@ const TGC_SITE_EVENT_ALLOWLIST = new Set([
   "form_submit_success", "form_submit_failure", "form_submit_fallback",
   "js_error",
 ]);
+const TGC_VIEWPORT_BUCKETS = new Set(["small", "medium", "large"]);
+const TGC_FORM_EVENTS = new Set([
+  "form_start",
+  "form_submit_attempt",
+  "form_submit_success",
+  "form_submit_failure",
+  "form_submit_fallback",
+]);
+const TGC_FORM_VALUE_ALIASES = new Map<string, string>([
+  ["infrastructure", "infrastructure"],
+  ["infrastructure_form", "infrastructure"],
+  ["infrastructure-form", "infrastructure"],
+  ["audit", "audit"],
+  ["audit_form", "audit"],
+  ["audit-form", "audit"],
+  ["contact", "contact"],
+  ["contact_form", "contact"],
+  ["contact-form", "contact"],
+  ["general", "general"],
+  ["general_form", "general"],
+  ["general-form", "general"],
+  ["other", "other"],
+]);
+const TGC_ERROR_VALUE_ALIASES = new Map<string, string>([
+  ["script_error", "script_error"],
+  ["unhandled_rejection", "unhandled_rejection"],
+  ["resource_error", "resource_error"],
+  ["network_error", "network_error"],
+  ["form_error", "form_error"],
+  ["unknown", "unknown"],
+  ["other", "other"],
+]);
+const TGC_OUTBOUND_VALUE_ALIASES = new Map<string, string>([
+  ["buscore", "buscore"],
+  ["github", "github"],
+  ["contact", "contact"],
+  ["email", "email"],
+  ["partner", "partner"],
+  ["other", "other"],
+]);
 const CEO_WINDOW_KEYS: readonly CeoWindowKey[] = [
   "today",
   "latest_complete_day",
@@ -671,11 +712,12 @@ const CEO_WINDOW_KEYS: readonly CeoWindowKey[] = [
   "previous_7_complete_days",
   "last_30_complete_days",
 ];
+const TRUSTED_ARTIFACT_CLICK_METRIC_START_DAY = "2026-08-10";
 const CEO_SOURCE_DEFINITION_START = {
   artifact_delivery: "2026-07-18",
   update_checks: "2026-07-15",
   product_telemetry: "2026-07-24",
-  buscore_site: "2026-07-18",
+  buscore_site: TRUSTED_ARTIFACT_CLICK_METRIC_START_DAY,
   tgc_site: "2026-07-18",
   voluntary_inquiries: "2026-06-01",
   lighthouse_errors: "2026-03-10",
@@ -936,6 +978,7 @@ function isEligibleDownloadIntent(input: SiteEventInput, context: PageviewReques
     input.site_key !== "buscore" ||
     input.event_name !== "download_click" ||
     input.test_mode !== 0 ||
+    !isCanonicalArtifactClickEvidence(input.event_value) ||
     !PAGEVIEW_ALLOWED_ORIGINS.has(context.origin ?? "")
   ) {
     return false;
@@ -943,6 +986,19 @@ function isEligibleDownloadIntent(input: SiteEventInput, context: PageviewReques
   try {
     const eventUrl = new URL(input.url ?? "");
     return PAGEVIEW_ALLOWED_ORIGINS.has(eventUrl.origin) && eventUrl.pathname === input.path;
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalArtifactClickEvidence(value: string | null): boolean {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value, "https://lighthouse.buscore.ca");
+    return parsed.origin === "https://lighthouse.buscore.ca"
+      && parsed.search === ""
+      && parsed.hash === ""
+      && isValidReleaseArtifactUrl(parsed.toString());
   } catch {
     return false;
   }
@@ -1380,6 +1436,40 @@ function readOptionalString(value: unknown): string | null {
   return nullIfBlank(value);
 }
 
+function sanitizeTgcEnumValue(value: unknown, aliases: ReadonlyMap<string, string>): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  return aliases.get(normalized) ?? "other";
+}
+
+function sanitizeTgcEventValue(eventName: string, value: unknown): string | null {
+  if (TGC_FORM_EVENTS.has(eventName)) {
+    return sanitizeTgcEnumValue(value, TGC_FORM_VALUE_ALIASES);
+  }
+  if (eventName === "js_error") {
+    return sanitizeTgcEnumValue(value, TGC_ERROR_VALUE_ALIASES);
+  }
+  if (eventName === "outbound_click") {
+    return sanitizeTgcEnumValue(value, TGC_OUTBOUND_VALUE_ALIASES);
+  }
+  // The remaining TGC event names fully encode their semantic value. Discard
+  // compatibility values so arbitrary page, form, URL, or error text cannot
+  // enter bounded raw-event storage.
+  return null;
+}
+
+function normalizeTgcViewport(value: string): string | null {
+  if (TGC_VIEWPORT_BUCKETS.has(value)) return value;
+  const dimensions = PAGEVIEW_VIEWPORT_PATTERN.exec(value);
+  if (!dimensions) return null;
+  const width = Number.parseInt(value.slice(0, value.indexOf("x")), 10);
+  if (!Number.isSafeInteger(width)) return null;
+  if (width < 768) return "small";
+  if (width < 1200) return "medium";
+  return "large";
+}
+
 function isValidAbsoluteUrl(value: string): boolean {
   try {
     new URL(value);
@@ -1500,8 +1590,11 @@ export function parseCanonicalEventPayload(payload: unknown): SiteEventInput | n
   const site = getSiteByKey(siteKey);
   const url = sanitizeAnalyticsLocation(rawUrl);
   const referrer = sanitizeAnalyticsLocation(rawReferrer, true);
+  const normalizedViewport = siteKey === "tgc_site"
+    ? normalizeTgcViewport(viewport)
+    : PAGEVIEW_VIEWPORT_PATTERN.test(viewport) ? viewport : null;
   if (!site || !url || referrer === null || !Number.isFinite(Date.parse(clientTs)) || !path.startsWith("/")
-      || !PAGEVIEW_ALLOWED_DEVICES.has(device) || !PAGEVIEW_VIEWPORT_PATTERN.test(viewport)) {
+      || !PAGEVIEW_ALLOWED_DEVICES.has(device) || !normalizedViewport) {
     return null;
   }
 
@@ -1532,13 +1625,15 @@ export function parseCanonicalEventPayload(payload: unknown): SiteEventInput | n
     utm_campaign: bounded(utm.campaign, 160),
     utm_content: bounded(utm.content, 160),
     device,
-    viewport,
+    viewport: normalizedViewport,
     lang: lang.slice(0, 35),
     tz: tz.slice(0, 80),
     anon_user_id: siteKey === "tgc_site" ? null : normalizeOptionalAnonymousId(root.anon_user_id),
     session_id: siteKey === "tgc_site" ? null : normalizeOptionalAnonymousId(root.session_id),
     is_new_user: siteKey === "tgc_site" ? 0 : coerceBooleanLikeToInt(root.is_new_user),
-    event_value: bounded(root.event_value, 160),
+    event_value: siteKey === "tgc_site"
+      ? sanitizeTgcEventValue(eventName, root.event_value)
+      : bounded(root.event_value, 160),
     test_mode: coerceBooleanLikeToInt(root.test_mode),
   };
 }
@@ -3892,18 +3987,27 @@ function selectCeoWindowValues<T>(
   ) as CeoWindowValues;
 }
 
-function coverageForCeoSource(
-  available: boolean,
-  definitionStartDay: string,
-  ranges: CeoWindowRanges
-): CeoCoverage {
+function selectCeoWindowValuesFromDefinition<T>(
+  windows: Record<CeoWindowKey, T>,
+  select: (value: T) => number,
+  ranges: CeoWindowRanges,
+  definitionStartDay: string
+): CeoWindowValues {
   return Object.fromEntries(
     CEO_WINDOW_KEYS.map((key) => [
       key,
-      available
-        ? (key === "today" || definitionStartDay > ranges[key].start_day ? "partial" : "full")
-        : "unavailable",
+      ranges[key].end_day < definitionStartDay ? null : select(windows[key]),
     ])
+  ) as CeoWindowValues;
+}
+
+function coverageForCeoSource(available: boolean): CeoCoverage {
+  // These sources are sparse event/counter tables rather than a daily
+  // completeness ledger. A recent watermark proves freshness, not that every
+  // day inside a decision window was observable. Until a source provides an
+  // explicit completeness proof, its available windows remain partial.
+  return Object.fromEntries(
+    CEO_WINDOW_KEYS.map((key) => [key, available ? "partial" : "unavailable"])
   ) as CeoCoverage;
 }
 
@@ -3934,7 +4038,7 @@ function directCeoSourceState(
       freshness: "unknown",
       data_through: null,
       definition_start_day: definitionStartDay,
-      coverage: coverageForCeoSource(false, definitionStartDay, ranges),
+      coverage: coverageForCeoSource(false),
       reason_code: source.reason,
     };
   }
@@ -3955,7 +4059,7 @@ function directCeoSourceState(
     freshness: stale ? "stale" : "fresh",
     data_through: dataThrough,
     definition_start_day: definitionStartDay,
-    coverage: coverageForCeoSource(true, definitionStartDay, ranges),
+    coverage: coverageForCeoSource(true),
     reason_code: stale ? "source_data_stale" : null,
   };
 }
@@ -4055,9 +4159,11 @@ async function queryCeoBuscoreSiteWindows(
      ),
      intent AS (
        SELECT ${ceoConditionalSums("day", { probable_download_intents: "probable_human_intents" })},
-              (SELECT MAX(day) FROM buscore_download_intent_daily) AS intent_data_through
+              (SELECT MAX(day) FROM buscore_download_intent_daily
+               WHERE day >= '${TRUSTED_ARTIFACT_CLICK_METRIC_START_DAY}') AS intent_data_through
        FROM buscore_download_intent_daily CROSS JOIN bounds
        WHERE day >= bounds.last_30_complete_days_start AND day <= bounds.today_end
+         AND day >= '${TRUSTED_ARTIFACT_CLICK_METRIC_START_DAY}'
      )
      SELECT pageviews.*, intent.* FROM pageviews CROSS JOIN intent`
   ).bind(...ceoBoundsBindings(ranges), "buscore", ...production.bindings).first<Record<string, unknown>>();
@@ -4317,7 +4423,7 @@ function probeCeoSourceState(
       freshness: "unknown",
       data_through: null,
       definition_start_day: definitionStartDay,
-      coverage: coverageForCeoSource(false, definitionStartDay, ranges),
+      coverage: coverageForCeoSource(false),
       reason_code: "probe_history_missing",
     };
   }
@@ -4328,7 +4434,7 @@ function probeCeoSourceState(
     freshness: stale ? "stale" : "fresh",
     data_through: dataThrough,
     definition_start_day: definitionStartDay,
-    coverage: coverageForCeoSource(true, definitionStartDay, ranges),
+    coverage: coverageForCeoSource(true),
     reason_code: stale ? "probe_data_stale" : null,
   };
 }
@@ -4376,6 +4482,7 @@ export async function buildCeoReport(
     : nullCeoWindowValues();
 
   const probeRows = probes.available ? activeCeoProbeRows(probes.value) : [];
+  const probeState = probeCeoSourceState(probes, ranges, now);
   const last30Product = product.available ? product.value.windows.last_30_complete_days : null;
   const recentProductWindows = product.available
     ? [product.value.windows.today, product.value.windows.latest_complete_day]
@@ -4388,8 +4495,8 @@ export async function buildCeoReport(
 
   return {
     view: "ceo",
-    report_contract_version: "1.0",
-    metric_definition_version: "1.0",
+    report_contract_version: "1.1",
+    metric_definition_version: "1.1",
     report_id: crypto.randomUUID(),
     generated_at: generatedAt,
     display_timezone: "America/Toronto",
@@ -4402,14 +4509,19 @@ export async function buildCeoReport(
       tgc_site: directCeoSourceState(tgcSite, CEO_SOURCE_DEFINITION_START.tgc_site, ranges, now, tgcSite.available ? tgcSite.value.data_through : null),
       voluntary_inquiries: directCeoSourceState(leads, CEO_SOURCE_DEFINITION_START.voluntary_inquiries, ranges, now, leads.available ? leads.value.data_through : null),
       lighthouse_errors: directCeoSourceState(errors, CEO_SOURCE_DEFINITION_START.lighthouse_errors, ranges, now, errors.available ? errors.value.data_through : null),
-      service_probes: probeCeoSourceState(probes, ranges, now),
+      service_probes: probeState,
     },
     bus_core: {
       site_page_views: buscoreSite.available
         ? selectCeoWindowValues(buscoreSite.value.windows, (value) => value.page_views)
         : nullCeoWindowValues(),
       possible_download_interest_actions: buscoreSite.available
-        ? selectCeoWindowValues(buscoreSite.value.windows, (value) => value.probable_download_intents)
+        ? selectCeoWindowValuesFromDefinition(
+          buscoreSite.value.windows,
+          (value) => value.probable_download_intents,
+          ranges,
+          TRUSTED_ARTIFACT_CLICK_METRIC_START_DAY
+        )
         : nullCeoWindowValues(),
       full_artifact_responses_offered: artifactValues("full_responses"),
       daily_source_credits: artifactValues("deduplicated_clients"),
@@ -4433,27 +4545,34 @@ export async function buildCeoReport(
       voluntary_inquiries: leads.available
         ? selectCeoWindowValues(leads.value.windows, (value) => value)
         : nullCeoWindowValues(),
-      inquiry_sources_last_7_complete_days: leads.available ? leads.value.sources : [],
+      inquiry_sources_last_7_complete_days: leads.available ? leads.value.sources : null,
     },
     details: {
-      versions_observed_last_30_complete_days: (last30Product?.by_app_version ?? []).slice(0, 10).map((row) => ({
-        version: row.key,
-        count: row.events,
-      })),
-      recent_product_failures_by_name: BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS
-        .map((name) => ({ name, count: eventCount(name) }))
-        .filter((row) => row.count > 0),
-      service_probes: probeRows.map((row) => ({
-        target: row.target,
-        state: row.ok === 1 ? "pass" : "fail",
-        checked_at: row.checked_at,
-      })),
+      versions_observed_last_30_complete_days: product.available
+        ? (last30Product?.by_app_version ?? []).slice(0, 10).map((row) => ({
+          version: row.key,
+          count: row.events,
+        }))
+        : null,
+      recent_product_failures_by_name: product.available
+        ? BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS
+          .map((name) => ({ name, count: eventCount(name) }))
+          .filter((row) => row.count > 0)
+        : null,
+      service_probes: probeState.availability === "available"
+        ? probeRows.map((row) => ({
+          target: row.target,
+          state: row.ok === 1 ? "pass" : "fail",
+          checked_at: row.checked_at,
+        }))
+        : null,
     },
     limitations: {
       artifact_transfer_completion_known: false,
       source_credits_are_people: false,
       source_credits_are_unique_across_days: false,
-      download_interest_distinguishes_page_visit_from_file_click: false,
+      download_interest_distinguishes_page_visit_from_file_click: true,
+      download_interest_includes_pre_definition_history: false,
       product_telemetry_is_opt_in_only: true,
     },
   };
@@ -5590,28 +5709,25 @@ export async function runHealthChecks(env: Env): Promise<void> {
     const response = await fetch("https://buscore.ca/downloads", { redirect: "manual" });
     return { status: response.status, ok: response.status >= 200 && response.status < 400 };
   });
-  // The manifest is a non-counted public read. Exercising it validates the
-  // deployed Worker route without manufacturing download intent.
+  // The public HEAD exercises deployed manifest routing without creating a
+  // synthetic Lighthouse error event when the scheduled probe itself finds
+  // the route unhealthy. Genuine public GET failures retain normal accounting.
   await push("manifest", async () => {
-    const response = await fetch("https://lighthouse.buscore.ca/manifest/core/stable.json", { redirect: "manual" });
-    if (response.status !== 200) return { status: response.status, ok: false, note: "public manifest read failed" };
-    const parsed = JSON.parse(await response.text()) as Record<string, unknown>;
-    const latestUrl = extractLatestDownloadUrl(parsed);
+    const response = await fetch("https://lighthouse.buscore.ca/manifest/core/stable.json", {
+      method: "HEAD",
+      redirect: "manual",
+    });
     return {
       status: response.status,
-      ok: Boolean(latestUrl && isValidReleaseArtifactUrl(latestUrl)),
-      note: "non-counted public manifest read",
+      ok: response.status === 200,
+      note: "non-counted public manifest HEAD",
     };
   });
   // HEAD validates the exact public release route and positive declared size.
   // Artifact HEAD requests are excluded from full-response, source-credit, and
   // counted-intent metrics by the public route's method semantics.
   await push("release_artifact", async () => {
-    const manifestResponse = await fetch("https://lighthouse.buscore.ca/manifest/core/stable.json", { redirect: "manual" });
-    if (manifestResponse.status !== 200) {
-      return { status: manifestResponse.status, ok: false, note: "public manifest read failed" };
-    }
-    const manifest = JSON.parse(await manifestResponse.text()) as Record<string, unknown>;
+    const manifest = (await readManifestFromR2(env)).parsed;
     const latestUrl = extractLatestDownloadUrl(manifest);
     if (!latestUrl || !isValidReleaseArtifactUrl(latestUrl)) {
       return { status: 500, ok: false, note: "manifest artifact URL invalid" };
@@ -6416,7 +6532,9 @@ export default {
       const allowMethods =
         url.pathname === PAGEVIEW_METRICS_PATH || url.pathname === SITE_EVENT_METRICS_PATH || url.pathname === BUSCORE_TELEMETRY_PATH
           ? "POST, OPTIONS"
-          : RELEASE_PATH.test(url.pathname) ? "GET, HEAD, OPTIONS" : "GET, OPTIONS";
+          : RELEASE_PATH.test(url.pathname) || url.pathname === MANIFEST_PATH
+            ? "GET, HEAD, OPTIONS"
+            : "GET, OPTIONS";
       return withCors(request, new Response(null, { status: 200 }), allowMethods);
     }
 
@@ -6530,19 +6648,22 @@ export default {
     }
 
     const isReleaseHead = request.method === "HEAD" && RELEASE_PATH.test(url.pathname);
-    if (request.method !== "GET" && !isReleaseHead) {
+    const isManifestHead = request.method === "HEAD" && url.pathname === MANIFEST_PATH;
+    if (request.method !== "GET" && !isReleaseHead && !isManifestHead) {
       return withCors(request, Response.json({ ok: false, error: "method_not_allowed" }, { status: 405 }));
     }
 
     if (url.pathname === MANIFEST_PATH) {
       try {
-        const obj = await env.MANIFEST_R2.get(MANIFEST_KEY);
+        const obj = isManifestHead
+          ? await env.MANIFEST_R2.head(MANIFEST_KEY)
+          : await env.MANIFEST_R2.get(MANIFEST_KEY);
 
         if (!obj) {
-          await incrementErrorCounterBestEffort(env.DB, day);
+          if (!isManifestHead) await incrementErrorCounterBestEffort(env.DB, day);
           return withCors(
             request,
-            new Response(JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
+            new Response(isManifestHead ? null : JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
               status: 503,
               headers: {
                 "Content-Type": "application/json",
@@ -6551,21 +6672,23 @@ export default {
           );
         }
 
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=60, s-maxage=60",
+        };
+        if (isManifestHead) headers["Content-Length"] = String(obj.size);
         return withCors(
           request,
-          new Response(obj.body, {
+          new Response(isManifestHead ? null : (obj as R2ObjectBody).body, {
             status: 200,
-            headers: {
-              "Content-Type": "application/json",
-              "Cache-Control": "public, max-age=60, s-maxage=60",
-            },
+            headers,
           })
         );
       } catch {
-        await incrementErrorCounterBestEffort(env.DB, day);
+        if (!isManifestHead) await incrementErrorCounterBestEffort(env.DB, day);
         return withCors(
           request,
-          new Response(JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
+          new Response(isManifestHead ? null : JSON.stringify({ ok: false, error: "manifest_unavailable" }), {
             status: 503,
             headers: {
               "Content-Type": "application/json",

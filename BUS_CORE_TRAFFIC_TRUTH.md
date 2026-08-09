@@ -12,19 +12,20 @@ This document is the source of truth for BUS Core public artifact delivery and d
 
 | Route or event | Owner | Delivery behavior | Measurement class |
 | --- | --- | --- | --- |
-| `GET /manifest/core/stable.json` | Lighthouse Worker + R2 | Public cached manifest | Delivery only; not artifact demand |
+| `GET /manifest/core/stable.json` | Lighthouse Worker + R2 | Public cached manifest | Delivery only; not artifact demand; miss/error enters general error truth |
+| `HEAD /manifest/core/stable.json` | Lighthouse Worker + R2 metadata | Public manifest metadata with no body | Scheduled liveness; miss/error does not enter the general error counter |
 | `GET /update/check` with the exact BUS Core client tuple | Lighthouse Worker + R2 | Public, `no-store` manifest response | Known/unknown version check signals; not artifact traffic |
 | Bare or malformed `/update/check` | Lighthouse Worker + R2 | Public manifest or controlled error | Not a qualified update signal |
 | `GET /download/latest` | Lighthouse Worker + R2 | Public 302 to a canonical versioned artifact | Successful redirect only; not an artifact response |
 | `GET /releases/<canonical>.zip` | Lighthouse Worker + R2/cache | Public 200 or 206 | Raw artifact request and response-layer counters |
 | `HEAD /releases/<canonical>.zip` | Lighthouse Worker + R2 metadata | Public metadata response with no body | Raw and HEAD counters; never successful artifact response |
 | Invalid or missing release path | Lighthouse Worker | Controlled 404 | Raw valid-route request; failed artifact response only for GET, while HEAD remains metadata truth |
-| Site `download_click` | BUS Core site -> Lighthouse event ingest | Best-effort anonymous intent event | Raw intent; probable-human proxy only after acceptance and daily deduplication |
+| Site `download_click` | BUS Core site -> Lighthouse event ingest | Best-effort anonymous intent event | Raw intent; trusted probable-human proxy only for a canonical Lighthouse artifact target after acceptance and daily deduplication |
 | `POST /api/early-access` | BUS Core site Worker + leads D1 | Same-origin, Turnstile-validated production lead | Voluntary lead only |
 | `POST /api/managed-bus-inquiry` | BUS Core site Worker + leads D1 | Same-origin, Turnstile-validated production inquiry | Voluntary lead only |
 | `POST /telemetry/v1/events` | BUS Core app -> Lighthouse Worker + D1 | Optional strict event ingest with exact event-ID acknowledgement after idempotent persistence | Acknowledged opted-in product signal |
 
-Scheduled Lighthouse health checks do not call counted `/download/latest` or `/update/check`. They publicly GET the non-counted stable manifest, then publicly HEAD its exact canonical artifact URL with same-zone public routing forced by `global_fetch_strictly_public`. A pass requires `200` and positive `Content-Length`. The HEAD truth counters may record that public metadata request, but method semantics exclude it from full/partial response, Range, declared-byte, repetition, daily source-credit, counted-intent, and CEO artifact metrics. Genuine public delivery counters therefore remain truthful about Worker traffic.
+Scheduled Lighthouse health checks do not call counted `/download/latest` or `/update/check`. Manifest liveness uses public `HEAD /manifest/core/stable.json`; a HEAD miss/error does not increment `metrics_daily.errors`, while a genuine public manifest GET miss/error does. The release-artifact probe reads and validates the exact canonical artifact URL from the bound R2 manifest, then publicly HEADs that URL with same-zone public routing forced by `global_fetch_strictly_public`. A pass requires `200` and positive `Content-Length`. Artifact HEAD truth counters may record that public metadata request, but method semantics exclude it from full/partial response, Range, declared-byte, repetition, daily source-credit, counted-intent, and CEO artifact metrics. Probe health remains explicit in service-probe truth.
 
 ## Exact metric definitions
 
@@ -41,12 +42,12 @@ Scheduled Lighthouse health checks do not call counted `/download/latest` or `/u
 - `rate_limited_artifact_requests`: requests Lighthouse actually rejects or delays under an explicitly enabled artifact delivery limit. Phase 1 and Phase 2 keep this at zero; no hard artifact limit is enabled without fresh evidence and a separately approved rollout.
 - `artifact_cache_hits` / `artifact_cache_misses`: Worker Cache API outcomes for full GETs. Range and HEAD requests bypass this cache and are not silently counted as misses.
 - `raw_download_intent_events`: accepted or dropped canonical `download_click` event rows received by Lighthouse for the BUS Core production site.
-- `probable_human_download_intents`: accepted production-origin, non-test `download_click` events at an approved BUS Core page/path, capped at one HMAC(IP, UTC day). This is an inference and must always be labelled a proxy.
+- `probable_human_download_intents`: accepted production-origin, non-test `download_click` events at an approved BUS Core page/path whose value is an exact canonical Lighthouse release artifact URL, capped at one HMAC(IP, UTC day). This is an inference and must always be labelled a proxy.
 - `suppressed_repetitive_intents`: otherwise eligible intent events beyond that daily HMAC bucket.
 - `successful_download_redirects`: successful 302 responses from `/download/latest`. These are not artifact responses.
 - `artifact_downloads`: legacy compatibility counter. Historical values have changed qualification rules over time. New reporting must label it `legacy qualified artifact count` when the new measurement tables are unavailable; it must never be silently presented as raw traffic, people, installs, or completion.
 
-The CEO contract intentionally presents `full_artifact_responses` as **full artifact responses offered** and `deduplicated_artifact_clients` as **daily source credits**. It omits partial Range responses from the headline distribution number. A daily source credit may repeat on another day or release and is never a person, installation, user, or completed transfer.
+The CEO contract intentionally presents `full_artifact_responses` as **full artifact responses offered** and `deduplicated_artifact_clients` as **daily source credits**. It omits partial Range responses from the headline distribution number. A daily source credit may repeat on another day or release and is never a person, installation, user, or completed transfer. CEO trusted-click interest has a `2026-08-10` definition boundary: earlier aggregate intent rows are excluded from both totals and the watermark rather than being relabeled under the stricter definition; wholly earlier windows are `null`, while spanning/later windows contain partial post-boundary totals.
 
 Confirmed product signals remain separate and outrank all proxies. They are limited to acknowledged first launch, locally deduplicated version adoption, startup/manual update checks, successful update staging, reliability, and one-time successful use of major product areas. Workflow outcomes may remain unobserved when telemetry is off or delivery is not acknowledged. Product events contain no persistent installation identifier and cannot be linked into active-day, returning-installation, session, engagement, retention, or cross-day profiles. Qualified route-level update checks are request counts only. Lead records remain separate from analytics and contain only voluntarily submitted form data plus documented point-in-time attribution.
 
@@ -56,7 +57,7 @@ Confirmed product signals remain separate and outrank all proxies. They are limi
 - BUS Core product telemetry retains only event-ID deduplication keys for 30 days and aggregate counters for 400 days. It retains no raw product-event history or persistent installation identifier.
 - HMAC inputs use `TELEMETRY_RATE_LIMIT_SECRET`, are scoped by purpose/version/day, and are retained only in the existing short-lived abuse-control table. The secret is never logged or returned.
 - Daily artifact and intent aggregates are retained for 400 days, then pruned by the scheduled Worker. The existing short-lived rate buckets remain on their two-day retention policy.
-- Raw site-event retention remains 30 days under the existing policy. Lead retention and deletion remain governed by the BUS Core site privacy/SOT documents and are not joined to analytics identity.
+- Raw standardized site-event retention remains 30 days under the general policy, except the explicitly declared `tgc_site` lane, whose accepted and dropped raw events retain for 90 days. Lead retention and deletion remain governed by the BUS Core site privacy/SOT documents and are not joined to analytics identity.
 
 ## Staged rollout and thresholds
 

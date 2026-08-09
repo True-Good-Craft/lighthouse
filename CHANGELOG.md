@@ -1,11 +1,22 @@
 # Changelog
 
+## [1.29.1] - 2026-08-09
+
+- Prevented scheduled/public metadata `HEAD` probe failures from contaminating the general Lighthouse error counter while preserving genuine manifest `GET` failure accounting and raw/HEAD artifact truth.
+- Bumped the strict CEO report-contract and metric-definition versions to `1.1` for nullable dependent details and trusted artifact-click semantics. Trusted possible-download interest begins on `2026-08-10`; earlier intent rows are excluded from sums and the watermark, wholly earlier windows are `null`, and spanning/later windows remain partial.
+- Tightened CEO reporting so possible download interest requires a canonical Lighthouse artifact URL, available sparse sources never claim full coverage without a completeness ledger, and unavailable source-dependent details return `null` instead of plausible empty arrays.
+- Enforced the TGC privacy contract at ingestion by storing only coarse `small`/`medium`/`large` viewport buckets and event-specific sanitized values for the bounded TGC allowlist. For rolling producer compatibility, exact lowercase `WIDTHxHEIGHT` remains accepted and is immediately bucketed by width before persistence.
+- Reconciled the SOT and operator policies with standardized-event storage, keyed minute HMAC rate identifiers, CEO use of the optional leads database, the TGC 90-day raw-retention exception, current report families, BUS Core's no-installation-ID product contract, and TGC's active bounded Layer-5 extension.
+- Ignored the repository-local npm cache used by repeatable verification so dependency checks do not dirty release worktrees.
+- No schema change or D1 migration was required for 1.29.1. Worker 1.29.1 was deployed on `2026-08-09T16:41:20.004814Z` as Cloudflare Version ID `ee320e1a-9ceb-4d88-a848-fd7ae0e9e3bc` after typecheck, 162 tests, a Wrangler dry run, and confirmation that no remote migration was pending. The owner-approved release used the authenticated local Wrangler session because the repository currently has no Cloudflare credential secrets configured for GitHub Actions; no secret value was changed.
+
 ## [1.29.0] - 2026-08-09
 
 - Narrowed TGC ingestion to aggregate decision signals: page views, selected commercial/contact/outbound interest, form start/attempt/outcome, and sanitized errors.
 - Made Lighthouse discard `anon_user_id`, `session_id`, and `is_new_user` for `site_key=tgc_site`, including compatibility submissions from the superseded producer.
 - Removed TGC identity-lifecycle, internal-navigation, field-level form, scroll/engagement/section, and first-party web-vital events from the server allowlist.
-- Preserved the database schema, raw-event retention, protected report response shapes, CEO contract, and all non-TGC site behavior; no migration or deployment is included.
+- Preserved the database schema, raw-event retention, protected report response shapes, CEO contract, and all non-TGC site behavior; no migration was required.
+- Deployed Worker 1.29.0 on `2026-08-09T15:03:15.858733Z` as Cloudflare Version ID `757c24b7-fa98-40a5-8ea0-0e551d69c64f`; the 1.29.1 trust/privacy conformance issues were identified after that deployment.
 
 ## [1.28.0] - 2026-08-08
 
@@ -20,7 +31,7 @@
 - Consolidated CEO reads to nine D1 statements with at most three simultaneous operations, preserving headroom below D1 Free request and connection limits; product totals use fixed conditional aggregates and app versions are ranked and limited to ten in SQL so client-controlled cardinality never reaches Worker memory unbounded.
 - Added a strict aggregate-only Draft 2020-12 JSON schema and healthy, observed, partial, product-failure, and core-source-failure fixtures shared with Agent Smith; tests compile it with strict Ajv 2020 and format validation against fixtures and live producer states.
 - Corrected SOT drift for the removed raw product-event table, current null site-event abuse fields, the full scheduled task set, and stored-data report refresh behavior.
-- Preserved all existing report views, public routes, stored history, and database schema. No migration or deployment is included.
+- Preserved all existing report views, public routes, stored history, and database schema. No migration was required; the CEO contract was later deployed with Worker 1.29.0.
 
 ## [1.27.0] - 2026-07-24
 

@@ -34,6 +34,7 @@ const WINDOW_KEYS = [
   "previous_7_complete_days",
   "last_30_complete_days",
 ];
+const TRUSTED_ARTIFACT_CLICK_START_DAY = "2026-08-10";
 
 function windowColumns(metrics, dataThrough = null) {
   const row = { data_through: dataThrough };
@@ -101,6 +102,9 @@ function makeCeoDb({
   };
   const metric = (value) => zero ? 0 : value;
   const observedAt = watermark ? `${watermark}T12:00:00.000Z` : null;
+  const trustedIntentWatermark = watermark && watermark >= TRUSTED_ARTIFACT_CLICK_START_DAY
+    ? watermark
+    : null;
   const execute = async (sql, producer) => {
     if (tracker) {
       tracker.count += 1;
@@ -147,7 +151,7 @@ function makeCeoDb({
               return {
                 ...windowColumns({ page_views: metric(3), probable_download_intents: metric(1) }),
                 pageview_data_through: observedAt,
-                intent_data_through: watermark,
+                intent_data_through: trustedIntentWatermark,
               };
             }
             if (normalized.includes("FROM site_events_raw") && normalized.includes("event_name = 'page_view'")) {
@@ -228,8 +232,8 @@ test("CEO report routing is additive and protected", async () => {
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.view, "ceo");
-  assert.equal(payload.report_contract_version, "1.0");
-  assert.equal(payload.metric_definition_version, "1.0");
+  assert.equal(payload.report_contract_version, "1.1");
+  assert.equal(payload.metric_definition_version, "1.1");
 
   const wrongMethod = await worker.fetch(
     new Request("https://lighthouse.test/report?view=ceo", {
@@ -286,7 +290,7 @@ test("CEO metrics use literal sources, page_view only, exact lead rows, and all 
   const report = await buildCeoReport(db, db, new Date("2026-08-08T22:00:00.000Z"));
 
   assert.equal(report.bus_core.site_page_views.latest_complete_day, 3);
-  assert.equal(report.bus_core.possible_download_interest_actions.latest_complete_day, 1);
+  assert.equal(report.bus_core.possible_download_interest_actions.latest_complete_day, null);
   assert.equal(report.bus_core.full_artifact_responses_offered.latest_complete_day, 104);
   assert.equal(report.bus_core.daily_source_credits.latest_complete_day, 100);
   assert.equal(report.bus_core.known_version_check_requests.latest_complete_day, 4);
@@ -299,10 +303,14 @@ test("CEO metrics use literal sources, page_view only, exact lead rows, and all 
   assert.equal(report.business.tgc_consented_page_views.latest_complete_day, 4);
   assert.equal(report.business.voluntary_inquiries.latest_complete_day, 2);
   assert.deepEqual(report.business.inquiry_sources_last_7_complete_days, [{ source: "reddit", count: 2 }]);
-  assert.equal(report.details.service_probes.some((row) => row.target === "release_artifact_range"), false);
+  assert.equal(report.details.service_probes, null, "an incomplete probe source has no believable detail list");
   assert.equal(report.sources.artifact_delivery.coverage.today, "partial");
-  assert.equal(report.sources.artifact_delivery.coverage.latest_complete_day, "full");
+  assert.equal(report.sources.artifact_delivery.coverage.latest_complete_day, "partial");
   assert.equal(report.sources.artifact_delivery.coverage.last_30_complete_days, "partial");
+  assert.equal(report.limitations.download_interest_distinguishes_page_visit_from_file_click, true);
+  assert.equal(report.limitations.download_interest_includes_pre_definition_history, false);
+  assert.equal(report.sources.buscore_site.definition_start_day, TRUSTED_ARTIFACT_CLICK_START_DAY);
+  assert.equal(report.sources.buscore_site.data_through, null);
   assert.ok(sqlLog.some((sql) => sql.includes("event_name = 'page_view'")));
   assert.equal(sqlLog.some((sql) => /top_paths|GROUP BY path/.test(sql)), false);
   const productSql = sqlLog.filter((sql) => sql.includes("FROM buscore_product_events_daily"));
@@ -310,6 +318,36 @@ test("CEO metrics use literal sources, page_view only, exact lead rows, and all 
   assert.match(productSql.find((sql) => sql.includes("product_failures_today")), /SUM\(CASE WHEN day >=/);
   assert.match(productSql.find((sql) => sql.includes("GROUP BY app_version")), /ORDER BY events DESC, key ASC LIMIT 10/);
   assert.equal(productSql.some((sql) => /GROUP BY day, category, event_name, app_version/.test(sql)), false);
+});
+
+test("trusted artifact-click intent starts at cutover without relabeling historical rows", async () => {
+  const cutoverSql = [];
+  const cutoverDb = makeCeoDb({ watermark: "2026-08-10", sqlLog: cutoverSql });
+  const cutoverReport = await buildCeoReport(cutoverDb, cutoverDb, new Date("2026-08-10T12:00:00.000Z"));
+
+  assert.deepEqual(cutoverReport.bus_core.possible_download_interest_actions, {
+    today: 1,
+    latest_complete_day: null,
+    last_7_complete_days: null,
+    previous_7_complete_days: null,
+    last_30_complete_days: null,
+  });
+
+  const spanningDb = makeCeoDb({ watermark: "2026-08-11" });
+  const spanningReport = await buildCeoReport(spanningDb, spanningDb, new Date("2026-08-12T12:00:00.000Z"));
+  assert.deepEqual(spanningReport.bus_core.possible_download_interest_actions, {
+    today: 1,
+    latest_complete_day: 1,
+    last_7_complete_days: 1,
+    previous_7_complete_days: null,
+    last_30_complete_days: 1,
+  });
+  assert.equal(spanningReport.sources.buscore_site.data_through, "2026-08-11T23:59:59.999Z");
+  assert.equal(spanningReport.sources.buscore_site.coverage.last_7_complete_days, "partial");
+
+  const intentSql = cutoverSql.find((sql) => sql.includes("buscore_download_intent_daily"));
+  assert.match(intentSql, /MAX\(day\) FROM buscore_download_intent_daily WHERE day >= '2026-08-10'/);
+  assert.match(intentSql, /AND day >= '2026-08-10'/);
 });
 
 test("CEO report stays far below D1 Free query and simultaneous connection limits", async () => {
@@ -360,6 +398,7 @@ test("service probes remain explicitly incomplete until every active target has 
   assert.equal(report.sources.service_probes.data_through, null);
   assert.equal(report.sources.service_probes.reason_code, "probe_history_missing");
   assert.equal(report.sources.service_probes.coverage.today, "unavailable");
+  assert.equal(report.details.service_probes, null);
 });
 
 test("service probe freshness uses the oldest required target watermark", async () => {
@@ -379,6 +418,7 @@ test("service probe freshness uses the oldest required target watermark", async 
   assert.equal(report.sources.service_probes.data_through, "2026-08-06T00:00:00.000Z");
   assert.equal(report.sources.service_probes.reason_code, "probe_data_stale");
   assert.equal(report.sources.service_probes.coverage.today, "partial");
+  assert.equal(report.details.service_probes.some((row) => row.target === "release_artifact_range"), false);
 });
 
 test("successful empty queries are zero while an unavailable source is null", async () => {
@@ -410,10 +450,14 @@ test("an old direct-source watermark fails closed as stale without erasing obser
   assert.equal(report.sources.artifact_delivery.data_through, "2026-08-01T23:59:59.999Z");
   assert.equal(report.sources.artifact_delivery.reason_code, "source_data_stale");
   assert.equal(report.bus_core.full_artifact_responses_offered.latest_complete_day, 104);
-  for (const source of ["update_checks", "buscore_site", "tgc_site", "lighthouse_errors"]) {
+  for (const source of ["update_checks", "tgc_site", "lighthouse_errors"]) {
     assert.equal(report.sources[source].freshness, "stale", `${source} must retain an all-history watermark`);
     assert.equal(report.sources[source].reason_code, "source_data_stale");
   }
+  assert.equal(report.sources.buscore_site.freshness, "unknown", "pre-cutover intent cannot become a trusted watermark");
+  assert.equal(report.sources.buscore_site.data_through, null);
+  assert.equal(report.sources.buscore_site.reason_code, "source_history_missing");
+  assert.deepEqual(Object.values(report.bus_core.possible_download_interest_actions), Array(5).fill(null));
   assert.ok(sqlLog.some((sql) => sql.includes("SELECT MAX(received_at) FROM matching_pageviews")));
   assert.ok(sqlLog.some((sql) => sql.includes("SELECT MAX(day) FROM release_update_checks_daily")));
   assert.ok(sqlLog.some((sql) => sql.includes("SELECT MAX(day) FROM metrics_daily")));
@@ -425,7 +469,7 @@ test("missing voluntary inquiry binding is explicit and never rendered as zero",
   assert.equal(report.sources.voluntary_inquiries.availability, "unavailable");
   assert.equal(report.sources.voluntary_inquiries.reason_code, "binding_not_configured");
   assert.equal(report.business.voluntary_inquiries.latest_complete_day, null);
-  assert.deepEqual(report.business.inquiry_sources_last_7_complete_days, []);
+  assert.equal(report.business.inquiry_sources_last_7_complete_days, null);
 });
 
 test("strict CEO schema accepts every fixture and representative live producer state", async () => {
@@ -458,6 +502,9 @@ test("strict CEO schema accepts every fixture and representative live producer s
   for (const [label, report] of runtimeReports) assertSchemaValid(report, validate, `runtime ${label}`);
 
   const base = structuredClone(runtimeReports[1][1]);
+  const provenFull = structuredClone(base);
+  provenFull.sources.artifact_delivery.coverage.latest_complete_day = "full";
+  assertSchemaValid(provenFull, validate, "future source with proven full coverage");
   const extra = structuredClone(base);
   extra.uncontracted = true;
   const badUuid = structuredClone(base);
@@ -485,6 +532,18 @@ test("strict CEO schema accepts every fixture and representative live producer s
   unavailablePartial.sources.artifact_delivery.coverage.today = "partial";
   const unavailableStaleReason = structuredClone(runtimeReports[4][1]);
   unavailableStaleReason.sources.artifact_delivery.reason_code = "source_data_stale";
+  const unavailableLeadDetails = structuredClone(runtimeReports[2][1]);
+  unavailableLeadDetails.business.inquiry_sources_last_7_complete_days = [];
+  const productSourceFailure = await buildCeoReport(
+    makeCeoDb({ failPattern: "FROM buscore_product_events_daily" }),
+    makeCeoDb(),
+    now
+  );
+  assert.equal(productSourceFailure.details.versions_observed_last_30_complete_days, null);
+  assert.equal(productSourceFailure.details.recent_product_failures_by_name, null);
+  const unavailableProductDetails = structuredClone(productSourceFailure);
+  unavailableProductDetails.details.versions_observed_last_30_complete_days = [];
+  unavailableProductDetails.details.recent_product_failures_by_name = [];
   for (const [label, invalid] of [
     ["extra", extra],
     ["uuid", badUuid],
@@ -498,12 +557,14 @@ test("strict CEO schema accepts every fixture and representative live producer s
     ["unknown full coverage", unknownFull],
     ["unavailable partial coverage", unavailablePartial],
     ["unavailable stale reason", unavailableStaleReason],
+    ["unavailable lead details", unavailableLeadDetails],
+    ["unavailable product details", unavailableProductDetails],
   ]) {
     assert.equal(validate(invalid), false, `${label} must fail strict schema validation`);
   }
 });
 
-test("health checks exercise only non-counted public manifest GET and artifact HEAD routes", async () => {
+test("health checks exercise only non-counted public manifest HEAD and artifact HEAD routes", async () => {
   const fetched = [];
   const sqlLog = [];
   const originalFetch = global.fetch;
@@ -515,7 +576,7 @@ test("health checks exercise only non-counted public manifest GET and artifact H
     const method = init.method ?? "GET";
     fetched.push({ url, method });
     if (url.endsWith("/manifest/core/stable.json")) {
-      return Response.json(manifest, { status: 200 });
+      return new Response(null, { status: 200, headers: { "Content-Length": "123" } });
     }
     if (url.endsWith("/releases/BUS-Core-1.4.1.zip")) {
       return new Response(null, { status: 200, headers: { "Content-Length": "123" } });
@@ -524,7 +585,11 @@ test("health checks exercise only non-counted public manifest GET and artifact H
   };
   const env = {
     DB: makeCeoDb({ sqlLog }),
-    MANIFEST_R2: {},
+    MANIFEST_R2: {
+      async get() {
+        return { async text() { return JSON.stringify(manifest); } };
+      },
+    },
     ADMIN_TOKEN: "secret",
     IGNORED_IP: "",
     CF_API_TOKEN: "",
@@ -539,7 +604,10 @@ test("health checks exercise only non-counted public manifest GET and artifact H
 
   assert.equal(fetched.some(({ url }) => url.includes("lighthouse.buscore.ca/download/latest")), false);
   assert.equal(fetched.some(({ url }) => url.includes("/update/check")), false);
-  assert.equal(fetched.filter(({ url, method }) => url.endsWith("/manifest/core/stable.json") && method === "GET").length, 2);
+  assert.deepEqual(
+    fetched.filter(({ url }) => url.endsWith("/manifest/core/stable.json")),
+    [{ url: "https://lighthouse.buscore.ca/manifest/core/stable.json", method: "HEAD" }]
+  );
   assert.deepEqual(
     fetched.filter(({ url }) => url.includes("lighthouse.buscore.ca/releases/")),
     [{ url: "https://lighthouse.buscore.ca/releases/BUS-Core-1.4.1.zip", method: "HEAD" }]
@@ -548,13 +616,48 @@ test("health checks exercise only non-counted public manifest GET and artifact H
   assert.ok(sqlLog.some((sql) => sql.includes("INSERT INTO health_checks")));
 });
 
+test("failed manifest HEAD suppresses probe contamination while failed GET retains public error accounting", async () => {
+  const headRunLog = [];
+  const headResponse = await worker.fetch(
+    new Request("https://lighthouse.buscore.ca/manifest/core/stable.json", { method: "HEAD" }),
+    {
+      DB: makeCeoDb({ runLog: headRunLog }),
+      MANIFEST_R2: { async head() { return null; } },
+      ADMIN_TOKEN: "secret",
+      IGNORED_IP: "",
+      CF_API_TOKEN: "",
+      CF_ZONE_TAG: "",
+    },
+    ctx
+  );
+  assert.equal(headResponse.status, 503);
+  assert.equal(headRunLog.some((row) => row.sql.includes("metrics_daily")), false);
+
+  const getRunLog = [];
+  const getResponse = await worker.fetch(
+    new Request("https://lighthouse.buscore.ca/manifest/core/stable.json"),
+    {
+      DB: makeCeoDb({ runLog: getRunLog }),
+      MANIFEST_R2: { async get() { return null; } },
+      ADMIN_TOKEN: "secret",
+      IGNORED_IP: "",
+      CF_API_TOKEN: "",
+      CF_ZONE_TAG: "",
+    },
+    ctx
+  );
+
+  assert.equal(getResponse.status, 503);
+  assert.equal(getRunLog.some((row) => row.sql.includes("metrics_daily")), true);
+});
+
 test("health checks reject a 404 lead route and a zero-byte public artifact", async () => {
   const runLog = [];
   const originalFetch = global.fetch;
   const manifest = { latest: { version: "1.4.1", download: { url: "/releases/BUS-Core-1.4.1.zip" } } };
   global.fetch = async (input) => {
     const url = String(input);
-    if (url.endsWith("/manifest/core/stable.json")) return Response.json(manifest);
+    if (url.endsWith("/manifest/core/stable.json")) return new Response(null, { status: 200 });
     if (url.endsWith("/releases/BUS-Core-1.4.1.zip")) {
       return new Response(null, { status: 200, headers: { "Content-Length": "0" } });
     }
@@ -564,7 +667,11 @@ test("health checks reject a 404 lead route and a zero-byte public artifact", as
   try {
     await runHealthChecks({
       DB: makeCeoDb({ runLog }),
-      MANIFEST_R2: {},
+      MANIFEST_R2: {
+        async get() {
+          return { async text() { return JSON.stringify(manifest); } };
+        },
+      },
       ADMIN_TOKEN: "secret",
       IGNORED_IP: "",
       CF_API_TOKEN: "",

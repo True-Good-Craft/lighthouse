@@ -63,6 +63,7 @@ function payload(overrides = {}) {
     viewport: "1440x900",
     lang: "en-CA",
     tz: "America/Toronto",
+    event_value: "/releases/BUS-Core-1.4.1.zip",
     ...overrides,
   };
 }
@@ -104,4 +105,16 @@ test("test-mode or wrong-origin clicks remain raw events but never probable-huma
 
   assert.equal(db.rawRows, 2);
   assert.deepEqual(db.intent, { raw: 2, probable: 0, suppressed: 0 });
+});
+
+test("download interest requires an exact Lighthouse artifact target", async () => {
+  const db = new IntentDb();
+  await send(db, payload({ event_value: null }));
+  await send(db, payload({ event_value: "/downloads" }), "198.51.100.11");
+  await send(db, payload({ event_value: "https://example.com/releases/BUS-Core-1.4.1.zip" }), "198.51.100.12");
+  await send(db, payload({ event_value: "/releases/BUS-Core-1.4.1.zip?probe=1" }), "198.51.100.13");
+  await send(db, payload({ event_value: "https://lighthouse.buscore.ca/releases/BUS-Core-1.4.1.zip" }), "198.51.100.14");
+
+  assert.equal(db.rawRows, 5);
+  assert.deepEqual(db.intent, { raw: 5, probable: 1, suppressed: 0 });
 });
