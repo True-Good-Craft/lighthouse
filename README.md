@@ -1,5 +1,11 @@
 # buscore-lighthouse
 
+## CEO decision report
+
+Version 1.28.0 adds authenticated `GET /report?view=ceo`, a strict additive contract for the BUS Core + TGC CEO dashboard. It reports exact UTC windows, source availability/freshness/coverage, literal BUS Core discovery/distribution/product/reliability facts, consented TGC page views, and voluntary inquiry aggregates. Query failures are `null` and unavailable, never zero; a successful source with no observation history is explicitly `unknown`, not believable fresh zero. The contract and aggregate-only fixtures live in `contracts/ceo-v1/`.
+
+The CEO lane changes no existing report view or database table. It uses the current UTC day only for explicit partial activity, uses completed UTC days for daily and weekly decisions, and never calls artifact responses or daily source credits people, installations, completed downloads, or adoption. Agent Smith owns the final status and wording.
+
 ## BUS Core minimal product telemetry
 
 Production Worker 1.27.0 uses exact event-ID acknowledgement with bounded deduplication and aggregate-only product reporting. Current BUS Core product events contain no persistent installation identifier and are limited to first launch, locally deduplicated release/first-success milestones, startup/manual update checks, staged updates, and reliability. Module opens, active days, returning-installation measures, engagement, sessions, retention, and cross-day profiles are prohibited.
@@ -8,9 +14,9 @@ Migration `0015_minimize_buscore_product_telemetry.sql` was applied before the 2
 
 ## TGC website analytics
 
-Version 1.26.0 adds an explicitly consented commercial analytics lane for `site_key=tgc_site`. Lighthouse is the raw-event and aggregate-report source of truth; the protected operator view is `GET /report?view=tgc` using the existing `X-Admin-Token` contract.
+Version 1.29.0 narrows the consented `site_key=tgc_site` lane to aggregate, decision-useful events. Lighthouse is the raw-event and aggregate-report source of truth; the protected operator view remains `GET /report?view=tgc` using the existing `X-Admin-Token` contract.
 
-The view reports today, 7-day, and 30-day page execution, new/returning and session counts, acquisition, content, engagement, service-funnel outcomes, performance, and health. It never returns visitor/session/rate identifiers or form contents. Raw TGC events are retained for 90 days; rotating keyed rate identifiers are retained for two days. See `TGC_SITE_ANALYTICS_POLICY.md` for the product-specific justification and prohibitions.
+The server accepts page views, selected commercial/contact/outbound interest, form start/attempt/outcome, and sanitized errors. It discards visitor/session fields and rejects the superseded lifecycle, field-level form, scroll/engagement/section, and first-party web-vital event families. The existing TGC report shape remains available for rollback and historical rows; Smith's CEO lane uses page views and voluntary inquiries only. Raw TGC events are retained for 90 days; rotating keyed rate identifiers are retained for two days. See `TGC_SITE_ANALYTICS_POLICY.md` for the current boundaries.
 
 Production deploys use the gated `.github/workflows/deploy.yml`: full tests first, then Wrangler only on manual dispatch or an explicitly marked release merge. Migrations remain separate and are never implied by deployment.
 
@@ -202,6 +208,7 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 | POST | `/metrics/event` | Accept standardized multi-site event JSON, always return `204`, and persist/aggregate best-effort in D1 |
 | POST | `/telemetry/v1/events` | Accept one strict BUS Core schema-1.0 event, apply a keyed rotating rate control, and return `202 accepted`, `200 duplicate`, or a bounded error |
 | GET | `/report` | Return protected aggregate report; legacy BUS Core output includes literal `product_telemetry` windows when migration 0013 is available |
+| GET | `/report?view=ceo` | Return the protected CEO contract `1.0` with exact windows and per-source availability; no legacy view is changed |
 
 Notes:
 - `/manifest/core/stable.json` never increments counters.
@@ -221,6 +228,14 @@ Notes:
 - `POST /metrics/event` is site-aware through the tracked-site registry in `src/index.ts`: each site entry defines `site_key`, `production_hosts`, `allowed_origins`, `staging_hosts`, and `production_only_default`.
 
 ## Report Response
+
+### CEO V1
+
+`GET /report?view=ceo` is the preferred decision-report input. Its strict schema is `contracts/ceo-v1/report.schema.json`. The window keys are `today`, `latest_complete_day`, `last_7_complete_days`, `previous_7_complete_days`, and `last_30_complete_days`. Every metric carries those same keys and is either a finite aggregate or `null` when its source is unavailable.
+
+Source state distinguishes `available` from `unavailable`, `fresh` from `stale` or `unknown`, and `full` from `partial` or `unavailable` coverage. A successful aggregate query can return numeric zero, but without an all-history watermark its source is `unknown` with `source_history_missing`; an old watermark is `stale` with `source_data_stale`. Voluntary-inquiry attribution uses only 14 fixed privacy-safe buckets and never emits a raw label. The endpoint is independently guarded per source, aggregate-only, admin-token protected, and contains no PII or persistent identifiers. Its configured-leads path uses nine D1 statements in batches of at most three; client-supplied app versions are SQL-ranked and limited to ten before reaching Worker memory. Strict Ajv 2020 tests validate all fixtures plus representative live producer outputs. Existing views remain available for diagnostics and rollback.
+
+### Legacy
 
 Bare `GET /report` preserves the legacy operator contract and returns:
 
@@ -356,7 +371,7 @@ Contract note:
 - Additive top-level `intent_counters` groups the same `today`, `yesterday`, `last_7_days`, `last_30_days`, and `month_to_date` counter windows under a single semantic label for the Lighthouse intent-counter layer (`update_checks`, `downloads`, `errors`). The individual top-level fields remain for backward compatibility.
 - Additive top-level `release_signals` reports observable release signals only: qualified rate-bounded artifact requests, qualified rate-bounded update-check totals, versioned-breakdown totals and deltas, historical known/unknown-version checks, first/repeat/unknown check-in buckets, update-available impressions, and latest-version check-ins. `update_checks` remains a compatibility alias for the breakdown total; decision consumers use `raw_update_checks` and must not interpret either signal as authenticated-client proof. Lighthouse does not claim installs or completed transfers.
 - Bare `/report`, `view=fleet`, and `view=site` each perform one best-effort refresh capture for the previous completed UTC day before assembly.
-- `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
+- `view=ceo`, `view=tgc`, `view=source_health`, `view=asset`, and `view=monthly` intentionally skip the refresh path and read currently persisted data directly.
 - The refresh reuses the same traffic capture logic as the scheduled path and does not replace cron-based capture.
 - If a refresh fails, `/report` still returns successfully with traffic fields based only on currently stored data.
 - `traffic.latest_day` is the most recent completed UTC day snapshot stored in D1 and includes `captured_at`.
@@ -698,9 +713,9 @@ No new bindings or secrets are introduced by pageview ingestion.
 
 ## Scheduling
 
-Lighthouse is on-demand only.
-- Daily cron trigger captures one previous completed UTC day Buscore traffic snapshot from the Cloudflare GraphQL Analytics API.
-- The same scheduled execution also prunes raw pageview events older than about 30 UTC days and stale rate-limit buckets older than about 2 days.
+Lighthouse reporting is on-demand; a daily scheduled job maintains its stored evidence.
+- The cron captures one previous completed UTC day Buscore traffic snapshot from the Cloudflare GraphQL Analytics API.
+- Independently fail-soft tasks also write the completed-day rollup, public GitHub snapshot, and service checks, then prune bounded-retention event, probe, product-telemetry, artifact-truth, and rate-control data.
 - No outbound Discord posting.
 - Discord report handling remains local/operator-report only. Lighthouse does not create or send Discord webhook messages unless a future SOT change explicitly approves an outbound integration.
 
@@ -711,7 +726,7 @@ Traffic capture notes:
 - If the Cloudflare pull fails or returns GraphQL errors, Lighthouse skips the row for that day rather than writing synthetic zeroes.
 - If the query returns no daily row for the selected day/hostname, Lighthouse treats the run as failed and skips the row.
 - Lighthouse validates that the response includes a numeric daily request `count` field; if missing/undefined/non-numeric, the run is treated as failed and the row is skipped.
-- Authenticated `/report` also performs one best-effort refresh capture for the previous completed UTC day before report assembly, using the same per-day capture logic.
+- Bare `/report`, `view=fleet`, and `view=site` perform one best-effort refresh capture for the previous completed UTC day before assembly. Stored-data views, including `view=ceo`, skip that external refresh.
 
 ## Setup
 

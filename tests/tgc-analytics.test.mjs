@@ -41,17 +41,21 @@ test("TGC report view resolves without a site key", () => {
   });
 });
 
-test("TGC payload accepts consent-created IDs and strips URL detail", () => {
+test("TGC payload discards superseded identity and strips URL detail", () => {
   const parsed = parseCanonicalEventPayload(payload());
   assert.ok(parsed);
   assert.equal(parsed.url, "https://truegoodcraft.ca/services.html");
   assert.equal(parsed.referrer, "https://example.com/article");
-  assert.equal(parsed.anon_user_id, "v_a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11");
-  assert.equal(parsed.session_id, "s_1eebc999-9c0b-4ef8-bb6d-6bb9bd380a11");
+  assert.equal(parsed.anon_user_id, null);
+  assert.equal(parsed.session_id, null);
+  assert.equal(parsed.is_new_user, 0);
 });
 
 test("TGC payload rejects unknown events, mismatched paths, and foreign origins", () => {
   assert.equal(parseCanonicalEventPayload(payload({ event_name: "capture_everything" })), null);
+  assert.equal(parseCanonicalEventPayload(payload({ event_name: "scroll_depth" })), null);
+  assert.equal(parseCanonicalEventPayload(payload({ event_name: "form_field_complete" })), null);
+  assert.equal(parseCanonicalEventPayload(payload({ event_name: "web_vital_lcp_ms" })), null);
   assert.equal(parseCanonicalEventPayload(payload({ path: "/contact.html" })), null);
   assert.equal(parseCanonicalEventPayload(payload({ url: "https://evil.example/services.html" })), null);
 });

@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.29.0] - 2026-08-09
+
+- Narrowed TGC ingestion to aggregate decision signals: page views, selected commercial/contact/outbound interest, form start/attempt/outcome, and sanitized errors.
+- Made Lighthouse discard `anon_user_id`, `session_id`, and `is_new_user` for `site_key=tgc_site`, including compatibility submissions from the superseded producer.
+- Removed TGC identity-lifecycle, internal-navigation, field-level form, scroll/engagement/section, and first-party web-vital events from the server allowlist.
+- Preserved the database schema, raw-event retention, protected report response shapes, CEO contract, and all non-TGC site behavior; no migration or deployment is included.
+
+## [1.28.0] - 2026-08-08
+
+- Added authenticated `GET /report?view=ceo`, a strict versioned contract with exact partial/current and completed UTC windows for Agent Smith.
+- Added per-source availability, freshness, coverage, and bounded failure reasons so unavailable measurements return `null` instead of plausible zeroes while unrelated sections remain usable.
+- Added literal BUS Core discovery, distribution, opt-in product, update-check, and complete reliability-failure facts plus consented TGC page views and voluntary inquiry aggregates.
+- Added two complete, non-overlapping seven-day windows for valid weekly comparison and kept the partial current UTC day out of trend claims.
+- Limited CEO distribution to full artifact responses offered and daily source credits; partial Range responses are separate and are never presented as downloads, people, or installations.
+- Changed scheduled release health checks to public GET of the non-counted stable manifest followed by public HEAD of its exact canonical artifact; `200` plus positive `Content-Length` is required, same-zone fetches are forced through the public Worker route, and no counted intent, full-response, daily source-credit, or CEO artifact metric is incremented.
+- Made direct-source freshness fail closed from all-history watermarks: empty history is `unknown`/`source_history_missing`, old history is `stale`/`source_data_stale`, and only unavailable sources turn metric values into `null`.
+- Bucketed voluntary-inquiry attribution into 14 fixed privacy-safe labels and merged counts after bucketing so raw emails, URLs, identifiers, and arbitrary referrer labels cannot leave Lighthouse.
+- Consolidated CEO reads to nine D1 statements with at most three simultaneous operations, preserving headroom below D1 Free request and connection limits; product totals use fixed conditional aggregates and app versions are ranked and limited to ten in SQL so client-controlled cardinality never reaches Worker memory unbounded.
+- Added a strict aggregate-only Draft 2020-12 JSON schema and healthy, observed, partial, product-failure, and core-source-failure fixtures shared with Agent Smith; tests compile it with strict Ajv 2020 and format validation against fixtures and live producer states.
+- Corrected SOT drift for the removed raw product-event table, current null site-event abuse fields, the full scheduled task set, and stored-data report refresh behavior.
+- Preserved all existing report views, public routes, stored history, and database schema. No migration or deployment is included.
+
 ## [1.27.0] - 2026-07-24
 
 - Added explicit event-ID acknowledgements to successful and duplicate BUS Core product-telemetry responses so clients retain queued events until Lighthouse confirms idempotent persistence.

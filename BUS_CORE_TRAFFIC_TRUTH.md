@@ -18,13 +18,13 @@ This document is the source of truth for BUS Core public artifact delivery and d
 | `GET /download/latest` | Lighthouse Worker + R2 | Public 302 to a canonical versioned artifact | Successful redirect only; not an artifact response |
 | `GET /releases/<canonical>.zip` | Lighthouse Worker + R2/cache | Public 200 or 206 | Raw artifact request and response-layer counters |
 | `HEAD /releases/<canonical>.zip` | Lighthouse Worker + R2 metadata | Public metadata response with no body | Raw and HEAD counters; never successful artifact response |
-| Invalid or missing release path | Lighthouse Worker | Controlled 404 | Raw valid-route request only when the filename is canonical; failed response |
+| Invalid or missing release path | Lighthouse Worker | Controlled 404 | Raw valid-route request; failed artifact response only for GET, while HEAD remains metadata truth |
 | Site `download_click` | BUS Core site -> Lighthouse event ingest | Best-effort anonymous intent event | Raw intent; probable-human proxy only after acceptance and daily deduplication |
 | `POST /api/early-access` | BUS Core site Worker + leads D1 | Same-origin, Turnstile-validated production lead | Voluntary lead only |
 | `POST /api/managed-bus-inquiry` | BUS Core site Worker + leads D1 | Same-origin, Turnstile-validated production inquiry | Voluntary lead only |
 | `POST /telemetry/v1/events` | BUS Core app -> Lighthouse Worker + D1 | Optional strict event ingest with exact event-ID acknowledgement after idempotent persistence | Acknowledged opted-in product signal |
 
-Known health checks, update checks, manifest reads, and internal/test traffic are excluded from artifact counters because they do not match the canonical release route. The configured ignored IP is also excluded from deduplicated-client credit, while raw delivery counters remain truthful about Worker traffic.
+Scheduled Lighthouse health checks do not call counted `/download/latest` or `/update/check`. They publicly GET the non-counted stable manifest, then publicly HEAD its exact canonical artifact URL with same-zone public routing forced by `global_fetch_strictly_public`. A pass requires `200` and positive `Content-Length`. The HEAD truth counters may record that public metadata request, but method semantics exclude it from full/partial response, Range, declared-byte, repetition, daily source-credit, counted-intent, and CEO artifact metrics. Genuine public delivery counters therefore remain truthful about Worker traffic.
 
 ## Exact metric definitions
 
@@ -34,7 +34,7 @@ Known health checks, update checks, manifest reads, and internal/test traffic ar
 - `partial_artifact_responses`: the 206 subset of successful artifact responses.
 - `head_artifact_requests`: HEAD requests. These are excluded from successful artifact responses and client-bucket credit.
 - `range_artifact_requests`: GET requests carrying `Range`, whether the range is valid or rejected.
-- `failed_artifact_requests`: canonical artifact requests returning neither 200 nor 206, including missing objects and invalid ranges.
+- `failed_artifact_requests`: canonical artifact GET requests returning neither 200 nor 206, including missing objects and invalid ranges. Metadata-only HEAD failures remain visible in raw/HEAD and service-probe truth but are excluded from CEO artifact-response failures.
 - `artifact_response_bytes`: declared bytes in 200/206 responses. This is bytes offered by the server, not proof of network transfer completion.
 - `deduplicated_artifact_clients`: at most one successful full GET per HMAC(IP, release version, UTC day). It is a privacy-preserving client-network bucket and may merge people behind NAT or split one actor across rotating addresses.
 - `suppressed_repetitive_requests`: additional successful full GETs in the same HMAC bucket after the daily credit. "Suppressed" means suppressed from the deduplicated demand proxy; delivery remains open.
@@ -45,6 +45,8 @@ Known health checks, update checks, manifest reads, and internal/test traffic ar
 - `suppressed_repetitive_intents`: otherwise eligible intent events beyond that daily HMAC bucket.
 - `successful_download_redirects`: successful 302 responses from `/download/latest`. These are not artifact responses.
 - `artifact_downloads`: legacy compatibility counter. Historical values have changed qualification rules over time. New reporting must label it `legacy qualified artifact count` when the new measurement tables are unavailable; it must never be silently presented as raw traffic, people, installs, or completion.
+
+The CEO contract intentionally presents `full_artifact_responses` as **full artifact responses offered** and `deduplicated_artifact_clients` as **daily source credits**. It omits partial Range responses from the headline distribution number. A daily source credit may repeat on another day or release and is never a person, installation, user, or completed transfer.
 
 Confirmed product signals remain separate and outrank all proxies. They are limited to acknowledged first launch, locally deduplicated version adoption, startup/manual update checks, successful update staging, reliability, and one-time successful use of major product areas. Workflow outcomes may remain unobserved when telemetry is off or delivery is not acknowledged. Product events contain no persistent installation identifier and cannot be linked into active-day, returning-installation, session, engagement, retention, or cross-day profiles. Qualified route-level update checks are request counts only. Lead records remain separate from analytics and contain only voluntarily submitted form data plus documented point-in-time attribution.
 

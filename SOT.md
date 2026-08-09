@@ -1,5 +1,21 @@
 # Lighthouse — Source of Truth
 
+## CEO decision-report contract — v1.28.0 branch implementation
+
+Authenticated `GET /report?view=ceo` is the additive, versioned decision-report contract for Agent Smith. Contract `1.0` reads existing aggregate and bounded raw-event tables directly; it does not depend on the scheduled `daily_rollup`, add a migration, rewrite history, or change any existing report view. Bare `/report`, `fleet`, `site`, `tgc`, `source_health`, `asset`, and `monthly` remain compatibility contracts.
+
+The CEO contract exposes current-day activity as partial and exposes the latest complete UTC day, the latest seven complete UTC days, the preceding seven complete UTC days, and the latest thirty complete UTC days with exact boundaries. Each source reports availability, freshness, coverage, data-through time, and a bounded reason code. A successful aggregate query can return numeric zero, but without an all-history observation watermark its source fails closed as `unknown` with `source_history_missing`; an old watermark is `stale` with `source_data_stale`. A failed query or absent optional binding is `null` and unavailable; one failed source does not become a believable zero or prevent unrelated sections from returning.
+
+Conservative metric-definition start days are artifact delivery `2026-07-18`, qualified update checks `2026-07-15`, minimized product telemetry `2026-07-24`, BUS Core standardized site reporting `2026-07-18`, TGC consented site reporting `2026-07-18`, voluntary-inquiry reporting `2026-06-01`, Lighthouse error totals `2026-03-10`, and scheduled service probes `2026-07-06`. A window beginning before its source’s definition start is partial even when observed totals exist.
+
+CEO BUS Core facts are literal page views, possible download-interest actions, full artifact responses offered, daily source credits, acknowledged opt-in product events, known-version request counts, and enumerated failure evidence. Full responses exclude partial Range responses. Daily source credits may repeat across days or releases and are not people or installations. TGC business facts are consented `page_view` events and voluntary inquiry rows only. Inquiry attribution is merged into the fixed privacy-safe buckets `(direct)`, `github`, `reddit`, `hacker_news`, `discord`, `google`, `bing`, `linkedin`, `x_twitter`, `meta`, `youtube`, `email`, `partner`, and `other`; raw attribution labels never leave Lighthouse. The contract contains no composite score, inferred adoption, identity, visitor/session identifier, request identifier, IP/user-agent material, form content, or lead PII.
+
+The CEO read is bounded to nine D1 statements when the optional lead binding is configured, executed in sequential batches of at most three. Product totals and named failures use a fixed conditional aggregate, while client-supplied app versions are ranked and limited to ten in D1 before reaching Worker memory. Tests compile the shared Draft 2020-12 schema in strict mode with format validation, validate every acceptance fixture and representative live producer state, and reject producer drift.
+
+Scheduled health checks never call counted `/download/latest` or `/update/check`. They publicly GET the non-counted stable manifest and publicly HEAD its exact canonical release URL, requiring a `200` and positive `Content-Length`. `global_fetch_strictly_public` forces these same-zone requests through Cloudflare’s public routing path. HEAD method semantics keep the probe out of full-response, source-credit, counted-intent, and CEO artifact metrics while still proving Worker routing and artifact delivery.
+
+Agent Smith owns status, trust, wording, and action. Lighthouse owns facts and availability. `contracts/ceo-v1/` is the shared strict schema and fixture authority. This branch is not deployed; production release remains gated by the existing workflow and explicit owner approval.
+
 ## BUS Core acknowledged minimal product signals — v1.27.0 deployed
 
 `POST /telemetry/v1/events` acknowledges the submitted `event_id` only after its bounded deduplication key and aggregate increment have atomically succeeded, or the ID is recognized as a duplicate. BUS Core may remove a queued event only when that exact ID appears in `acknowledged_event_ids`; a generic 2xx response is not delivery proof. Receiver errors and rate limits remain unacknowledged. Migration 0015 removes raw BUS Core product-event history and persistent installation identifiers, retaining only bounded event-ID deduplication keys and aggregate counters.
@@ -10,13 +26,13 @@ Lighthouse must not collect or report module opens, active days, sessions, retur
 
 Migration `0015_minimize_buscore_product_telemetry.sql` was applied remotely on 2026-07-24 before Worker deployment. Remote verification confirmed the raw table and legacy trigger were removed, the bounded dedup table exists, and the existing aggregate remained unchanged. Worker 1.27.0 was deployed at `2026-07-24T16:17:29.479Z` as Cloudflare Version ID `bff7362e-1896-4a1c-b104-ff2afc2351bc`. Non-persisting production probes confirmed the current no-installation-ID payload shape and rejection of removed `active_day`; dedup and aggregate product-event counts remained unchanged.
 
-## TGC consented commercial analytics — v1.26.0 branch implementation
+## TGC aggregate commercial analytics — v1.29.0 branch implementation
 
-The protected `GET /report?view=tgc` view is the canonical on-demand source for True Good Craft website analytics. It reads existing `site_events_raw` storage and returns consented page-execution metrics for today, 7 days, and 30 days: page views, sessions, visitors, first/returning visits, commercial intent, form funnel outcomes, deep-scroll and engaged-time milestones, average page-load/LCP/CLS, top events, paths, sources, campaigns, and sections. It never returns visitor IDs, session IDs, rate identifiers, user-agent hashes, request IDs, or form contents.
+The protected `GET /report?view=tgc` view remains the canonical on-demand diagnostic source for True Good Craft website analytics. Its response shape stays backward-compatible, but the v2 producer no longer supplies identity, scroll, engaged-time, section, field-level form, or first-party web-vital events. Agent Smith's daily/weekly/monthly decision surface uses only consented TGC page views and voluntary inquiry aggregates from `GET /report?view=ceo`.
 
-TGC site ingestion is an explicitly approved exception to the company-wide aggregate-only default. Random first-party visitor and session IDs are justified because aggregate counters alone cannot measure new versus returning visits, sessions per visitor, multi-page journeys, attribution continuity, or funnel progression. The visitor ID is created only after explicit analytics consent and persists in the browser for at most 395 days; the session ID renews after 30 minutes of inactivity. They are used only for TGC website measurement, are not linked to intake identity or other properties, and are not exposed downstream.
+TGC is aggregate-only. For `site_key=tgc_site`, Lighthouse discards `anon_user_id`, `session_id`, and `is_new_user` even if an older producer sends them. The server allowlist accepts page views, selected service/contact/BUS Core/outbound interest, form start/attempt/outcome, and sanitized error categories. It rejects the superseded identity lifecycle, internal-navigation, field-level form, scroll/engagement/section, and first-party web-vital event families.
 
-The server enforces the TGC event allowlist, production-origin match, path/URL consistency, origin-and-path-only URL storage, bounded context, and test-mode exclusion. Form values, typed content, keystrokes, raw IP addresses, user-agent hashes, exact location, fingerprints, cross-site advertising identifiers, and session replay are prohibited. Minute-scoped abuse identifiers use keyed HMAC and are retained for two days; they are not copied into raw events. Scheduled maintenance also nulls legacy IP-hash, user-agent-hash, and request-ID columns in existing site-event rows. Raw TGC events are pruned after 90 days; other site-event raw rows are pruned after 30 days. No new D1 migration is required because the existing site-event schema is reused.
+The server enforces the TGC event allowlist, production-origin match, path/URL consistency, origin-and-path-only URL storage, bounded context, and test-mode exclusion. Form values, typed content, keystrokes, raw IP addresses, user-agent hashes, exact location, fingerprints, cross-site advertising identifiers, and session replay are prohibited. Minute-scoped abuse identifiers use keyed HMAC and are retained for two days; they are not copied into raw events. Scheduled maintenance also nulls legacy IP-hash, user-agent-hash, and request-ID columns in existing site-event rows. Raw TGC events are pruned after 90 days; other site-event raw rows are pruned after 30 days. No migration or report-shape change is required.
 
 Lighthouse remains the source of truth. Agent Smith may present this protected aggregate view through `/tgc`. Airtable may receive curated periodic KPI/campaign/content/experiment summaries later, but must not receive raw events or stable identifiers.
 
@@ -62,7 +78,7 @@ Existing public-site `/metrics/event` and legacy `/metrics/pageview` behavior re
 - Lighthouse is a generic, deterministic metrics primitive; BUS Core is a current observed client/use-case, not a runtime dependency.
 - It serves/proxies manifest data from R2, records daily aggregate counters in D1, records daily Buscore traffic snapshots in D1, accepts first-party pageview events into D1, and exposes an admin-protected multi-view `GET /report` endpoint.
 - It does not post reports to Discord. Discord/operator report requirements are satisfied by authenticated local report payloads unless an outbound sender is explicitly approved in this SOT.
-- Runtime surface: Worker `fetch` handler plus one scheduled daily traffic capture and retention handler.
+- Runtime surface: Worker `fetch` handler plus one scheduled daily job whose independently fail-soft tasks capture the previous completed traffic day, write rollups and public GitHub/probe snapshots, and prune bounded-retention data.
 
 ### Version and Release Authority
 
@@ -104,9 +120,10 @@ New routes/views:
 Scheduling: the existing daily cron `5 0 * * *` now also runs, after traffic capture (so the rollup sees the day's traffic row), the daily-rollup / github-snapshot / health-check / prune writers. Each is independently fail-soft; one failing cannot break the others or core reporting.
 
 Health-probe safety invariants:
-- The update path is validated via the **non-counting manifest read**, never `/update/check` (which would inflate `update_checks`).
-- Artifact reachability uses a **Range `bytes=0-0` GET**, which is excluded from the download counter by design, so probing never inflates `downloads`.
-- The lead endpoint is probed with **GET only** (liveness); Lighthouse never POSTs — no synthetic leads.
+- The update path is validated with a public GET and parse of `/manifest/core/stable.json`, a non-counted route; probes never call `/update/check` or `/download/latest`.
+- Artifact routing and reachability are validated with a public HEAD of the exact manifest-selected canonical `/releases/...` URL. A pass requires status `200` and `Content-Length > 0`; HEAD remains excluded from full-response, daily source-credit, counted-intent, and CEO artifact metrics.
+- `global_fetch_strictly_public` is required so same-zone probe fetches traverse Cloudflare’s public Worker route rather than bypassing it to origin.
+- The lead endpoint is probed with **GET only**; `2xx`, or `405` with `Allow: POST`, proves liveness. `404` fails, and Lighthouse never POSTs a synthetic lead.
 
 Privacy: all four tables are aggregate/operator-authored. No emails, no `bc_uid`/`bc_sid`, no `anon_user_id`/`session_id`, no raw or hashed IPs, no user-agent, no fingerprints. `top_source`/`top_referrer` are channel/domain names, not identities. `view=asset` exposes none of the above.
 
@@ -358,7 +375,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - Table: `site_event_rate_limit`
 - Table: `release_downloads_daily`
 - Table: `release_update_checks_daily`
-- Table: `buscore_product_events_raw`
+- Table: `buscore_product_event_dedup`
 - Table: `buscore_product_events_daily`
 - Table: `buscore_telemetry_rate_limit`
 - Aggregate counters: `update_checks`, `downloads`, `errors`
@@ -382,7 +399,7 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 - `pageview_daily_dim` stores accepted dimension counts for exactly four dimension types: `path`, `referrer_domain`, `src`, and `utm_source`.
 - `pageview_rate_limit` stores approximate per-minute IP-hash counters only for ingestion noise control and has no reporting role.
 - `site_event_rate_limit` stores approximate per-minute IP-hash counters only for standardized event ingestion noise control and has no reporting role.
-- `site_events_raw` stores append-only multi-site event submissions with standard enrichment fields. `site_key` is the per-site discriminator for report isolation. `event_name` identifies the event type within a site. `accepted = 1` means the event was accepted and persisted. `drop_reason` currently uses `rate_limited` for standardized ingest drops. `ip_hash` and `user_agent_hash` are SHA-256 hashes when source values are present; raw values are never stored.
+- `site_events_raw` stores bounded-retention multi-site event submissions with standard enrichment fields. `site_key` is the per-site discriminator for report isolation. `event_name` identifies the event type within a site. `accepted = 1` means the event was accepted and persisted. Current standardized ingestion writes `ip_hash`, `user_agent_hash`, and `request_id` as `null`; short-lived keyed abuse identifiers live only in the rate table.
 - `BUSCORE_LEADS_DB` is read only by the BUS Core `operator_summary` report path. It aggregates `early_access_leads` attribution columns (`src`, `utm_source`, `utm_campaign`, `referrer_domain`, and timestamps) and never returns lead emails, workflow details, analytics IDs, IP addresses, hashed IPs, user-agent hashes, or raw lead rows.
 - `release_downloads_daily` stores one row per day, filename, and release version for qualified, rate-bounded Lighthouse artifact requests.
 - `release_update_checks_daily` stores one row per day, channel, client version bucket, latest manifest version bucket, and `update_available` state for qualified, rate-allowed `GET /update/check` responses.
@@ -410,9 +427,9 @@ No new bindings or secrets are introduced by pageview ingestion.
 
 - Reporting is on-demand only via authenticated `GET /report`.
 - No outbound report delivery.
-- Scheduled traffic capture is separate from report delivery and only writes one daily Buscore traffic snapshot into D1.
+- Scheduled work is separate from report delivery. Its traffic capture, completed-day rollup, GitHub snapshot, service probes, and retention tasks are independently fail-soft.
 - Legacy `/report`, `view=fleet`, and `view=site` each include one best-effort refresh capture for the previous completed UTC day before assembling the response.
-- `view=source_health` intentionally skips the refresh path and reads only currently persisted data.
+- `view=ceo`, `view=tgc`, `view=source_health`, `view=asset`, and `view=monthly` intentionally skip the external refresh path and read currently persisted data directly.
 - When used, the refresh reuses the same per-day capture logic as scheduled capture, remains idempotent via per-day upsert, and does not block successful report responses on capture failure.
 
 ### Semantic Layer Terminology (Canonical)

@@ -1,6 +1,7 @@
 name = "buscore-lighthouse"
 main = "src/index.ts"
 compatibility_date = "2026-02-26"
+compatibility_flags = ["global_fetch_strictly_public"]
 
 [vars]
 # Phase 2 (optional). Code defaults to True-Good-Craft/TGC-BUS-Core if unset.

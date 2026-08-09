@@ -1,0 +1,734 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://truegoodcraft.ca/contracts/ceo-v1/report.schema.json",
+  "title": "TGC CEO Report Contract V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "view",
+    "report_contract_version",
+    "metric_definition_version",
+    "report_id",
+    "generated_at",
+    "display_timezone",
+    "windows",
+    "sources",
+    "bus_core",
+    "business",
+    "details",
+    "limitations"
+  ],
+  "properties": {
+    "view": {
+      "const": "ceo"
+    },
+    "report_contract_version": {
+      "const": "1.0"
+    },
+    "metric_definition_version": {
+      "const": "1.0"
+    },
+    "report_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "display_timezone": {
+      "const": "America/Toronto"
+    },
+    "windows": {
+      "$ref": "#/$defs/reportWindows"
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_delivery",
+        "update_checks",
+        "product_telemetry",
+        "buscore_site",
+        "tgc_site",
+        "voluntary_inquiries",
+        "lighthouse_errors",
+        "service_probes"
+      ],
+      "properties": {
+        "artifact_delivery": {
+          "$ref": "#/$defs/sourceState"
+        },
+        "update_checks": {
+          "$ref": "#/$defs/sourceState"
+        },
+        "product_telemetry": {
+          "$ref": "#/$defs/sourceState"
+        },
+        "buscore_site": {
+          "$ref": "#/$defs/sourceState"
+        },
+        "tgc_site": {
+          "$ref": "#/$defs/sourceState"
+        },
+        "voluntary_inquiries": {
+          "$ref": "#/$defs/sourceState"
+        },
+        "lighthouse_errors": {
+          "$ref": "#/$defs/sourceState"
+        },
+        "service_probes": {
+          "$ref": "#/$defs/sourceState"
+        }
+      }
+    },
+    "bus_core": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site_page_views",
+        "possible_download_interest_actions",
+        "full_artifact_responses_offered",
+        "daily_source_credits",
+        "repeated_full_responses",
+        "limited_artifact_requests",
+        "acknowledged_first_launches",
+        "version_first_seen_events",
+        "acknowledged_workflow_milestones",
+        "known_version_check_requests",
+        "acknowledged_product_failures",
+        "artifact_response_failures",
+        "lighthouse_error_events",
+        "update_check_reconciliation_delta"
+      ],
+      "properties": {
+        "site_page_views": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "possible_download_interest_actions": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "full_artifact_responses_offered": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "daily_source_credits": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "repeated_full_responses": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "limited_artifact_requests": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "acknowledged_first_launches": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "version_first_seen_events": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "acknowledged_workflow_milestones": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "known_version_check_requests": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "acknowledged_product_failures": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "artifact_response_failures": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "lighthouse_error_events": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "update_check_reconciliation_delta": {
+          "$ref": "#/$defs/signedWindowCounts"
+        }
+      }
+    },
+    "business": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tgc_consented_page_views",
+        "voluntary_inquiries",
+        "inquiry_sources_last_7_complete_days"
+      ],
+      "properties": {
+        "tgc_consented_page_views": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "voluntary_inquiries": {
+          "$ref": "#/$defs/windowCounts"
+        },
+        "inquiry_sources_last_7_complete_days": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/sourceCount"
+          }
+        }
+      }
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "versions_observed_last_30_complete_days",
+        "recent_product_failures_by_name",
+        "service_probes"
+      ],
+      "properties": {
+        "versions_observed_last_30_complete_days": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/versionCount"
+          }
+        },
+        "recent_product_failures_by_name": {
+          "type": "array",
+          "maxItems": 7,
+          "items": {
+            "$ref": "#/$defs/failureCount"
+          }
+        },
+        "service_probes": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/serviceProbe"
+          }
+        }
+      }
+    },
+    "limitations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_transfer_completion_known",
+        "source_credits_are_people",
+        "source_credits_are_unique_across_days",
+        "download_interest_distinguishes_page_visit_from_file_click",
+        "product_telemetry_is_opt_in_only"
+      ],
+      "properties": {
+        "artifact_transfer_completion_known": {
+          "const": false
+        },
+        "source_credits_are_people": {
+          "const": false
+        },
+        "source_credits_are_unique_across_days": {
+          "const": false
+        },
+        "download_interest_distinguishes_page_visit_from_file_click": {
+          "const": false
+        },
+        "product_telemetry_is_opt_in_only": {
+          "const": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "reportWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_at",
+        "end_at",
+        "complete"
+      ],
+      "properties": {
+        "start_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "reportWindows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "today",
+        "latest_complete_day",
+        "last_7_complete_days",
+        "previous_7_complete_days",
+        "last_30_complete_days"
+      ],
+      "properties": {
+        "today": {
+          "$ref": "#/$defs/reportWindow"
+        },
+        "latest_complete_day": {
+          "$ref": "#/$defs/reportWindow"
+        },
+        "last_7_complete_days": {
+          "$ref": "#/$defs/reportWindow"
+        },
+        "previous_7_complete_days": {
+          "$ref": "#/$defs/reportWindow"
+        },
+        "last_30_complete_days": {
+          "$ref": "#/$defs/reportWindow"
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "today",
+        "latest_complete_day",
+        "last_7_complete_days",
+        "previous_7_complete_days",
+        "last_30_complete_days"
+      ],
+      "properties": {
+        "today": {
+          "$ref": "#/$defs/coverageValue"
+        },
+        "latest_complete_day": {
+          "$ref": "#/$defs/coverageValue"
+        },
+        "last_7_complete_days": {
+          "$ref": "#/$defs/coverageValue"
+        },
+        "previous_7_complete_days": {
+          "$ref": "#/$defs/coverageValue"
+        },
+        "last_30_complete_days": {
+          "$ref": "#/$defs/coverageValue"
+        }
+      }
+    },
+    "coverageValue": {
+      "enum": [
+        "full",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "availableCoverage": {
+      "type": "object",
+      "$ref": "#/$defs/coverage",
+      "properties": {
+        "today": {
+          "const": "partial"
+        },
+        "latest_complete_day": {
+          "enum": [
+            "full",
+            "partial"
+          ]
+        },
+        "last_7_complete_days": {
+          "enum": [
+            "full",
+            "partial"
+          ]
+        },
+        "previous_7_complete_days": {
+          "enum": [
+            "full",
+            "partial"
+          ]
+        },
+        "last_30_complete_days": {
+          "enum": [
+            "full",
+            "partial"
+          ]
+        }
+      }
+    },
+    "partialCoverage": {
+      "type": "object",
+      "$ref": "#/$defs/coverage",
+      "properties": {
+        "today": {
+          "const": "partial"
+        },
+        "latest_complete_day": {
+          "const": "partial"
+        },
+        "last_7_complete_days": {
+          "const": "partial"
+        },
+        "previous_7_complete_days": {
+          "const": "partial"
+        },
+        "last_30_complete_days": {
+          "const": "partial"
+        }
+      }
+    },
+    "unavailableCoverage": {
+      "type": "object",
+      "$ref": "#/$defs/coverage",
+      "properties": {
+        "today": {
+          "const": "unavailable"
+        },
+        "latest_complete_day": {
+          "const": "unavailable"
+        },
+        "last_7_complete_days": {
+          "const": "unavailable"
+        },
+        "previous_7_complete_days": {
+          "const": "unavailable"
+        },
+        "last_30_complete_days": {
+          "const": "unavailable"
+        }
+      }
+    },
+    "sourceState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability",
+        "freshness",
+        "data_through",
+        "definition_start_day",
+        "coverage",
+        "reason_code"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "available",
+            "unavailable"
+          ]
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ]
+        },
+        "data_through": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "definition_start_day": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
+        },
+        "reason_code": {
+          "enum": [
+            null,
+            "query_failed",
+            "binding_not_configured",
+            "probe_history_missing",
+            "probe_data_stale",
+            "source_history_missing",
+            "source_data_stale"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "available"
+            },
+            "freshness": {
+              "const": "fresh"
+            },
+            "data_through": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "coverage": {
+              "$ref": "#/$defs/availableCoverage"
+            },
+            "reason_code": {
+              "const": null
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "available"
+            },
+            "freshness": {
+              "const": "stale"
+            },
+            "data_through": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "coverage": {
+              "$ref": "#/$defs/availableCoverage"
+            },
+            "reason_code": {
+              "enum": [
+                "probe_data_stale",
+                "source_data_stale"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "available"
+            },
+            "freshness": {
+              "const": "unknown"
+            },
+            "data_through": {
+              "type": "null"
+            },
+            "coverage": {
+              "$ref": "#/$defs/partialCoverage"
+            },
+            "reason_code": {
+              "const": "source_history_missing"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "unavailable"
+            },
+            "freshness": {
+              "const": "unknown"
+            },
+            "data_through": {
+              "type": "null"
+            },
+            "coverage": {
+              "$ref": "#/$defs/unavailableCoverage"
+            },
+            "reason_code": {
+              "enum": [
+                "query_failed",
+                "binding_not_configured",
+                "probe_history_missing"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "windowCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "today",
+        "latest_complete_day",
+        "last_7_complete_days",
+        "previous_7_complete_days",
+        "last_30_complete_days"
+      ],
+      "properties": {
+        "today": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "latest_complete_day": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "last_7_complete_days": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "previous_7_complete_days": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "last_30_complete_days": {
+          "$ref": "#/$defs/nullableCount"
+        }
+      }
+    },
+    "signedWindowCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "today",
+        "latest_complete_day",
+        "last_7_complete_days",
+        "previous_7_complete_days",
+        "last_30_complete_days"
+      ],
+      "properties": {
+        "today": {
+          "$ref": "#/$defs/nullableSignedCount"
+        },
+        "latest_complete_day": {
+          "$ref": "#/$defs/nullableSignedCount"
+        },
+        "last_7_complete_days": {
+          "$ref": "#/$defs/nullableSignedCount"
+        },
+        "previous_7_complete_days": {
+          "$ref": "#/$defs/nullableSignedCount"
+        },
+        "last_30_complete_days": {
+          "$ref": "#/$defs/nullableSignedCount"
+        }
+      }
+    },
+    "nullableCount": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableSignedCount": {
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "count"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "(direct)",
+            "github",
+            "reddit",
+            "hacker_news",
+            "discord",
+            "google",
+            "bing",
+            "linkedin",
+            "x_twitter",
+            "meta",
+            "youtube",
+            "email",
+            "partner",
+            "other"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "versionCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "count"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "failureCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "count"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "update_failure",
+            "startup_failure",
+            "backup_failure",
+            "restore_failure",
+            "migration_failure",
+            "import_failed",
+            "unhandled_application_error"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "serviceProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "state",
+        "checked_at"
+      ],
+      "properties": {
+        "target": {
+          "enum": [
+            "site_home",
+            "site_downloads",
+            "manifest",
+            "release_artifact",
+            "lead_endpoint",
+            "github_release"
+          ]
+        },
+        "state": {
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        },
+        "checked_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

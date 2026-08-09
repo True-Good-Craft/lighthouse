@@ -1,0 +1,314 @@
+{
+  "view": "ceo",
+  "report_contract_version": "1.0",
+  "metric_definition_version": "1.0",
+  "report_id": "00000000-0000-4000-8000-000000000004",
+  "generated_at": "2026-08-08T13:00:00.000Z",
+  "display_timezone": "America/Toronto",
+  "windows": {
+    "today": {
+      "start_at": "2026-08-08T00:00:00.000Z",
+      "end_at": "2026-08-08T13:00:00.000Z",
+      "complete": false
+    },
+    "latest_complete_day": {
+      "start_at": "2026-08-07T00:00:00.000Z",
+      "end_at": "2026-08-08T00:00:00.000Z",
+      "complete": true
+    },
+    "last_7_complete_days": {
+      "start_at": "2026-08-01T00:00:00.000Z",
+      "end_at": "2026-08-08T00:00:00.000Z",
+      "complete": true
+    },
+    "previous_7_complete_days": {
+      "start_at": "2026-07-25T00:00:00.000Z",
+      "end_at": "2026-08-01T00:00:00.000Z",
+      "complete": true
+    },
+    "last_30_complete_days": {
+      "start_at": "2026-07-09T00:00:00.000Z",
+      "end_at": "2026-08-08T00:00:00.000Z",
+      "complete": true
+    }
+  },
+  "sources": {
+    "artifact_delivery": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T13:00:00.000Z",
+      "definition_start_day": "2026-07-18",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "partial"
+      },
+      "reason_code": null
+    },
+    "update_checks": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T13:00:00.000Z",
+      "definition_start_day": "2026-07-15",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "partial"
+      },
+      "reason_code": null
+    },
+    "product_telemetry": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T13:00:00.000Z",
+      "definition_start_day": "2026-07-24",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "partial"
+      },
+      "reason_code": null
+    },
+    "buscore_site": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T13:00:00.000Z",
+      "definition_start_day": "2026-07-18",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "partial"
+      },
+      "reason_code": null
+    },
+    "tgc_site": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T13:00:00.000Z",
+      "definition_start_day": "2026-07-18",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "partial"
+      },
+      "reason_code": null
+    },
+    "voluntary_inquiries": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T13:00:00.000Z",
+      "definition_start_day": "2026-06-01",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "full"
+      },
+      "reason_code": null
+    },
+    "lighthouse_errors": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T13:00:00.000Z",
+      "definition_start_day": "2026-03-10",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "full"
+      },
+      "reason_code": null
+    },
+    "service_probes": {
+      "availability": "available",
+      "freshness": "fresh",
+      "data_through": "2026-08-08T00:04:00.000Z",
+      "definition_start_day": "2026-07-06",
+      "coverage": {
+        "today": "partial",
+        "latest_complete_day": "full",
+        "last_7_complete_days": "full",
+        "previous_7_complete_days": "full",
+        "last_30_complete_days": "full"
+      },
+      "reason_code": null
+    }
+  },
+  "bus_core": {
+    "site_page_views": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "possible_download_interest_actions": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "full_artifact_responses_offered": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "daily_source_credits": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "repeated_full_responses": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "limited_artifact_requests": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "acknowledged_first_launches": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "version_first_seen_events": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "acknowledged_workflow_milestones": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "known_version_check_requests": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "acknowledged_product_failures": {
+      "today": 1,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 1,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 1
+    },
+    "artifact_response_failures": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "lighthouse_error_events": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "update_check_reconciliation_delta": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    }
+  },
+  "business": {
+    "tgc_consented_page_views": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "voluntary_inquiries": {
+      "today": 0,
+      "latest_complete_day": 0,
+      "last_7_complete_days": 0,
+      "previous_7_complete_days": 0,
+      "last_30_complete_days": 0
+    },
+    "inquiry_sources_last_7_complete_days": []
+  },
+  "details": {
+    "versions_observed_last_30_complete_days": [],
+    "recent_product_failures_by_name": [
+      {
+        "name": "startup_failure",
+        "count": 1
+      }
+    ],
+    "service_probes": [
+      {
+        "target": "site_home",
+        "state": "pass",
+        "checked_at": "2026-08-08T00:04:00.000Z"
+      },
+      {
+        "target": "site_downloads",
+        "state": "pass",
+        "checked_at": "2026-08-08T00:05:00.000Z"
+      },
+      {
+        "target": "manifest",
+        "state": "pass",
+        "checked_at": "2026-08-08T00:06:00.000Z"
+      },
+      {
+        "target": "release_artifact",
+        "state": "pass",
+        "checked_at": "2026-08-08T00:07:00.000Z"
+      },
+      {
+        "target": "lead_endpoint",
+        "state": "pass",
+        "checked_at": "2026-08-08T00:08:00.000Z"
+      },
+      {
+        "target": "github_release",
+        "state": "pass",
+        "checked_at": "2026-08-08T00:09:00.000Z"
+      }
+    ]
+  },
+  "limitations": {
+    "artifact_transfer_completion_known": false,
+    "source_credits_are_people": false,
+    "source_credits_are_unique_across_days": false,
+    "download_interest_distinguishes_page_visit_from_file_click": false,
+    "product_telemetry_is_opt_in_only": true
+  }
+}

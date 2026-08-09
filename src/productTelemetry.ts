@@ -53,6 +53,27 @@ export const BUSCORE_TELEMETRY_EVENT_CATEGORIES = {
 
 export type BuscoreTelemetryCategory = keyof typeof BUSCORE_TELEMETRY_EVENT_CATEGORIES;
 export const BUSCORE_TELEMETRY_EVENT_NAMES = Object.values(BUSCORE_TELEMETRY_EVENT_CATEGORIES).flat();
+export const BUSCORE_TELEMETRY_WORKFLOW_MILESTONE_EVENTS = [
+  "first_stock_recorded",
+  "first_contact_created",
+  "first_recipe_created",
+  "first_manufacturing_run_completed",
+  "first_job_completed",
+  "first_invoice_issued",
+  "first_finance_entry_recorded",
+  "first_backup_exported",
+  "restore_completed",
+  "import_completed",
+] as const;
+export const BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS = [
+  "update_failure",
+  "startup_failure",
+  "backup_failure",
+  "restore_failure",
+  "migration_failure",
+  "import_failed",
+  "unhandled_application_error",
+] as const;
 export const BUSCORE_TELEMETRY_RELEASE_CHANNELS = ["stable", "test", "partner-3dque", "lts-1.1", "security-hotfix"] as const;
 export const BUSCORE_TELEMETRY_OS_CATEGORIES = ["windows", "linux", "macos", "other"] as const;
 export const BUSCORE_TELEMETRY_ROOT_FIELDS = ["schema_version", "event_id", "event_name", "client_ts", "context"] as const;
@@ -342,7 +363,11 @@ async function queryBreakdown(
   return (rows.results ?? []).map((row) => ({ key: row.key, events: row.events ?? 0 }));
 }
 
-async function queryProductTelemetryWindow(db: D1Database, startDay: string, endDay: string): Promise<BuscoreProductTelemetryWindow> {
+export async function buildBuscoreProductTelemetryWindow(
+  db: D1Database,
+  startDay: string,
+  endDay: string
+): Promise<BuscoreProductTelemetryWindow> {
   const [total, categoryRows, byEventName, byVersion, byChannel, byOs] = await Promise.all([
     db.prepare("SELECT COALESCE(SUM(event_count), 0) AS events FROM buscore_product_events_daily WHERE day >= ? AND day <= ?").bind(startDay, endDay).first<{ events: number }>(),
     queryBreakdown(db, "category", startDay, endDay, 4),
@@ -384,9 +409,9 @@ export async function buildBuscoreProductTelemetryReport(
   const today = utcDay(now);
   try {
     const [todayWindow, last7Days, last30Days] = await Promise.all([
-      queryProductTelemetryWindow(db, today, today),
-      queryProductTelemetryWindow(db, utcDay(addUtcDays(now, -6)), today),
-      queryProductTelemetryWindow(db, utcDay(addUtcDays(now, -29)), today),
+      buildBuscoreProductTelemetryWindow(db, today, today),
+      buildBuscoreProductTelemetryWindow(db, utcDay(addUtcDays(now, -6)), today),
+      buildBuscoreProductTelemetryWindow(db, utcDay(addUtcDays(now, -29)), today),
     ]);
     return {
       available: true,

@@ -1,6 +1,8 @@
 import {
   BUSCORE_TELEMETRY_PATH,
+  BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS,
   BUSCORE_TELEMETRY_RELEASE_CHANNELS,
+  BUSCORE_TELEMETRY_WORKFLOW_MILESTONE_EVENTS,
   buildBuscoreProductTelemetryReport,
   consumeScopedRateLimit,
   handleBuscoreTelemetryRequest,
@@ -350,7 +352,7 @@ type SiteSectionAvailability = {
   identity: boolean;
   read: boolean;
 };
-type ReportView = "legacy" | "fleet" | "site" | "tgc" | "source_health" | "asset" | "monthly";
+type ReportView = "legacy" | "fleet" | "site" | "tgc" | "source_health" | "asset" | "monthly" | "ceo";
 type ReportWindow = {
   start_day: string;
   end_day: string;
@@ -442,7 +444,97 @@ type ReportRequestResolution =
   | { ok: true; view: "source_health" }
   | { ok: true; view: "asset" }
   | { ok: true; view: "monthly" }
+  | { ok: true; view: "ceo" }
   | { ok: false; error: "invalid_view" | "missing_site_key" | "invalid_site_key" };
+
+export type CeoWindowKey =
+  | "today"
+  | "latest_complete_day"
+  | "last_7_complete_days"
+  | "previous_7_complete_days"
+  | "last_30_complete_days";
+export type CeoWindowValues = Record<CeoWindowKey, number | null>;
+type CeoCoverage = Record<CeoWindowKey, "full" | "partial" | "unavailable">;
+type CeoSourceReason =
+  | null
+  | "query_failed"
+  | "binding_not_configured"
+  | "probe_history_missing"
+  | "probe_data_stale"
+  | "source_history_missing"
+  | "source_data_stale";
+type CeoSourceState = {
+  availability: "available" | "unavailable";
+  freshness: "fresh" | "stale" | "unknown";
+  data_through: string | null;
+  definition_start_day: string | null;
+  coverage: CeoCoverage;
+  reason_code: CeoSourceReason;
+};
+type CeoWindowDefinition = {
+  start_at: string;
+  end_at: string;
+  complete: boolean;
+};
+type CeoWindowRange = CeoWindowDefinition & {
+  start_day: string;
+  end_day: string;
+};
+type CeoWindows = Record<CeoWindowKey, CeoWindowDefinition>;
+type CeoWindowRanges = Record<CeoWindowKey, CeoWindowRange>;
+type CeoMetricMap = {
+  site_page_views: CeoWindowValues;
+  possible_download_interest_actions: CeoWindowValues;
+  full_artifact_responses_offered: CeoWindowValues;
+  daily_source_credits: CeoWindowValues;
+  repeated_full_responses: CeoWindowValues;
+  limited_artifact_requests: CeoWindowValues;
+  acknowledged_first_launches: CeoWindowValues;
+  version_first_seen_events: CeoWindowValues;
+  acknowledged_workflow_milestones: CeoWindowValues;
+  known_version_check_requests: CeoWindowValues;
+  acknowledged_product_failures: CeoWindowValues;
+  artifact_response_failures: CeoWindowValues;
+  lighthouse_error_events: CeoWindowValues;
+  update_check_reconciliation_delta: CeoWindowValues;
+};
+type CeoReportPayload = {
+  view: "ceo";
+  report_contract_version: "1.0";
+  metric_definition_version: "1.0";
+  report_id: string;
+  generated_at: string;
+  display_timezone: "America/Toronto";
+  windows: CeoWindows;
+  sources: {
+    artifact_delivery: CeoSourceState;
+    update_checks: CeoSourceState;
+    product_telemetry: CeoSourceState;
+    buscore_site: CeoSourceState;
+    tgc_site: CeoSourceState;
+    voluntary_inquiries: CeoSourceState;
+    lighthouse_errors: CeoSourceState;
+    service_probes: CeoSourceState;
+  };
+  bus_core: CeoMetricMap;
+  business: {
+    tgc_consented_page_views: CeoWindowValues;
+    voluntary_inquiries: CeoWindowValues;
+    inquiry_sources_last_7_complete_days: Array<{ source: string; count: number }>;
+  };
+  details: {
+    versions_observed_last_30_complete_days: Array<{ version: string; count: number }>;
+    recent_product_failures_by_name: Array<{ name: string; count: number }>;
+    service_probes: Array<{ target: string; state: "pass" | "fail"; checked_at: string }>;
+  };
+  limitations: {
+    artifact_transfer_completion_known: false;
+    source_credits_are_people: false;
+    source_credits_are_unique_across_days: false;
+    download_interest_distinguishes_page_visit_from_file_click: false;
+    product_telemetry_is_opt_in_only: true;
+  };
+};
 type CloudflareGraphQLResponse = {
   data?: {
     viewer?: {
@@ -542,7 +634,7 @@ const PAGEVIEW_ALLOWED_ORIGINS: Set<string> = new Set(
   TRACKED_SITES.find((s) => s.site_key === "buscore")?.allowed_origins ?? []
 );
 const PAGEVIEW_INGEST_VERSION = "1.9.0";
-const SITE_EVENT_INGEST_VERSION = "1.12.0";
+const SITE_EVENT_INGEST_VERSION = "1.13.0";
 const PAGEVIEW_INVALID_JSON_DEBUG_ENABLED = true;
 const PAGEVIEW_INVALID_JSON_DEBUG_PREVIEW_CHARS = 500;
 const PAGEVIEW_RATE_LIMIT_PER_MINUTE = 50;
@@ -566,15 +658,55 @@ const UPDATE_CHECK_ALLOWED_CHANNELS = new Set<string>(BUSCORE_TELEMETRY_RELEASE_
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TGC_ANONYMOUS_ID_PATTERN = /^[vs]_(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 const TGC_SITE_EVENT_ALLOWLIST = new Set([
-  "page_view", "session_start", "first_visit", "returning_visit",
-  "internal_navigation", "outbound_click", "contact_click", "email_click", "buscore_outbound_click",
+  "page_view", "outbound_click", "contact_click", "email_click", "buscore_outbound_click",
   "services_interest", "infrastructure_cta_click", "infrastructure_package_interest", "ops_care_interest",
-  "audit_cta_click", "infrastructure_form_start", "infrastructure_form_submit", "audit_form_start", "audit_form_submit",
-  "form_start", "form_field_complete", "form_validation_error", "form_submit_attempt",
+  "audit_cta_click", "form_start", "form_submit_attempt",
   "form_submit_success", "form_submit_failure", "form_submit_fallback",
-  "scroll_depth", "engaged_time", "section_view",
-  "web_vital_page_load_ms", "web_vital_fcp_ms", "web_vital_lcp_ms", "web_vital_cls", "js_error",
+  "js_error",
 ]);
+const CEO_WINDOW_KEYS: readonly CeoWindowKey[] = [
+  "today",
+  "latest_complete_day",
+  "last_7_complete_days",
+  "previous_7_complete_days",
+  "last_30_complete_days",
+];
+const CEO_SOURCE_DEFINITION_START = {
+  artifact_delivery: "2026-07-18",
+  update_checks: "2026-07-15",
+  product_telemetry: "2026-07-24",
+  buscore_site: "2026-07-18",
+  tgc_site: "2026-07-18",
+  voluntary_inquiries: "2026-06-01",
+  lighthouse_errors: "2026-03-10",
+  service_probes: "2026-07-06",
+} as const;
+const ACTIVE_HEALTH_CHECK_TARGETS = new Set([
+  "site_home",
+  "site_downloads",
+  "manifest",
+  "release_artifact",
+  "lead_endpoint",
+  "github_release",
+]);
+const CEO_INQUIRY_SOURCE_BUCKETS = [
+  "(direct)",
+  "github",
+  "reddit",
+  "hacker_news",
+  "discord",
+  "google",
+  "bing",
+  "linkedin",
+  "x_twitter",
+  "meta",
+  "youtube",
+  "email",
+  "partner",
+  "other",
+] as const;
+type CeoInquirySourceBucket = (typeof CEO_INQUIRY_SOURCE_BUCKETS)[number];
+const CEO_INQUIRY_SOURCE_BUCKET_SET = new Set<string>(CEO_INQUIRY_SOURCE_BUCKETS);
 const PAGEVIEW_ALLOWED_DEVICES = new Set(["desktop", "mobile", "tablet"]);
 const PAGEVIEW_VIEWPORT_PATTERN = /^\d+x\d+$/;
 const BUSCORE_TRAFFIC_QUERY = `query DailyBuscoreTraffic($zoneTag: string, $start: Time!, $end: Time!, $host: string!) {
@@ -914,7 +1046,9 @@ async function recordArtifactOutcome(
     partialResponses: isSuccessfulGet && status === 206 ? 1 : 0,
     headRequests: isHead ? 1 : 0,
     rangeRequests: isRange ? 1 : 0,
-    failedRequests: status >= 400 ? 1 : 0,
+    // HEAD is metadata-only route validation, not an artifact body response.
+    // Keep its outcome in raw/head truth without polluting CEO response-failure facts.
+    failedRequests: !isHead && status >= 400 ? 1 : 0,
     responseBytes: isSuccessfulGet ? responseBytes : 0,
     deduplicatedClients: credit === "credited" ? 1 : 0,
     suppressedRepetitiveRequests: credit === "repeat" ? 1 : 0,
@@ -1110,7 +1244,8 @@ export function normalizeReportView(value: string | null): ReportView | null {
     normalized === "tgc" ||
     normalized === "source_health" ||
     normalized === "asset" ||
-    normalized === "monthly"
+    normalized === "monthly" ||
+    normalized === "ceo"
   ) {
     return normalized;
   }
@@ -1400,9 +1535,9 @@ export function parseCanonicalEventPayload(payload: unknown): SiteEventInput | n
     viewport,
     lang: lang.slice(0, 35),
     tz: tz.slice(0, 80),
-    anon_user_id: normalizeOptionalAnonymousId(root.anon_user_id),
-    session_id: normalizeOptionalAnonymousId(root.session_id),
-    is_new_user: coerceBooleanLikeToInt(root.is_new_user),
+    anon_user_id: siteKey === "tgc_site" ? null : normalizeOptionalAnonymousId(root.anon_user_id),
+    session_id: siteKey === "tgc_site" ? null : normalizeOptionalAnonymousId(root.session_id),
+    is_new_user: siteKey === "tgc_site" ? 0 : coerceBooleanLikeToInt(root.is_new_user),
     event_value: bounded(root.event_value, 160),
     test_mode: coerceBooleanLikeToInt(root.test_mode),
   };
@@ -3668,6 +3803,662 @@ function reportDayBounds(now: Date): {
   };
 }
 
+export function buildCeoReportWindows(now: Date): { windows: CeoWindows; ranges: CeoWindowRanges } {
+  const todayDay = utcDay(now);
+  const latestCompleteDay = utcDay(addUtcDays(now, -1));
+  const last7StartDay = utcDay(addUtcDays(now, -7));
+  const previous7StartDay = utcDay(addUtcDays(now, -14));
+  const previous7EndDay = utcDay(addUtcDays(now, -8));
+  const last30StartDay = utcDay(addUtcDays(now, -30));
+  const todayStart = `${todayDay}T00:00:00.000Z`;
+
+  const ranges: CeoWindowRanges = {
+    today: {
+      start_at: todayStart,
+      end_at: now.toISOString(),
+      complete: false,
+      start_day: todayDay,
+      end_day: todayDay,
+    },
+    latest_complete_day: {
+      start_at: `${latestCompleteDay}T00:00:00.000Z`,
+      end_at: todayStart,
+      complete: true,
+      start_day: latestCompleteDay,
+      end_day: latestCompleteDay,
+    },
+    last_7_complete_days: {
+      start_at: `${last7StartDay}T00:00:00.000Z`,
+      end_at: todayStart,
+      complete: true,
+      start_day: last7StartDay,
+      end_day: latestCompleteDay,
+    },
+    previous_7_complete_days: {
+      start_at: `${previous7StartDay}T00:00:00.000Z`,
+      end_at: `${last7StartDay}T00:00:00.000Z`,
+      complete: true,
+      start_day: previous7StartDay,
+      end_day: previous7EndDay,
+    },
+    last_30_complete_days: {
+      start_at: `${last30StartDay}T00:00:00.000Z`,
+      end_at: todayStart,
+      complete: true,
+      start_day: last30StartDay,
+      end_day: latestCompleteDay,
+    },
+  };
+
+  const windows = Object.fromEntries(
+    CEO_WINDOW_KEYS.map((key) => {
+      const range = ranges[key];
+      return [key, { start_at: range.start_at, end_at: range.end_at, complete: range.complete }];
+    })
+  ) as CeoWindows;
+
+  return { windows, ranges };
+}
+
+type GuardedCeoSource<T> =
+  | { available: true; value: T }
+  | { available: false; reason: "query_failed" | "binding_not_configured" };
+
+async function guardCeoSource<T>(name: string, run: () => Promise<T>): Promise<GuardedCeoSource<T>> {
+  try {
+    return { available: true, value: await run() };
+  } catch (error) {
+    console.warn(`CEO report source unavailable: ${name}.`, error instanceof Error ? error.name : typeof error);
+    return { available: false, reason: "query_failed" };
+  }
+}
+
+function nullCeoWindowValues(): CeoWindowValues {
+  return {
+    today: null,
+    latest_complete_day: null,
+    last_7_complete_days: null,
+    previous_7_complete_days: null,
+    last_30_complete_days: null,
+  };
+}
+
+function selectCeoWindowValues<T>(
+  windows: Record<CeoWindowKey, T>,
+  select: (value: T) => number
+): CeoWindowValues {
+  return Object.fromEntries(
+    CEO_WINDOW_KEYS.map((key) => [key, select(windows[key])])
+  ) as CeoWindowValues;
+}
+
+function coverageForCeoSource(
+  available: boolean,
+  definitionStartDay: string,
+  ranges: CeoWindowRanges
+): CeoCoverage {
+  return Object.fromEntries(
+    CEO_WINDOW_KEYS.map((key) => [
+      key,
+      available
+        ? (key === "today" || definitionStartDay > ranges[key].start_day ? "partial" : "full")
+        : "unavailable",
+    ])
+  ) as CeoCoverage;
+}
+
+function partialCeoCoverage(): CeoCoverage {
+  return Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, "partial"])) as CeoCoverage;
+}
+
+function normalizeCeoDataThrough(value: string | null, now: Date): string | null {
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value === utcDay(now) ? now.toISOString() : `${value}T23:59:59.999Z`;
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  return new Date(Math.min(parsed.getTime(), now.getTime())).toISOString();
+}
+
+function directCeoSourceState(
+  source: GuardedCeoSource<unknown>,
+  definitionStartDay: string,
+  ranges: CeoWindowRanges,
+  now: Date,
+  observedDataThrough: string | null
+): CeoSourceState {
+  if (!source.available) {
+    return {
+      availability: "unavailable",
+      freshness: "unknown",
+      data_through: null,
+      definition_start_day: definitionStartDay,
+      coverage: coverageForCeoSource(false, definitionStartDay, ranges),
+      reason_code: source.reason,
+    };
+  }
+  const dataThrough = normalizeCeoDataThrough(observedDataThrough, now);
+  if (!dataThrough) {
+    return {
+      availability: "available",
+      freshness: "unknown",
+      data_through: null,
+      definition_start_day: definitionStartDay,
+      coverage: partialCeoCoverage(),
+      reason_code: "source_history_missing",
+    };
+  }
+  const stale = dataThrough.slice(0, 10) < ranges.latest_complete_day.end_day;
+  return {
+    availability: "available",
+    freshness: stale ? "stale" : "fresh",
+    data_through: dataThrough,
+    definition_start_day: definitionStartDay,
+    coverage: coverageForCeoSource(true, definitionStartDay, ranges),
+    reason_code: stale ? "source_data_stale" : null,
+  };
+}
+
+type CeoObservedWindows<T> = {
+  windows: Record<CeoWindowKey, T>;
+  data_through: string | null;
+};
+
+function ceoBoundsCte(): string {
+  return `bounds AS (SELECT ${CEO_WINDOW_KEYS.flatMap((key) => [
+    `? AS ${key}_start`,
+    `? AS ${key}_end`,
+  ]).join(", ")})`;
+}
+
+function ceoBoundsBindings(ranges: CeoWindowRanges): string[] {
+  return CEO_WINDOW_KEYS.flatMap((key) => [ranges[key].start_day, ranges[key].end_day]);
+}
+
+function ceoConditionalSums(dayExpression: string, metrics: Record<string, string>): string {
+  return Object.entries(metrics).flatMap(([metric, valueExpression]) =>
+    CEO_WINDOW_KEYS.map((key) =>
+      `COALESCE(SUM(CASE WHEN ${dayExpression} >= bounds.${key}_start AND ${dayExpression} <= bounds.${key}_end THEN ${valueExpression} ELSE 0 END), 0) AS ${metric}_${key}`
+    )
+  ).join(",\n            ");
+}
+
+function ceoMetricValue(row: Record<string, unknown> | null, metric: string, key: CeoWindowKey): number {
+  return Number(row?.[`${metric}_${key}`] ?? 0);
+}
+
+function earliestCeoDataThrough(...values: Array<string | null | undefined>): string | null {
+  const present = values.filter((value): value is string => Boolean(value));
+  return present.length === values.length && present.length > 0
+    ? present.reduce((earliest, value) => value < earliest ? value : earliest)
+    : null;
+}
+
+type CeoArtifactWindow = {
+  full_responses: number;
+  deduplicated_clients: number;
+  suppressed_repetitive_requests: number;
+  rate_limited_requests: number;
+  failed_requests: number;
+};
+
+async function queryCeoArtifactWindows(
+  db: D1Database,
+  ranges: CeoWindowRanges
+): Promise<CeoObservedWindows<CeoArtifactWindow>> {
+  const row = await db.prepare(
+    `WITH ${ceoBoundsCte()}
+     SELECT ${ceoConditionalSums("day", {
+       full_responses: "full_responses",
+       deduplicated_clients: "deduplicated_clients",
+       suppressed_repetitive_requests: "suppressed_repetitive_requests",
+       rate_limited_requests: "rate_limited_requests",
+       failed_requests: "failed_requests",
+     })},
+            (SELECT MAX(day) FROM artifact_traffic_daily) AS data_through
+     FROM artifact_traffic_daily CROSS JOIN bounds
+     WHERE day >= bounds.last_30_complete_days_start AND day <= bounds.today_end`
+  ).bind(...ceoBoundsBindings(ranges)).first<Record<string, unknown>>();
+  const windows = Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, {
+    full_responses: ceoMetricValue(row, "full_responses", key),
+    deduplicated_clients: ceoMetricValue(row, "deduplicated_clients", key),
+    suppressed_repetitive_requests: ceoMetricValue(row, "suppressed_repetitive_requests", key),
+    rate_limited_requests: ceoMetricValue(row, "rate_limited_requests", key),
+    failed_requests: ceoMetricValue(row, "failed_requests", key),
+  }])) as Record<CeoWindowKey, CeoArtifactWindow>;
+  return { windows, data_through: typeof row?.data_through === "string" ? row.data_through : null };
+}
+
+type CeoBuscoreSiteWindow = { page_views: number; probable_download_intents: number };
+
+async function queryCeoBuscoreSiteWindows(
+  db: D1Database,
+  ranges: CeoWindowRanges
+): Promise<CeoObservedWindows<CeoBuscoreSiteWindow>> {
+  const site = getSiteByKey("buscore");
+  if (!site) throw new Error("site_not_registered");
+  const production = buildProductionHostClause(site);
+  const row = await db.prepare(
+    `WITH ${ceoBoundsCte()},
+     matching_pageviews AS (
+       SELECT received_day, received_at
+       FROM site_events_raw
+       WHERE site_key = ? AND accepted = 1 AND test_mode = 0 AND event_name = 'page_view'
+         AND ${production.sql}
+     ),
+     pageviews AS (
+       SELECT ${ceoConditionalSums("received_day", { page_views: "1" })},
+              (SELECT MAX(received_at) FROM matching_pageviews) AS pageview_data_through
+       FROM matching_pageviews CROSS JOIN bounds
+       WHERE received_day >= bounds.last_30_complete_days_start AND received_day <= bounds.today_end
+     ),
+     intent AS (
+       SELECT ${ceoConditionalSums("day", { probable_download_intents: "probable_human_intents" })},
+              (SELECT MAX(day) FROM buscore_download_intent_daily) AS intent_data_through
+       FROM buscore_download_intent_daily CROSS JOIN bounds
+       WHERE day >= bounds.last_30_complete_days_start AND day <= bounds.today_end
+     )
+     SELECT pageviews.*, intent.* FROM pageviews CROSS JOIN intent`
+  ).bind(...ceoBoundsBindings(ranges), "buscore", ...production.bindings).first<Record<string, unknown>>();
+  const windows = Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, {
+    page_views: ceoMetricValue(row, "page_views", key),
+    probable_download_intents: ceoMetricValue(row, "probable_download_intents", key),
+  }])) as Record<CeoWindowKey, CeoBuscoreSiteWindow>;
+  return {
+    windows,
+    data_through: earliestCeoDataThrough(
+      typeof row?.pageview_data_through === "string" ? row.pageview_data_through : null,
+      typeof row?.intent_data_through === "string" ? row.intent_data_through : null
+    ),
+  };
+}
+
+type CeoUpdateWindow = { known_version_checks: number; reconciliation_delta: number };
+
+async function queryCeoUpdateWindows(
+  db: D1Database,
+  ranges: CeoWindowRanges
+): Promise<CeoObservedWindows<CeoUpdateWindow>> {
+  const row = await db.prepare(
+    `WITH ${ceoBoundsCte()},
+     raw AS (
+       SELECT ${ceoConditionalSums("day", { raw_checks: "update_checks" })},
+              (SELECT MAX(day) FROM metrics_daily) AS raw_data_through
+       FROM metrics_daily CROSS JOIN bounds
+       WHERE day >= bounds.last_30_complete_days_start AND day <= bounds.today_end
+     ),
+     detail AS (
+       SELECT ${ceoConditionalSums("day", {
+         detail_checks: "checks",
+         known_checks: `CASE WHEN client_version != '${UNKNOWN_VERSION_BUCKET}' THEN checks ELSE 0 END`,
+       })},
+              (SELECT MAX(day) FROM release_update_checks_daily) AS detail_data_through
+       FROM release_update_checks_daily CROSS JOIN bounds
+       WHERE day >= bounds.last_30_complete_days_start AND day <= bounds.today_end
+     )
+     SELECT raw.*, detail.* FROM raw CROSS JOIN detail`
+  ).bind(...ceoBoundsBindings(ranges)).first<Record<string, unknown>>();
+  const windows = Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, {
+    known_version_checks: ceoMetricValue(row, "known_checks", key),
+    reconciliation_delta: ceoMetricValue(row, "raw_checks", key) - ceoMetricValue(row, "detail_checks", key),
+  }])) as Record<CeoWindowKey, CeoUpdateWindow>;
+  return {
+    windows,
+    data_through: earliestCeoDataThrough(
+      typeof row?.raw_data_through === "string" ? row.raw_data_through : null,
+      typeof row?.detail_data_through === "string" ? row.detail_data_through : null
+    ),
+  };
+}
+
+type CeoProductWindow = {
+  first_launches: number;
+  version_first_seen: number;
+  workflow_milestones: number;
+  product_failures: number;
+  by_app_version: Array<{ key: string; events: number }>;
+  by_event_name: Array<{ key: string; events: number }>;
+};
+
+async function queryCeoProductWindows(
+  db: D1Database,
+  ranges: CeoWindowRanges
+): Promise<CeoObservedWindows<CeoProductWindow>> {
+  const sqlList = (values: readonly string[]): string => values.map((value) => `'${value}'`).join(", ");
+  const failureMetrics = Object.fromEntries(BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS.map((eventName) => [
+    `failure_${eventName}`,
+    `CASE WHEN event_name = '${eventName}' THEN event_count ELSE 0 END`,
+  ]));
+  const row = await db.prepare(
+    `WITH ${ceoBoundsCte()}
+     SELECT ${ceoConditionalSums("day", {
+       first_launches: "CASE WHEN event_name = 'installation_first_launch' THEN event_count ELSE 0 END",
+       version_first_seen: "CASE WHEN event_name = 'version_first_seen' THEN event_count ELSE 0 END",
+       workflow_milestones: `CASE WHEN event_name IN (${sqlList(BUSCORE_TELEMETRY_WORKFLOW_MILESTONE_EVENTS)}) THEN event_count ELSE 0 END`,
+       product_failures: `CASE WHEN event_name IN (${sqlList(BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS)}) THEN event_count ELSE 0 END`,
+       ...failureMetrics,
+     })},
+            (SELECT MAX(day) FROM buscore_product_events_daily) AS data_through
+     FROM buscore_product_events_daily CROSS JOIN bounds
+     WHERE day >= bounds.last_30_complete_days_start AND day <= bounds.today_end`
+  ).bind(...ceoBoundsBindings(ranges)).first<Record<string, unknown>>();
+
+  // app_version is client supplied, so ranking and limiting must happen in D1;
+  // never return the table's high-cardinality dimension rows for JS reduction.
+  const versions = await db.prepare(
+    `SELECT app_version AS key, COALESCE(SUM(event_count), 0) AS events
+     FROM buscore_product_events_daily
+     WHERE day >= ? AND day <= ?
+     GROUP BY app_version
+     ORDER BY events DESC, key ASC
+     LIMIT 10`
+  ).bind(ranges.last_30_complete_days.start_day, ranges.last_30_complete_days.end_day)
+    .all<{ key: string; events: number }>();
+  const topVersions = (versions.results ?? []).map((version) => ({
+    key: version.key,
+    events: Number(version.events ?? 0),
+  }));
+
+  const windows = Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, {
+    first_launches: ceoMetricValue(row, "first_launches", key),
+    version_first_seen: ceoMetricValue(row, "version_first_seen", key),
+    workflow_milestones: ceoMetricValue(row, "workflow_milestones", key),
+    product_failures: ceoMetricValue(row, "product_failures", key),
+    by_app_version: key === "last_30_complete_days" ? topVersions : [],
+    by_event_name: BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS
+      .map((eventName) => ({ key: eventName, events: ceoMetricValue(row, `failure_${eventName}`, key) }))
+      .filter((event) => event.events > 0),
+  }])) as Record<CeoWindowKey, CeoProductWindow>;
+  return { windows, data_through: typeof row?.data_through === "string" ? row.data_through : null };
+}
+
+async function queryCeoSitePageViewWindows(
+  db: D1Database,
+  siteKey: "tgc_site",
+  ranges: CeoWindowRanges
+): Promise<CeoObservedWindows<number>> {
+  const site = getSiteByKey(siteKey);
+  if (!site) throw new Error("site_not_registered");
+  const production = buildProductionHostClause(site);
+  const row = await db.prepare(
+    `WITH ${ceoBoundsCte()},
+     matching_pageviews AS (
+       SELECT received_day, received_at
+       FROM site_events_raw
+       WHERE site_key = ? AND accepted = 1 AND test_mode = 0 AND event_name = 'page_view'
+         AND ${production.sql}
+     )
+     SELECT ${ceoConditionalSums("received_day", { page_views: "1" })},
+            (SELECT MAX(received_at) FROM matching_pageviews) AS data_through
+     FROM matching_pageviews CROSS JOIN bounds
+     WHERE received_day >= bounds.last_30_complete_days_start AND received_day <= bounds.today_end`
+  ).bind(...ceoBoundsBindings(ranges), siteKey, ...production.bindings).first<Record<string, unknown>>();
+  return {
+    windows: Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, ceoMetricValue(row, "page_views", key)])) as Record<CeoWindowKey, number>,
+    data_through: typeof row?.data_through === "string" ? row.data_through : null,
+  };
+}
+
+type CeoLeadAggregate = {
+  windows: Record<CeoWindowKey, number>;
+  sources: Array<{ source: CeoInquirySourceBucket; count: number }>;
+  data_through: string | null;
+};
+
+async function queryCeoLeadAggregates(db: D1Database, ranges: CeoWindowRanges): Promise<CeoLeadAggregate> {
+  const bucketCase = `CASE
+    WHEN raw_source = '' THEN '(direct)'
+    WHEN raw_source = 'github' OR raw_source LIKE '%github.com%' THEN 'github'
+    WHEN raw_source = 'reddit' OR raw_source LIKE '%reddit.com%' THEN 'reddit'
+    WHEN raw_source IN ('hn', 'hacker_news', 'hackernews') OR raw_source LIKE '%news.ycombinator.com%' THEN 'hacker_news'
+    WHEN raw_source = 'discord' OR raw_source LIKE '%discord.%' THEN 'discord'
+    WHEN raw_source = 'google' OR raw_source LIKE '%google.%' THEN 'google'
+    WHEN raw_source = 'bing' OR raw_source LIKE '%bing.com%' THEN 'bing'
+    WHEN raw_source = 'linkedin' OR raw_source LIKE '%linkedin.com%' THEN 'linkedin'
+    WHEN raw_source IN ('x', 'twitter', 'x_twitter') OR raw_source LIKE '%twitter.com%' OR raw_source LIKE '%x.com%' THEN 'x_twitter'
+    WHEN raw_source IN ('meta', 'facebook', 'instagram') OR raw_source LIKE '%facebook.com%' OR raw_source LIKE '%instagram.com%' THEN 'meta'
+    WHEN raw_source = 'youtube' OR raw_source LIKE '%youtube.com%' OR raw_source LIKE '%youtu.be%' THEN 'youtube'
+    WHEN raw_source IN ('email', 'newsletter', 'mailchimp') OR raw_source LIKE '%newsletter%' OR raw_source LIKE '%mailchimp%' THEN 'email'
+    WHEN raw_source = 'partner' OR raw_source LIKE '%partner%' THEN 'partner'
+    ELSE 'other'
+  END`;
+  const countColumns = CEO_WINDOW_KEYS.map((key) =>
+    `COALESCE(SUM(CASE WHEN created_day >= bounds.${key}_start AND created_day <= bounds.${key}_end THEN 1 ELSE 0 END), 0) AS count_${key}`
+  );
+  const sentinelCounts = CEO_WINDOW_KEYS.map(() => "0");
+  const result = await db.prepare(
+    `WITH ${ceoBoundsCte()},
+     normalized AS (
+       SELECT substr(created_at, 1, 10) AS created_day, created_at,
+              lower(trim(COALESCE(NULLIF(utm_source, ''), NULLIF(src, ''), NULLIF(referrer_domain, ''), ''))) AS raw_source
+       FROM early_access_leads
+       WHERE substr(created_at, 1, 10) >= (SELECT last_30_complete_days_start FROM bounds)
+         AND substr(created_at, 1, 10) <= (SELECT today_end FROM bounds)
+     ),
+     bucketed AS (
+       SELECT created_day, created_at, ${bucketCase} AS source FROM normalized
+     )
+     SELECT source, ${countColumns.join(", ")}, MAX(created_at) AS data_through
+     FROM bucketed CROSS JOIN bounds
+     GROUP BY source
+     UNION ALL
+     SELECT NULL, ${sentinelCounts.join(", ")}, (SELECT MAX(created_at) FROM early_access_leads)`
+  ).bind(...ceoBoundsBindings(ranges)).all<Record<string, unknown>>();
+  const sourceCounts = new Map<CeoInquirySourceBucket, number>();
+  const windows = Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, 0])) as Record<CeoWindowKey, number>;
+  let dataThrough: string | null = null;
+  for (const row of result.results ?? []) {
+    if (typeof row.data_through === "string" && (!dataThrough || row.data_through > dataThrough)) {
+      dataThrough = row.data_through;
+    }
+    if (typeof row.source !== "string") continue;
+    const source = (CEO_INQUIRY_SOURCE_BUCKET_SET.has(row.source) ? row.source : "other") as CeoInquirySourceBucket;
+    for (const key of CEO_WINDOW_KEYS) windows[key] += Number(row[`count_${key}`] ?? 0);
+    const count = Number(row.count_last_7_complete_days ?? 0);
+    sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + count);
+  }
+  const sources = [...sourceCounts.entries()]
+    .map(([source, count]) => ({ source, count }))
+    .filter((row) => row.count > 0)
+    .sort((left, right) => (right.count - left.count) || left.source.localeCompare(right.source))
+    .slice(0, 10);
+  return { windows, sources, data_through: dataThrough };
+}
+
+async function queryCeoLighthouseErrorWindows(
+  db: D1Database,
+  ranges: CeoWindowRanges
+): Promise<CeoObservedWindows<number>> {
+  const row = await db.prepare(
+    `WITH ${ceoBoundsCte()}
+     SELECT ${ceoConditionalSums("day", { errors: "errors" })},
+            (SELECT MAX(day) FROM metrics_daily) AS data_through
+     FROM metrics_daily CROSS JOIN bounds
+     WHERE day >= bounds.last_30_complete_days_start AND day <= bounds.today_end`
+  ).bind(...ceoBoundsBindings(ranges)).first<Record<string, unknown>>();
+  return {
+    windows: Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, ceoMetricValue(row, "errors", key)])) as Record<CeoWindowKey, number>,
+    data_through: typeof row?.data_through === "string" ? row.data_through : null,
+  };
+}
+
+type CeoProbeRow = Awaited<ReturnType<typeof queryHealthLatestPerTarget>>[number];
+
+function activeCeoProbeRows(rows: CeoProbeRow[]): CeoProbeRow[] {
+  const latestByTarget = new Map<string, CeoProbeRow>();
+  for (const row of rows) {
+    if (!ACTIVE_HEALTH_CHECK_TARGETS.has(row.target)) continue;
+    const current = latestByTarget.get(row.target);
+    if (!current || row.checked_at > current.checked_at) latestByTarget.set(row.target, row);
+  }
+  return [...latestByTarget.values()].sort((left, right) => left.target.localeCompare(right.target));
+}
+
+function probeCeoSourceState(
+  source: GuardedCeoSource<Awaited<ReturnType<typeof queryHealthLatestPerTarget>>>,
+  ranges: CeoWindowRanges,
+  now: Date
+): CeoSourceState {
+  const definitionStartDay = CEO_SOURCE_DEFINITION_START.service_probes;
+  if (!source.available) {
+    return directCeoSourceState(source, definitionStartDay, ranges, now, null);
+  }
+  const activeRows = activeCeoProbeRows(source.value);
+  const observedTargets = new Set(activeRows.map((row) => row.target));
+  const hasCompleteProbeSet = [...ACTIVE_HEALTH_CHECK_TARGETS].every((target) => observedTargets.has(target));
+  const dataThrough = activeRows.reduce<string | null>(
+    (oldest, row) => !oldest || row.checked_at < oldest ? row.checked_at : oldest,
+    null
+  );
+  if (!hasCompleteProbeSet || !dataThrough) {
+    return {
+      availability: "unavailable",
+      freshness: "unknown",
+      data_through: null,
+      definition_start_day: definitionStartDay,
+      coverage: coverageForCeoSource(false, definitionStartDay, ranges),
+      reason_code: "probe_history_missing",
+    };
+  }
+  const ageMs = now.getTime() - new Date(dataThrough).getTime();
+  const stale = !Number.isFinite(ageMs) || ageMs > 36 * 60 * 60 * 1000;
+  return {
+    availability: "available",
+    freshness: stale ? "stale" : "fresh",
+    data_through: dataThrough,
+    definition_start_day: definitionStartDay,
+    coverage: coverageForCeoSource(true, definitionStartDay, ranges),
+    reason_code: stale ? "probe_data_stale" : null,
+  };
+}
+
+export async function buildCeoReport(
+  db: D1Database,
+  leadsDb: D1Database | undefined,
+  now: Date = new Date()
+): Promise<CeoReportPayload> {
+  const generatedAt = now.toISOString();
+  const { windows, ranges } = buildCeoReportWindows(now);
+
+  // D1 Free allows 50 statements and six simultaneous connections per Worker
+  // invocation. The CEO path uses nine statements when the optional leads DB
+  // is present, launched in bounded batches of at most three.
+  const [artifact, update, product] = await Promise.all([
+    guardCeoSource("artifact_delivery", () => queryCeoArtifactWindows(db, ranges)),
+    guardCeoSource("update_checks", () => queryCeoUpdateWindows(db, ranges)),
+    guardCeoSource("product_telemetry", () => queryCeoProductWindows(db, ranges)),
+  ]);
+  const [buscoreSite, tgcSite, errors] = await Promise.all([
+    guardCeoSource("buscore_site", () => queryCeoBuscoreSiteWindows(db, ranges)),
+    guardCeoSource("tgc_site", () => queryCeoSitePageViewWindows(db, "tgc_site", ranges)),
+    guardCeoSource("lighthouse_errors", () => queryCeoLighthouseErrorWindows(db, ranges)),
+  ]);
+  const missingLeads: GuardedCeoSource<CeoLeadAggregate> = {
+    available: false,
+    reason: "binding_not_configured",
+  };
+  const [probes, leads] = await Promise.all([
+    guardCeoSource("service_probes", () => queryHealthLatestPerTarget(db)),
+    leadsDb
+      ? guardCeoSource("voluntary_inquiries", () => queryCeoLeadAggregates(leadsDb, ranges))
+      : Promise.resolve(missingLeads),
+  ]);
+
+  const artifactValues = <K extends keyof CeoArtifactWindow>(key: K): CeoWindowValues =>
+    artifact.available ? selectCeoWindowValues(artifact.value.windows, (value) => value[key]) : nullCeoWindowValues();
+  const updateValues = <K extends keyof CeoUpdateWindow>(key: K): CeoWindowValues =>
+    update.available ? selectCeoWindowValues(update.value.windows, (value) => value[key]) : nullCeoWindowValues();
+  const productValues = <K extends "first_launches" | "version_first_seen" | "workflow_milestones" | "product_failures">(
+    key: K
+  ): CeoWindowValues => product.available
+    ? selectCeoWindowValues(product.value.windows, (value) => value[key])
+    : nullCeoWindowValues();
+
+  const probeRows = probes.available ? activeCeoProbeRows(probes.value) : [];
+  const last30Product = product.available ? product.value.windows.last_30_complete_days : null;
+  const recentProductWindows = product.available
+    ? [product.value.windows.today, product.value.windows.latest_complete_day]
+    : [];
+  const eventCount = (eventName: string): number =>
+    recentProductWindows.reduce(
+      (total, window) => total + (window.by_event_name.find((row) => row.key === eventName)?.events ?? 0),
+      0
+    );
+
+  return {
+    view: "ceo",
+    report_contract_version: "1.0",
+    metric_definition_version: "1.0",
+    report_id: crypto.randomUUID(),
+    generated_at: generatedAt,
+    display_timezone: "America/Toronto",
+    windows,
+    sources: {
+      artifact_delivery: directCeoSourceState(artifact, CEO_SOURCE_DEFINITION_START.artifact_delivery, ranges, now, artifact.available ? artifact.value.data_through : null),
+      update_checks: directCeoSourceState(update, CEO_SOURCE_DEFINITION_START.update_checks, ranges, now, update.available ? update.value.data_through : null),
+      product_telemetry: directCeoSourceState(product, CEO_SOURCE_DEFINITION_START.product_telemetry, ranges, now, product.available ? product.value.data_through : null),
+      buscore_site: directCeoSourceState(buscoreSite, CEO_SOURCE_DEFINITION_START.buscore_site, ranges, now, buscoreSite.available ? buscoreSite.value.data_through : null),
+      tgc_site: directCeoSourceState(tgcSite, CEO_SOURCE_DEFINITION_START.tgc_site, ranges, now, tgcSite.available ? tgcSite.value.data_through : null),
+      voluntary_inquiries: directCeoSourceState(leads, CEO_SOURCE_DEFINITION_START.voluntary_inquiries, ranges, now, leads.available ? leads.value.data_through : null),
+      lighthouse_errors: directCeoSourceState(errors, CEO_SOURCE_DEFINITION_START.lighthouse_errors, ranges, now, errors.available ? errors.value.data_through : null),
+      service_probes: probeCeoSourceState(probes, ranges, now),
+    },
+    bus_core: {
+      site_page_views: buscoreSite.available
+        ? selectCeoWindowValues(buscoreSite.value.windows, (value) => value.page_views)
+        : nullCeoWindowValues(),
+      possible_download_interest_actions: buscoreSite.available
+        ? selectCeoWindowValues(buscoreSite.value.windows, (value) => value.probable_download_intents)
+        : nullCeoWindowValues(),
+      full_artifact_responses_offered: artifactValues("full_responses"),
+      daily_source_credits: artifactValues("deduplicated_clients"),
+      repeated_full_responses: artifactValues("suppressed_repetitive_requests"),
+      limited_artifact_requests: artifactValues("rate_limited_requests"),
+      acknowledged_first_launches: productValues("first_launches"),
+      version_first_seen_events: productValues("version_first_seen"),
+      acknowledged_workflow_milestones: productValues("workflow_milestones"),
+      known_version_check_requests: updateValues("known_version_checks"),
+      acknowledged_product_failures: productValues("product_failures"),
+      artifact_response_failures: artifactValues("failed_requests"),
+      lighthouse_error_events: errors.available
+        ? selectCeoWindowValues(errors.value.windows, (value) => value)
+        : nullCeoWindowValues(),
+      update_check_reconciliation_delta: updateValues("reconciliation_delta"),
+    },
+    business: {
+      tgc_consented_page_views: tgcSite.available
+        ? selectCeoWindowValues(tgcSite.value.windows, (value) => value)
+        : nullCeoWindowValues(),
+      voluntary_inquiries: leads.available
+        ? selectCeoWindowValues(leads.value.windows, (value) => value)
+        : nullCeoWindowValues(),
+      inquiry_sources_last_7_complete_days: leads.available ? leads.value.sources : [],
+    },
+    details: {
+      versions_observed_last_30_complete_days: (last30Product?.by_app_version ?? []).slice(0, 10).map((row) => ({
+        version: row.key,
+        count: row.events,
+      })),
+      recent_product_failures_by_name: BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS
+        .map((name) => ({ name, count: eventCount(name) }))
+        .filter((row) => row.count > 0),
+      service_probes: probeRows.map((row) => ({
+        target: row.target,
+        state: row.ok === 1 ? "pass" : "fail",
+        checked_at: row.checked_at,
+      })),
+    },
+    limitations: {
+      artifact_transfer_completion_known: false,
+      source_credits_are_people: false,
+      source_credits_are_unique_across_days: false,
+      download_interest_distinguishes_page_visit_from_file_click: false,
+      product_telemetry_is_opt_in_only: true,
+    },
+  };
+}
+
 async function refreshPreviousCompletedTrafficBestEffort(env: Env, now: Date): Promise<void> {
   const previousCompletedDay = utcDay(addUtcDays(now, -1));
   try {
@@ -4781,7 +5572,7 @@ async function pruneHealthChecks(db: D1Database, now: Date = new Date(), days: n
   await db.prepare("DELETE FROM health_checks WHERE checked_at < ?").bind(cutoff).run();
 }
 
-async function runHealthChecks(env: Env): Promise<void> {
+export async function runHealthChecks(env: Env): Promise<void> {
   const results: HealthCheckResult[] = [];
   const push = async (
     target: string,
@@ -4799,32 +5590,52 @@ async function runHealthChecks(env: Env): Promise<void> {
     const response = await fetch("https://buscore.ca/downloads", { redirect: "manual" });
     return { status: response.status, ok: response.status >= 200 && response.status < 400 };
   });
-  // Update path validated via the NON-COUNTING manifest read (never /update/check,
-  // which would inflate update_checks).
+  // The manifest is a non-counted public read. Exercising it validates the
+  // deployed Worker route without manufacturing download intent.
   await push("manifest", async () => {
-    const response = await fetch("https://lighthouse.buscore.ca/manifest/core/stable.json");
-    return { status: response.status, ok: response.status === 200 };
+    const response = await fetch("https://lighthouse.buscore.ca/manifest/core/stable.json", { redirect: "manual" });
+    if (response.status !== 200) return { status: response.status, ok: false, note: "public manifest read failed" };
+    const parsed = JSON.parse(await response.text()) as Record<string, unknown>;
+    const latestUrl = extractLatestDownloadUrl(parsed);
+    return {
+      status: response.status,
+      ok: Boolean(latestUrl && isValidReleaseArtifactUrl(latestUrl)),
+      note: "non-counted public manifest read",
+    };
   });
-  await push("download_latest_redirect", async () => {
-    const response = await fetch("https://lighthouse.buscore.ca/download/latest", { redirect: "manual" });
-    return { status: response.status, ok: response.status === 302 };
-  });
-  // Artifact reachability via a Range bytes=0-0 GET, which is excluded from the
-  // download counter by design, so probing never inflates `downloads`.
-  await push("release_artifact_range", async () => {
-    const redirect = await fetch("https://lighthouse.buscore.ca/download/latest", { redirect: "manual" });
-    const location = redirect.headers.get("Location");
-    if (redirect.status !== 302 || !location) {
-      return { status: redirect.status, ok: false, note: "no redirect location" };
+  // HEAD validates the exact public release route and positive declared size.
+  // Artifact HEAD requests are excluded from full-response, source-credit, and
+  // counted-intent metrics by the public route's method semantics.
+  await push("release_artifact", async () => {
+    const manifestResponse = await fetch("https://lighthouse.buscore.ca/manifest/core/stable.json", { redirect: "manual" });
+    if (manifestResponse.status !== 200) {
+      return { status: manifestResponse.status, ok: false, note: "public manifest read failed" };
     }
-    const artifactUrl = location.startsWith("http") ? location : `https://lighthouse.buscore.ca${location}`;
-    const artifact = await fetch(artifactUrl, { headers: { Range: "bytes=0-0" } });
-    return { status: artifact.status, ok: artifact.status === 206 || artifact.status === 200, note: "range probe" };
+    const manifest = JSON.parse(await manifestResponse.text()) as Record<string, unknown>;
+    const latestUrl = extractLatestDownloadUrl(manifest);
+    if (!latestUrl || !isValidReleaseArtifactUrl(latestUrl)) {
+      return { status: 500, ok: false, note: "manifest artifact URL invalid" };
+    }
+    const artifactUrl = new URL(latestUrl, "https://lighthouse.buscore.ca");
+    if (artifactUrl.origin !== "https://lighthouse.buscore.ca") {
+      return { status: 500, ok: false, note: "manifest artifact is not a Lighthouse route" };
+    }
+    const artifact = await fetch(artifactUrl.toString(), { method: "HEAD", redirect: "manual" });
+    const contentLength = Number.parseInt(artifact.headers.get("Content-Length") ?? "0", 10);
+    return {
+      status: artifact.status,
+      ok: artifact.status === 200 && Number.isFinite(contentLength) && contentLength > 0,
+      note: "non-counted public artifact HEAD",
+    };
   });
   // Lead endpoint liveness via GET only (never POST — no synthetic leads).
   await push("lead_endpoint", async () => {
     const response = await fetch("https://buscore.ca/api/early-access", { method: "GET", redirect: "manual" });
-    return { status: response.status, ok: response.status > 0 && response.status < 500, note: "GET liveness only; no POST" };
+    const allowsPost = (response.headers.get("Allow") ?? "")
+      .split(",")
+      .some((method) => method.trim().toUpperCase() === "POST");
+    const ok = (response.status >= 200 && response.status < 300) || (response.status === 405 && allowsPost);
+    return { status: response.status, ok, note: "GET liveness only; no POST" };
   });
   await push("github_release", async () => {
     const response = await fetch(`https://api.github.com/repos/${githubRepoSlug(env)}/releases/latest`, {
@@ -5972,6 +6783,7 @@ export default {
           reportRequest.view !== "source_health" &&
           reportRequest.view !== "asset" &&
           reportRequest.view !== "monthly" &&
+          reportRequest.view !== "ceo" &&
           reportRequest.view !== "tgc"
         ) {
           await refreshPreviousCompletedTrafficBestEffort(env, now);
@@ -5986,11 +6798,13 @@ export default {
                 ? await buildSiteReport(env.DB, env.BUSCORE_LEADS_DB, now, reportRequest.siteEventFilter)
                 : reportRequest.view === "tgc"
                   ? await buildTgcAnalyticsReport(env.DB, now)
-                : reportRequest.view === "asset"
-                  ? await buildAssetReport(env.DB, env.BUSCORE_LEADS_DB, now)
-                  : reportRequest.view === "monthly"
-                    ? await buildMonthlyAssetReport(env.DB, env.BUSCORE_LEADS_DB, now)
-                    : await buildSourceHealthReport(env.DB, now);
+                  : reportRequest.view === "asset"
+                    ? await buildAssetReport(env.DB, env.BUSCORE_LEADS_DB, now)
+                    : reportRequest.view === "monthly"
+                      ? await buildMonthlyAssetReport(env.DB, env.BUSCORE_LEADS_DB, now)
+                      : reportRequest.view === "ceo"
+                        ? await buildCeoReport(env.DB, env.BUSCORE_LEADS_DB, now)
+                        : await buildSourceHealthReport(env.DB, now);
 
         return withCors(
           request,

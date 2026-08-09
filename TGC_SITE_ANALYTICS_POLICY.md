@@ -2,63 +2,55 @@
 
 ## Status
 
-This is the product-specific declaration for `site_key=tgc_site`. It records the user-approved commercial analytics exception to the company-wide aggregate-only and no-persistent-identifier defaults. It does not change BUS Core, Star Map, or service-intake data policy.
+This is the product-specific declaration for `site_key=tgc_site`. It follows the company-wide aggregate-only and no-persistent-identifier defaults. It does not change BUS Core, Star Map, or service-intake data policy.
 
-## Levels and purposes
+## Purpose and levels
 
-- Page level: consented browser execution, acquisition, content interest, navigation, engagement, funnel outcomes, performance, and sanitized reliability.
-- Host level: Cloudflare traffic as a separate broad traffic source that may include bots and must not be described as human engagement.
+- Page level: consented page execution, current acquisition, selected commercial intent, form outcomes, and sanitized reliability.
+- Host level: Cloudflare traffic is a separate broad source that may include bots and must not be described as human engagement.
 - Internal: protected Lighthouse and Agent Smith aggregate reporting.
-- User level: no analytics-only collection. Information intentionally submitted through an intake remains a separate business relationship path.
+- User level: no analytics identity or profile. Information intentionally submitted through an intake remains a separate business relationship path.
 
-The purpose is to improve TGC content, acquisition, commercial offers, inquiry flow, and site reliability. Each allowed event must answer one of those questions.
+The purpose is to answer: which pages were viewed, where attention came from, which offers drew interest, whether intake submission worked, and whether the site produced a sanitized client error.
 
-## Explicit identifier exception
+## No identity
 
-After explicit analytics consent, the TGC site creates:
+The TGC emitter creates no visitor ID, session ID, first/returning flag, first-touch profile, fingerprint, or other continuity token. Lighthouse discards `anon_user_id`, `session_id`, and `is_new_user` for TGC even if a superseded producer sends them. Operator reports, Airtable summaries, logs, and exports must not expose visitor/session/rate identifiers.
 
-- `anon_user_id`: a random first-party value retained in the browser for at most 395 days.
-- `session_id`: a random first-party value renewed after 30 minutes of inactivity.
-
-Aggregate-only measurement is insufficient for new-versus-returning analysis, sessions per visitor, multi-page journeys, attribution continuity, and service-funnel progression. These identifiers are used only for those TGC website questions.
-
-They are not derived from IP address, user agent, account data, form data, device characteristics, or another property. They are not linked to intake identity, BUS Core, Star Map, advertising networks, or external profiles. They are not exposed in operator reports, Airtable summaries, logs, or exports.
-
-Essential-only choice, Global Privacy Control, and Do Not Track keep optional analytics disabled. Withdrawing consent deletes the browser-side analytics identity.
+Essential-only choice, Global Privacy Control, and Do Not Track keep optional analytics disabled. GPC and DNT override an older stored analytics choice on every page load. The site removes superseded browser identity keys on load.
 
 ## Allowed event data
 
 - production origin and path, with query and fragment removed
 - origin-and-path-only referrer
-- `src` and bounded UTM attribution
+- current `src` and bounded UTM attribution
 - allowlisted semantic event name and bounded event value
-- random visitor/session IDs and new/returning state
-- coarse device, viewport, language, timezone, and edge country
-- scroll/engaged-time/section milestones
-- form identifier, field identifier, validation state, and submit outcome
-- bounded page-load, FCP, LCP, CLS, and sanitized error category
+- coarse device, `small`/`medium`/`large` viewport bucket, language, timezone, and edge country
+- form identifier and start, submit-attempt, success, failure, or fallback outcome
+- sanitized error category
 - test-mode marker
+
+Allowed events are `page_view`; selected outbound/contact/email/BUS Core/service-interest actions; `form_start`; `form_submit_attempt`; `form_submit_success`; `form_submit_failure`; `form_submit_fallback`; and `js_error`.
 
 ## Prohibited data
 
-- form values, names, emails, phone numbers, messages, typed content, or keystrokes
+- visitor/session identity, new/returning state, stored first-touch attribution, or behavioral profiles
+- field-level form or validation events, form values, names, emails, phone numbers, messages, typed content, or keystrokes
+- scroll, engaged-time, section-view, or first-party web-vital events
 - passwords, credentials, intake payloads, or business records
 - raw IP retention, stored user-agent hashes, request IDs in raw TGC events, or exact geolocation
 - fingerprinting, session replay, cross-site advertising IDs, account linking, or enrichment
 - full URL query strings/fragments, arbitrary event names, or arbitrary context keys
-- visitor/session/rate identifiers in operator reports or Airtable
 
 ## Retention
 
 - raw accepted/dropped TGC site events: 90 days
 - minute-scoped keyed abuse-control identifiers: 2 days
-- browser visitor ID: at most 395 days
-- browser session ID: 30 minutes of inactivity
-- longer-lived analytics: aggregate summaries only, without visitor/session/rate identifiers
+- longer-lived analytics: aggregate summaries only
 
 ## Reporting and downstream use
 
-Lighthouse is the source of truth. `GET /report?view=tgc` is the protected aggregate contract and Agent Smith `/tgc` is the on-demand presentation surface. Airtable may later receive curated daily/weekly KPI, campaign, content, and experiment rows. Airtable must not be a raw-event sink.
+Lighthouse is the source of truth. `GET /report?view=ceo` is the decision contract used for Smith's plain-English daily, weekly, and monthly output. `GET /report?view=tgc` remains a protected diagnostic/rollback surface; old identity and engagement fields may describe historical rows but are not supplied by the v2 producer. Airtable may later receive curated aggregate KPI/campaign/content/experiment rows and must not be a raw-event sink.
 
 ## Safety
 
