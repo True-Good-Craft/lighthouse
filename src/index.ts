@@ -5747,18 +5747,32 @@ export async function runHealthChecks(env: Env): Promise<void> {
   // Lead endpoint liveness via GET only (never POST — no synthetic leads).
   await push("lead_endpoint", async () => {
     const response = await fetch("https://buscore.ca/api/early-access", { method: "GET", redirect: "manual" });
-    const allowsPost = (response.headers.get("Allow") ?? "")
-      .split(",")
-      .some((method) => method.trim().toUpperCase() === "POST");
-    const ok = (response.status >= 200 && response.status < 300) || (response.status === 405 && allowsPost);
-    return { status: response.status, ok, note: "GET liveness only; no POST" };
+    const ok = (response.status >= 200 && response.status < 300) || response.status === 405;
+    return { status: response.status, ok, note: "GET liveness only; 405 method boundary accepted; no POST" };
   });
   await push("github_release", async () => {
-    const response = await fetch(`https://api.github.com/repos/${githubRepoSlug(env)}/releases/latest`, {
-      headers: githubHeaders(env),
+    const repo = githubRepoSlug(env);
+    const response = await fetch(`https://github.com/${repo}/releases/latest`, {
+      method: "HEAD",
+      headers: { Accept: "text/html", "User-Agent": "buscore-lighthouse" },
       redirect: "manual",
     });
-    return { status: response.status, ok: response.status === 200 };
+    const location = response.headers.get("Location");
+    let releaseRedirect = false;
+    if (location) {
+      try {
+        const target = new URL(location, "https://github.com");
+        const expectedPrefix = `/${repo}/releases/tag/`.toLowerCase();
+        releaseRedirect = target.origin === "https://github.com"
+          && target.pathname.toLowerCase().startsWith(expectedPrefix)
+          && target.pathname.length > expectedPrefix.length;
+      } catch {
+        releaseRedirect = false;
+      }
+    }
+    const ok = response.status === 200
+      || ([301, 302, 303, 307, 308].includes(response.status) && releaseRedirect);
+    return { status: response.status, ok, note: "public latest-release page; independent of GitHub API quota" };
   });
 
   for (const result of results) {

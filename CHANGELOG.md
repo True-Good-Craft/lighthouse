@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.29.2] - 2026-08-10
+
+- Repaired the lead-endpoint health check so its safe GET probe accepts `405 Method Not Allowed` even when the live endpoint omits an `Allow` header; `404` and other failures still fail, and Lighthouse never creates a synthetic lead.
+- Moved GitHub release liveness off the unauthenticated REST API quota shared by Cloudflare Worker egress. The scheduled probe now HEADs the public latest-release page and validates either `200` or a same-repository release-tag redirect.
+- Kept the CEO report and metric-definition contract at `1.1`; report facts, source freshness/coverage semantics, routes, auth, storage, retention, and scheduled cadence are unchanged.
+- No schema change, D1 migration, secret addition, or secret rotation was required.
+- Deployed to `buscore-lighthouse` on 2026-08-10 at `2026-08-10T15:02:09.239256Z` as Cloudflare Worker version `f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`.
+
 ## [1.29.1] - 2026-08-09
 
 - Prevented scheduled/public metadata `HEAD` probe failures from contaminating the general Lighthouse error counter while preserving genuine manifest `GET` failure accounting and raw/HEAD artifact truth.

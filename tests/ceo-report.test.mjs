@@ -581,7 +581,13 @@ test("health checks exercise only non-counted public manifest HEAD and artifact 
     if (url.endsWith("/releases/BUS-Core-1.4.1.zip")) {
       return new Response(null, { status: 200, headers: { "Content-Length": "123" } });
     }
-    return new Response(null, { status: url.includes("github.com") ? 200 : 204 });
+    if (url === "https://github.com/True-Good-Craft/TGC-BUS-Core/releases/latest") {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://github.com/True-Good-Craft/TGC-BUS-Core/releases/tag/v1.4.1" },
+      });
+    }
+    return new Response(null, { status: 204 });
   };
   const env = {
     DB: makeCeoDb({ sqlLog }),
@@ -612,6 +618,11 @@ test("health checks exercise only non-counted public manifest HEAD and artifact 
     fetched.filter(({ url }) => url.includes("lighthouse.buscore.ca/releases/")),
     [{ url: "https://lighthouse.buscore.ca/releases/BUS-Core-1.4.1.zip", method: "HEAD" }]
   );
+  assert.deepEqual(
+    fetched.filter(({ url }) => url.includes("github.com/")),
+    [{ url: "https://github.com/True-Good-Craft/TGC-BUS-Core/releases/latest", method: "HEAD" }]
+  );
+  assert.equal(fetched.some(({ url }) => url.includes("api.github.com")), false);
   assert.equal(sqlLog.some((sql) => /artifact_traffic_daily|buscore_download_intent_daily|metrics_daily/.test(sql)), false);
   assert.ok(sqlLog.some((sql) => sql.includes("INSERT INTO health_checks")));
 });
@@ -687,6 +698,50 @@ test("health checks reject a 404 lead route and a zero-byte public artifact", as
   );
   assert.deepEqual(inserted.get("release_artifact"), { ok: 0, status: 200 });
   assert.deepEqual(inserted.get("lead_endpoint"), { ok: 0, status: 404 });
+});
+
+test("health checks accept a lead 405 without Allow and validate the public GitHub release redirect", async () => {
+  const runLog = [];
+  const originalFetch = global.fetch;
+  const manifest = { latest: { version: "1.4.1", download: { url: "/releases/BUS-Core-1.4.1.zip" } } };
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/manifest/core/stable.json")) return new Response(null, { status: 200 });
+    if (url.endsWith("/releases/BUS-Core-1.4.1.zip")) {
+      return new Response(null, { status: 200, headers: { "Content-Length": "123" } });
+    }
+    if (url.endsWith("/api/early-access")) return new Response(null, { status: 405 });
+    if (url === "https://github.com/True-Good-Craft/TGC-BUS-Core/releases/latest") {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://github.com/True-Good-Craft/TGC-BUS-Core/releases/tag/v1.4.1" },
+      });
+    }
+    return new Response(null, { status: 204 });
+  };
+  try {
+    await runHealthChecks({
+      DB: makeCeoDb({ runLog }),
+      MANIFEST_R2: {
+        async get() {
+          return { async text() { return JSON.stringify(manifest); } };
+        },
+      },
+      ADMIN_TOKEN: "secret",
+      IGNORED_IP: "",
+      CF_API_TOKEN: "",
+      CF_ZONE_TAG: "",
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  const inserted = new Map(
+    runLog.filter((row) => row.sql.includes("INSERT INTO health_checks"))
+      .map((row) => [row.args[2], { ok: row.args[3], status: row.args[4] }])
+  );
+  assert.deepEqual(inserted.get("lead_endpoint"), { ok: 1, status: 405 });
+  assert.deepEqual(inserted.get("github_release"), { ok: 1, status: 302 });
 });
 
 test("public artifact HEAD proves routing without changing any CEO artifact metric", async () => {

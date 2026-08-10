@@ -1,5 +1,13 @@
 # Lighthouse — Source of Truth
 
+## Service-probe truth repair — v1.29.2 deployed
+
+Version 1.29.2 removes two false-positive service failures without weakening the checked surfaces. The `lead_endpoint` probe remains a GET-only, non-persisting liveness check and accepts either a successful `2xx` response or `405 Method Not Allowed`; a 405 proves that the route exists and enforces its method boundary even when the response omits an `Allow` header. Lighthouse never submits a synthetic lead.
+
+The `github_release` probe no longer consumes the unauthenticated GitHub REST API quota shared by Cloudflare Worker egress. It sends a public `HEAD` request to the configured repository's `/releases/latest` page and accepts either `200` or a same-origin redirect to that repository's non-empty `/releases/tag/<tag>` path. Redirects to another repository or a non-release path fail. The separate scheduled GitHub snapshot remains best-effort and may continue using the API; its availability does not determine the `github_release` service check.
+
+This is a probe-conformance change only. It does not alter the CEO report contract or metric-definition version `1.1`, report windows, source freshness/coverage semantics, public routes, ingestion, storage, retention, auth, secrets, or scheduled cadence. No migration or secret change is required. Version 1.29.2 was deployed on 2026-08-10 at `2026-08-10T15:02:09.239256Z` as Cloudflare Worker version `f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`.
+
 ## Trust and privacy conformance — v1.29.1 deployed
 
 Version 1.29.1 is a conformance patch over the deployed 1.29.0 Worker. Scheduled/public metadata `HEAD` probe failures do not increment the general `metrics_daily.errors` counter, because recurring probes would make that counter an ambiguous mixture of probe traffic and genuine manifest-read failures; the bounded service-probe record remains the health authority. Genuine manifest `GET` failures continue to increment the error counter, and ordinary public artifact `HEAD` requests retain their raw/HEAD counter semantics. CEO possible-download-interest values require an accepted, production, non-test BUS Core `download_click` whose value is a canonical versioned Lighthouse artifact URL, rather than a page view, unrelated action, or generic click; the contract truthfully states that the signal distinguishes page visits from file clicks. This trusted-click metric begins on `2026-08-10`: earlier `buscore_download_intent_daily` rows are excluded from both CEO sums and the source watermark, wholly pre-definition windows return `null`, and spanning or later windows return partial totals from the definition day forward.
@@ -131,7 +139,8 @@ Health-probe safety invariants:
 - Manifest route liveness is validated with public `HEAD /manifest/core/stable.json`; a HEAD miss/error does not increment `metrics_daily.errors`, while a genuine public GET miss/error does. Probes never call `/update/check` or `/download/latest`.
 - Artifact routing and reachability read/parse the bound R2 manifest to select the exact canonical `/releases/...` URL, then validate it with a public HEAD. A pass requires status `200` and `Content-Length > 0`; HEAD remains excluded from full-response, daily source-credit, counted-intent, and CEO artifact metrics while ordinary raw/HEAD artifact accounting remains unchanged.
 - `global_fetch_strictly_public` is required so same-zone probe fetches traverse Cloudflare’s public Worker route rather than bypassing it to origin.
-- The lead endpoint is probed with **GET only**; `2xx`, or `405` with `Allow: POST`, proves liveness. `404` fails, and Lighthouse never POSTs a synthetic lead.
+- The lead endpoint is probed with **GET only**; `2xx` or `405 Method Not Allowed` proves route liveness. `404` fails, and Lighthouse never POSTs a synthetic lead.
+- GitHub release liveness uses public `HEAD /<configured-repository>/releases/latest`, independent of REST API quota. A `200` or same-repository release-tag redirect passes; an unrelated redirect or missing release fails.
 
 Privacy: all four tables are aggregate/operator-authored. No emails, no `bc_uid`/`bc_sid`, no `anon_user_id`/`session_id`, no raw or hashed IPs, no user-agent, no fingerprints. `top_source`/`top_referrer` are channel/domain names, not identities. `view=asset` exposes none of the above.
 

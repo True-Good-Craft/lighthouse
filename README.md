@@ -1,5 +1,9 @@
 # buscore-lighthouse
 
+## 1.29.2 service-probe truth repair
+
+Version 1.29.2 keeps the non-persisting lead liveness check on GET but recognizes `405 Method Not Allowed` as a healthy method boundary even when the endpoint omits `Allow`. GitHub release liveness uses the public latest-release page rather than the quota-limited unauthenticated REST API and validates same-repository release-tag redirects. CEO contract `1.1`, stored metrics, report windows, ingestion, auth, retention, and cron cadence are unchanged; no migration or secret change was required. It is deployed as Cloudflare Worker version `f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`.
+
 ## 1.29.1 trust/privacy conformance
 
 Version 1.29.1 keeps scheduled/public metadata `HEAD` probe failures out of the general Lighthouse error counter while genuine manifest `GET` failures remain counted; service-probe records remain authoritative and raw/HEAD artifact accounting is unchanged. CEO contract and metric-definition version `1.1` require a canonical Lighthouse artifact URL for possible download interest and start that trusted metric on `2026-08-10`; earlier intent rows are excluded rather than relabeled. Available sparse sources report partial—not full—coverage, and unavailable source-dependent detail is `null` instead of a plausible empty array. For `tgc_site`, Lighthouse stores only coarse `small`/`medium`/`large` viewport buckets and event-specific sanitized values. It does not change the D1 schema and requires no migration.
