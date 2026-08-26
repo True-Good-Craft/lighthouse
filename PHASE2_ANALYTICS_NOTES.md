@@ -1,5 +1,7 @@
 # Phase 2 Analytics Foundation — Implementation Notes (Lighthouse)
 
+> **Historical implementation record.** This file preserves the Phase 2 delivery context and is not the current operational runbook. For current behavior use `SOT.md`; for access, side effects, and diagnosis use `OPERATIONS.md`. In particular, current scheduled liveness uses non-counted public manifest HEAD, exact canonical artifact HEAD, GET-only lead probing, and the public GitHub latest-release page as defined by the current SOT.
+
 Scope: Phase 2 of `BUS-Core-Analytics-Plan.md`. Lighthouse (data layer) only.
 No Phase 3, no scoring, no monthly asset brief, no AI, no BUS Core Core changes,
 no invasive telemetry, no PII, no Agent Smith outbound changes.

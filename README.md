@@ -1,5 +1,13 @@
 # buscore-lighthouse
 
+## 1.29.3 operations documentation release
+
+Repository version 1.29.3 adds the canonical operations and diagnostics runbook and a narrow owner-approved documentation-only governance path. It changes no Worker code, route, contract, auth, binding, storage, retention, schedule, integration, migration, secret, or deployment behavior. The deployed Worker remains Lighthouse 1.29.2 (`f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`) with CEO report and metric-definition contract `1.1`; this repository release does not authorize or require a Worker deployment.
+
+## Operations and diagnostics
+
+Use [`OPERATIONS.md`](OPERATIONS.md) as the canonical runbook for Lighthouse alerts, analytics diagnosis, endpoint selection, credential boundaries, and request side effects. Read it after `SOT.md` and before contacting production or Cloudflare. `PHASE2_ANALYTICS_NOTES.md` and `PHASE3_ANALYTICS_NOTES.md` are historical implementation records, not current runbooks.
+
 ## 1.29.2 service-probe truth repair
 
 Version 1.29.2 keeps the non-persisting lead liveness check on GET but recognizes `405 Method Not Allowed` as a healthy method boundary even when the endpoint omits `Allow`. GitHub release liveness uses the public latest-release page rather than the quota-limited unauthenticated REST API and validates same-repository release-tag redirects. CEO contract `1.1`, stored metrics, report windows, ingestion, auth, retention, and cron cadence are unchanged; no migration or secret change was required. It is deployed as Cloudflare Worker version `f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`.
@@ -221,6 +229,8 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 | POST | `/telemetry/v1/events` | Accept one strict BUS Core schema-1.0 event, apply a keyed rotating rate control, and return `202 accepted`, `200 duplicate`, or a bounded error |
 | GET | `/report` | Return protected aggregate report; legacy BUS Core output includes literal `product_telemetry` windows when migration 0013 is available |
 | GET | `/report?view=ceo` | Return the protected CEO contract and metric-definition version `1.1` with exact windows and per-source availability; no legacy view is changed |
+
+This table documents route behavior; it does not authorize production probing. Some GET and HEAD routes refresh, count, persist, or otherwise alter evidence. Consult `OPERATIONS.md` before using any route diagnostically.
 
 Notes:
 - Successful `/manifest/core/stable.json` requests are uncounted. A genuine GET miss/error increments `metrics_daily.errors`; a HEAD miss/error does not.
@@ -724,6 +734,10 @@ Required bindings/secrets:
 - `CF_ZONE_TAG` (required for scheduled Buscore traffic capture)
 - `TELEMETRY_RATE_LIMIT_SECRET` (required in production for keyed standardized-site and BUS Core product-telemetry minute controls and qualified update/artifact daily controls)
 - `BUSCORE_LEADS_DB` (optional external D1 read binding for aggregate BUS Core operator reporting and CEO voluntary-inquiry totals)
+- `GITHUB_REPO` (optional; defaults to `True-Good-Craft/TGC-BUS-Core` for the scheduled GitHub snapshot and latest-release probe)
+- `GITHUB_TOKEN` (optional secret; raises scheduled GitHub API snapshot rate limits and is not required by the public latest-release HEAD probe)
+
+`ADMIN_TOKEN` is a broad administrative credential, not a read-only token. It protects report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Do not expose its value or treat report-read approval as write approval.
 
 No new bindings or secrets are introduced by pageview ingestion.
 
@@ -743,6 +757,10 @@ Traffic capture notes:
 - If the query returns no daily row for the selected day/hostname, Lighthouse treats the run as failed and skips the row.
 - Lighthouse validates that the response includes a numeric daily request `count` field; if missing/undefined/non-numeric, the run is treated as failed and the row is skipped.
 - Bare `/report`, `view=fleet`, and `view=site` perform one best-effort refresh capture for the previous completed UTC day before assembly. Stored-data views, including `view=ceo`, skip that external refresh.
+
+## Provisioning is not diagnosis
+
+The setup commands below create resources, apply migrations, set secrets, start a local runtime, or deploy code. They are provisioning and development procedures, not passive diagnostic steps. Do not run them during read-only incident diagnosis or against remote resources without explicit approval.
 
 ## Setup
 

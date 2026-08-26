@@ -4,6 +4,8 @@ Date: 2026-04-10
 Scope: Lighthouse repo only
 Status: Active baseline for future Lighthouse policy-conformance work
 
+This file is a Lighthouse policy-alignment baseline, not an operations or incident-response runbook. Use `OPERATIONS.md` for current access, endpoint side effects, and diagnostic sequence. Nothing in this plan authorizes production access, probing, writes, migrations, deployment, or cross-repository changes.
+
 ## Mission Constraints
 
 - Preserve BUS Core as the grandfathered `legacy_hybrid` exception.
