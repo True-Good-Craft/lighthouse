@@ -28,6 +28,7 @@ Authority sources in descending order:
 ## Owner Approval and Operational Safety
 
 - Do not commit unless Jamie/the user explicitly approves.
+- Do not push or merge unless Jamie/the user explicitly approves. This repository is connected to Cloudflare Workers Builds: the 1.29.3 review-branch push uploaded a preview Worker version, and a push to the Cloudflare-configured production branch may promote an active deployment independently of the checked-in GitHub Actions gate.
 - Do not deploy, run `wrangler deploy`, apply D1 migrations, rotate secrets, perform destructive operations, or publish releases unless Jamie/the user explicitly approves.
 - When code depends on a D1 schema change, a migration requires explicit approval and remote verification before any Worker deployment.
 - Do not print or commit secret values.
@@ -49,6 +50,7 @@ Operational constraints:
 - `WATCH` is not synonymous with outage; Agent Smith owns WATCH/ALERT/UNAVAILABLE wording, while Lighthouse owns facts and availability.
 - The current `ADMIN_TOKEN` is broad: it protects report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Possession does not authorize writes.
 - Many GET/HEAD surfaces change evidence. Bare/fleet/site reports refresh stored traffic; report failures can increment errors; artifact HEAD records raw/HEAD truth; update, redirect, artifact, telemetry, and admin-write routes are not passive probes.
+- Git publication is not zero-mutation. The 1.29.3 review-branch push triggered Cloudflare Workers Builds, uploaded a Worker preview version, and created preview URLs; future non-production behavior depends on external integration settings. The checked-in workflow's release gate does not govern that separate integration; treat a merge or production-branch push as potentially production-deploying until the Cloudflare build settings are explicitly verified.
 - Lighthouse, Agent Smith, BUS Core, buscore-site, and tgc-site are separate failure domains. Do not infer a cross-service outage from one unavailable layer.
 
 ---

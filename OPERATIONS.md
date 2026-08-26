@@ -2,9 +2,10 @@
 
 - Status: current operational runbook
 - Scope: Lighthouse analytics access, evidence interpretation, and incident diagnosis
-- Runtime baseline: deployed Lighthouse Worker `1.29.2`; repository documentation release `1.29.3`; CEO report and metric-definition contract `1.1`
+- Runtime baseline: last production deployment recorded in repository history is Lighthouse Worker `1.29.2`; repository documentation release `1.29.3`; CEO report and metric-definition contract `1.1`; current active-production state not independently control-plane verified
 - Last reconciled: 2026-08-26
 - Live Lighthouse endpoint and Cloudflare control-plane verification during this documentation change: not performed
+- Repository-publication evidence: the PR branch push triggered Cloudflare Workers Builds, whose check classified uploaded version `33f4db25-9faf-435d-a83e-83d7d1c17eac` as a preview, reported version/branch preview URLs, and did not report an active-production promotion; this is not independent proof of current active-production state
 
 ## Authority and Purpose
 
@@ -27,6 +28,7 @@ The default diagnostic posture is local and zero-mutation:
 - Read repository documentation, contracts, fixtures, configuration names, and code.
 - Inspect local Git state without changing it.
 - Do not contact production, Cloudflare, Discord, GitHub, Airtable, or another service unless the user has authorized that scope.
+- Do not treat `git push` as local-only. This repository's Cloudflare Workers Builds integration uploaded a preview Worker version for the 1.29.3 review-branch push; future branch and production-branch behavior depends on external build settings.
 - Do not run migrations, deployments, scheduled handlers, retention jobs, report snapshots, notes, campaign writes, telemetry submissions, or release downloads during passive diagnosis.
 - Never print, persist, or commit secret values, raw lead data, identifiers, IP material, or other private payloads.
 
@@ -81,6 +83,17 @@ The following identifiers are checked into `wrangler.toml`:
 | Cron | `5 0 * * *` | Daily traffic capture, rollup, GitHub snapshot, service probes, and retention |
 
 The checked-in production consumer endpoint is `https://lighthouse.buscore.ca/report` in `../Agent_Smith/wrangler.toml`. Lighthouse's own `wrangler.toml` does not declare the custom hostname/route, so the consumer configuration is the current repository-visible pointer, not independent deployment proof. A control-plane read is required to verify route attachment; do not infer a `workers.dev` URL from the Worker name.
+
+## Repository Publication and Deployment Paths
+
+| Path | Proven or repository-visible behavior | Operational boundary |
+|---|---|---|
+| `.github/workflows/governance.yml` | Runs dependency installation, typechecking, and the full test suite for every PR and `main` push | Validation only; it does not deploy |
+| `.github/workflows/deploy.yml` | Triggers on `main` push or manual dispatch; both its validation gate and downstream deploy run only for manual dispatch or the workflow's explicit commit-message release opt-in | This release gate governs only the checked-in deploy workflow |
+| Cloudflare Workers Builds, non-production branch | The 1.29.3 review-branch push uploaded a Worker version and produced version/branch preview URLs; the check classified it as a preview and did not report an active-production promotion | This is external preview state created by `git push`, not independent proof of current active-production state. Do not call a preview URL during passive diagnosis because its effective bindings and request side effects have not been separately verified |
+| Cloudflare Workers Builds, configured production branch | Cloudflare-managed production branch and deploy-command settings are outside this repository | A merge or production-branch push is potentially active-production-deploying even if the GitHub Actions deploy job skips; require explicit owner approval and either control-plane verification or explicit acceptance of that consequence |
+
+The absence of Cloudflare deployment secrets in GitHub Actions does not disable Cloudflare Workers Builds, which uses separately managed integration credentials. Do not describe the checked-in workflow as the sole deployment control.
 
 `tgc-ops` is not yet safe as an analytics source of truth: its current records include stale future-tense BUS Core telemetry claims and a reversed Lighthouse/buscore-site dependency. Use owning repositories until that separate repository is explicitly reconciled.
 
@@ -156,6 +169,8 @@ Do not call these during passive diagnosis:
 | `POST /metrics/pageview` and `POST /metrics/event` | Return `204` after body capture, then asynchronously validate, rate-limit, and persist. The HTTP response is not acceptance or persistence proof; invalid pageview bodies can still write dropped-invalid evidence |
 | `POST /telemetry/v1/events` | After basic content-type/size checks, mutates product-telemetry rate-control state before parsing the payload. Valid events then persist deduplication/aggregate state and return an event-ID acknowledgement. The receiver is public and has no diagnostic authentication |
 | `POST /campaign`, `POST /notes`, `POST /report/snapshot` | Explicit protected writes |
+| `git push` to a non-production branch | Connected Cloudflare Workers Builds can upload a preview Worker version and create preview URLs, as observed for the 1.29.3 review branch; the check did not report an active-production promotion, but active-production state was not independently verified |
+| Merge or push to the Cloudflare-configured production branch | May run the integration's externally configured deploy command and promote the active production deployment independently of the checked-in GitHub Actions gate |
 | Scheduled handler, D1 command, migration, secret operation, deployment, release | Operational mutation requiring separate explicit approval |
 
 The existence of a route in `README.md` or `SOT.md` is not authorization to probe it.
@@ -270,6 +285,7 @@ Never report a WATCH as an outage, an access failure as application failure, a s
 - Lighthouse has no least-privilege report-read credential. The current `ADMIN_TOKEN` also authorizes three write routes.
 - This repository has no owner-approved, non-echoing production report helper or canonical operator secret-retrieval mechanism. Until one is separately designed and approved, lack of a safe mechanism is `ACCESS_BLOCKED`.
 - Lighthouse's `wrangler.toml` does not declare the checked-in consumer hostname, so local configuration alone cannot prove the production route attachment.
+- Cloudflare Workers Builds production-branch, build-command, and deploy-command settings are not checked into this repository and were not control-plane verified for this release. The observed branch-preview upload proves the integration is active, so the GitHub Actions gate cannot be used as sole merge-safety evidence.
 - `tgc-ops` analytics/dependency records are stale and cannot yet serve as the trusted cross-repository entry point.
 - BUS Core `1.4.2` has an explicit producer-side code/SOT authority conflict: its code emits repeatable `restore_attempted`, `restore_completed`, `import_completed`, and `import_failed` events, and the current Lighthouse contract accepts them, but they remain outside BUS Core's SOT-authorized signal set. Lighthouse acceptance does not resolve producer authority. Treat their presence as known drift, not approval or a new metric definition; use BUS Core's SOT, operations runbook, and changelog as authority pending separate resolution.
 - Agent Smith exposes no raw diagnostic command. Its retained diagnostic formatter is test-only; current private `/report` is the active business/decision product.
@@ -285,6 +301,7 @@ Separate approval is required before:
 - Any production or external-service request.
 - Any Cloudflare control-plane, log, or D1 access.
 - Any endpoint in Class 3.
+- Any branch push or PR merge; a branch push can create Cloudflare preview state and did so for the 1.29.3 review branch, while a merge is potentially active-production-deploying until the integration settings are verified.
 - Any POST, scheduled invocation, direct SQL, migration, secret operation, deployment, release, commit, push, or cross-repository edit.
 
 When authorization covers only read-only diagnosis, stop before the first action that can mutate evidence or configuration and ask for the narrower additional approval.
