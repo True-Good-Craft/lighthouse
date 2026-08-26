@@ -28,25 +28,51 @@ Authority sources in descending order:
 ## Owner Approval and Operational Safety
 
 - Do not commit unless Jamie/the user explicitly approves.
+- Do not push or merge unless Jamie/the user explicitly approves. This repository is connected to Cloudflare Workers Builds: the 1.29.3 review-branch push uploaded a preview Worker version, and a push to the Cloudflare-configured production branch may promote an active deployment independently of the checked-in GitHub Actions gate.
 - Do not deploy, run `wrangler deploy`, apply D1 migrations, rotate secrets, perform destructive operations, or publish releases unless Jamie/the user explicitly approves.
 - When code depends on a D1 schema change, a migration requires explicit approval and remote verification before any Worker deployment.
 - Do not print or commit secret values.
 - Cross-repository contracts with Agent Smith, BUS Core, buscore-site, or the leads database must be documented when touched.
 
+## Canonical Analytics Access and Diagnostics
+
+For any Lighthouse alert, WATCH, analytics question, report failure, service-health question, or production-access request:
+
+1. Read `SOT.md`, then `OPERATIONS.md`, then the relevant `CHANGELOG.md` entry and contract/fixture.
+2. Treat `OPERATIONS.md` as the canonical procedure for choosing a diagnostic surface and classifying its side effects. It is subordinate to `SOT.md` and cannot authorize behavior absent from the SOT.
+3. Default to local zero-mutation diagnosis. Production, Cloudflare, Discord, GitHub, D1, or other external access requires explicit scope approval.
+4. If the approved endpoint, credential source, account context, or tool access is missing, report `ACCESS_BLOCKED`. Do not improvise an endpoint, credential, direct SQL query, or alternate service.
+5. Do not fan out across every endpoint. Start with supplied evidence; when live access is approved, use the stored-data `GET /report?view=ceo` diagnostic first and narrow from there.
+
+Operational constraints:
+
+- `GET /report?view=source_health` is ingestion-integrity evidence, not service-probe truth.
+- `WATCH` is not synonymous with outage; Agent Smith owns WATCH/ALERT/UNAVAILABLE wording, while Lighthouse owns facts and availability.
+- The current `ADMIN_TOKEN` is broad: it protects report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Possession does not authorize writes.
+- Many GET/HEAD surfaces change evidence. Bare/fleet/site reports refresh stored traffic; report failures can increment errors; artifact HEAD records raw/HEAD truth; update, redirect, artifact, telemetry, and admin-write routes are not passive probes.
+- Git publication is not zero-mutation. The 1.29.3 review-branch push triggered Cloudflare Workers Builds, uploaded a Worker preview version, and created preview URLs; future non-production behavior depends on external integration settings. The checked-in workflow's release gate does not govern that separate integration; treat a merge or production-branch push as potentially production-deploying until the Cloudflare build settings are explicitly verified.
+- Lighthouse, Agent Smith, BUS Core, buscore-site, and tgc-site are separate failure domains. Do not infer a cross-service outage from one unavailable layer.
+
 ---
 
 ## 2. Mandatory Change Bundle
 
-For any non-trivial change, the following **must** be updated together in the same change set:
+For any non-trivial change, the following **must** be updated together in the same change set unless the owner-approved documentation-only exception below applies:
 
 - **Code**
 - **SOT.md**
 - **CHANGELOG.md**
-- **Version** (in `package.json`)
+- **Version** (aligned in `package.json` and `package-lock.json`)
 
 This is a requirement, not a suggestion.
 
-Failure to update all four components is a policy violation.
+Failure to satisfy either the complete bundle or every condition of the documentation-only exception is a policy violation.
+
+### Owner-Approved Documentation-Only Exception
+
+A non-trivial documentation-only change may omit the **Code** component only with explicit owner approval and only when it governs or documents existing runtime behavior without changing it. The change must still update `SOT.md`, `CHANGELOG.md`, `package.json`, and `package-lock.json` together. `CHANGELOG.md` must state that no runtime code, endpoint, response contract, auth, configuration, binding, storage, retention, schedule, integration, migration, secret, or deployment behavior changed.
+
+This exception does not apply when runtime or contract implementation is required. Any such change requires the complete **Code + SOT + CHANGELOG + Version** bundle. Never add a dummy code edit merely to satisfy the normal bundle.
 
 ---
 
@@ -157,6 +183,9 @@ Any agent performing modification work must report:
 - **Version bump** — Old → New
 - **Unresolved drift** — Any conflicts or mismatches found
 - **Blocked items** — Work requiring explicit human approval
+- **Diagnostic access** — None / local only / approved external reads, with the surface named
+- **Production interaction** — Yes/No
+- **Evidence side effects** — Yes/No; name any request that could refresh, count, persist, archive, or otherwise change evidence
 
 Agents must not complete work if any mandatory component is skipped.
 
@@ -240,14 +269,14 @@ Repository-wide integration rule for Lighthouse-tracked public sites:
 ## Summary
 
 **Before making changes:**
-1. Read SOT.md and CHANGELOG.md
-2. Understand current documented behavior
+1. Read SOT.md, OPERATIONS.md, and CHANGELOG.md
+2. Understand current documented behavior and the diagnostic side-effect class
 
 **When making changes:**
-1. Update code
+1. Update code, unless the explicit owner-approved documentation-only exception applies
 2. Update SOT.md
 3. Update CHANGELOG.md
-4. Bump version in `package.json`
+4. Bump and align the version in `package.json` and `package-lock.json`
 5. Report all changes explicitly
 
 **Golden rule:**

@@ -1,5 +1,11 @@
 # Lighthouse — Source of Truth
 
+## Canonical operations and diagnostics — v1.29.3 documentation release
+
+Version 1.29.3 establishes `OPERATIONS.md` as the canonical runbook, subordinate to this SOT, for choosing Lighthouse diagnostic surfaces, identifying credential and ownership boundaries, classifying evidence side effects, and reporting `ACCESS_BLOCKED` when approved access is unavailable. It also marks the Phase 2, Phase 3, and policy-alignment documents as historical or scoped references rather than current incident authority.
+
+This is an owner-approved documentation-only governance release. It changes no Worker source code or deployed behavior: no endpoint, response contract, auth, configuration, binding, storage, retention, schedule, integration, migration, secret, or deployment behavior changes. The repository and lockfile version advance because the documented operator workflow changed. No active-production Worker promotion is required or authorized by this release. The last production deployment recorded in repository history is Lighthouse 1.29.2, Cloudflare Worker version `f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`, with CEO report and metric-definition contract `1.1`; active-production state was not independently control-plane verified during this documentation release. Publishing the review branch caused the separately connected Cloudflare Workers Builds integration to upload version `33f4db25-9faf-435d-a83e-83d7d1c17eac`; its check classified the upload as a preview, reported version/branch preview URLs, and did not report an active-production promotion. That check is not proof of current active-production state and does not authorize a merge.
+
 ## Service-probe truth repair — v1.29.2 deployed
 
 Version 1.29.2 removes two false-positive service failures without weakening the checked surfaces. The `lead_endpoint` probe remains a GET-only, non-persisting liveness check and accepts either a successful `2xx` response or `405 Method Not Allowed`; a 405 proves that the route exists and enforces its method boundary even when the response omits an `Allow` header. Lighthouse never submits a synthetic lead.
@@ -52,7 +58,7 @@ The server enforces the TGC event allowlist, production-origin match, path/URL c
 
 Lighthouse remains the source of truth. Agent Smith may present this protected aggregate view through `/tgc`. Airtable may receive curated periodic KPI/campaign/content/experiment summaries later, but must not receive raw events or stable identifiers.
 
-Worker 1.29.1 was deployed on `2026-08-09T16:41:20.004814Z` as Cloudflare Version ID `ee320e1a-9ceb-4d88-a848-fd7ae0e9e3bc`; it supersedes the earlier 1.29.0 deployment. The repository's normal production path is `.github/workflows/deploy.yml`, which runs the complete typecheck/test gate and deploys only on manual dispatch or an explicitly marked main-branch commit. Because that repository currently has no Cloudflare credential secrets configured, the owner-approved 1.29.1 release used authenticated local Wrangler after the same gate; no secret value changed. Wrangler deployment preserves separately provisioned Worker secrets. Schema migrations remain a separate, explicit operation. Migration 0015 was remotely verified before Worker 1.27.0 deployment; 1.29.0 and 1.29.1 required no migration.
+Worker 1.29.1 was deployed on `2026-08-09T16:41:20.004814Z` as Cloudflare Version ID `ee320e1a-9ceb-4d88-a848-fd7ae0e9e3bc`; it supersedes the earlier 1.29.0 deployment. The repository-visible `.github/workflows/governance.yml` runs dependency installation, typechecking, and the full test suite for every PR and `main` push. Separately, `.github/workflows/deploy.yml` triggers on `main` pushes and manual dispatch, but its complete typecheck/test gate and downstream deploy run only for manual dispatch or an explicitly marked main-branch commit. A separate Cloudflare Workers Builds Git integration also exists outside those workflows and uses Cloudflare-managed build settings and credentials: the 1.29.3 review-branch push was observed on 2026-08-26 to upload a version that its check classified as a preview and for which it reported version/branch preview URLs; the check did not report an active-production promotion, and active-production state was not independently control-plane verified. A push to the integration's configured production branch may run its configured deploy command and promote the active deployment. The production branch and deploy command are not checked into this repository and were not control-plane verified for the 1.29.3 documentation release, so the GitHub Actions release gate must not be treated as the sole production control. The owner-approved 1.29.1 release used authenticated local Wrangler after the same test gate; no secret value changed. Wrangler deployment preserves separately provisioned Worker secrets. Schema migrations remain a separate, explicit operation. Migration 0015 was remotely verified before Worker 1.27.0 deployment; 1.29.0 and 1.29.1 required no migration.
 
 ## BUS Core traffic truth and bounded delivery work — v1.25.0 deployed
 
@@ -119,9 +125,26 @@ Additional constraints:
 - External services may call Lighthouse or consume Lighthouse outputs, but no Lighthouse core feature may require those services to be up.
 - Proposed features that create hard runtime dependencies on external products are out of scope unless reworked to preserve independent operation.
 
+### Operational Diagnostics Authority
+
+`OPERATIONS.md` is the canonical access and diagnostic runbook for the shipped behavior in this SOT. It is subordinate to this SOT and may not introduce or authorize a route, credential, query, storage meaning, or status that is not grounded here and in current code.
+
+Operational access rules:
+
+- Default diagnosis is local and zero-mutation. Any production, Cloudflare, Discord, GitHub, D1, or other external interaction requires explicit scope approval.
+- When an approved endpoint, credential source, account context, or tool authorization is unavailable, the result is `ACCESS_BLOCKED`, not a Lighthouse outage. Agents must not substitute guessed URLs, unrelated credentials, direct D1 SQL, or broader probes.
+- Protected `view=ceo`, `view=tgc`, `view=source_health`, `view=asset`, and `view=monthly` skip the best-effort traffic refresh and are the read-mostly report surfaces. They are not guaranteed zero-write because a report-assembly failure best-effort increments `metrics_daily.errors`.
+- Bare `/report`, `view=fleet`, and `view=site` perform a best-effort previous-completed-day traffic capture/upsert before assembly. Public manifest GET failures, update checks, download redirects, artifact requests, telemetry submissions, admin POST routes, scheduled work, D1 operations, migrations, deployments, and releases can also mutate evidence or state as specified by their route contracts.
+- `HEAD /manifest/core/stable.json` does not increment `metrics_daily.errors`. `HEAD /releases/:filename` still records raw/HEAD artifact truth and therefore is not a zero-mutation diagnostic.
+- `view=source_health` is telemetry-ingestion integrity, not endpoint liveness. Scheduled `health_checks` and CEO `details.service_probes` are the service-probe evidence.
+- Agent Smith owns WATCH/ALERT/UNAVAILABLE and report-delivery wording. Lighthouse owns facts, availability, exact windows, source state, limitations, and scheduled probe rows. A WATCH is not automatically an outage.
+- Repository publication is operational state, not a zero-mutation diagnostic. Connected Cloudflare Workers Builds uploaded a non-production preview version from the 1.29.3 review branch independently of `.github/workflows/deploy.yml`; future branch behavior depends on external integration settings. Because its production branch and deploy command are control-plane configuration rather than repository state, a merge or production-branch push must be treated as potentially active-production-deploying until explicitly verified and approved.
+- Known producer-side drift must be reported rather than normalized. BUS Core `1.4.2` emits repeatable `restore_attempted`, `restore_completed`, `import_completed`, and `import_failed` events that the current Lighthouse contract accepts, but those events remain outside BUS Core's SOT-authorized signal set. Lighthouse acceptance does not grant producer authority; BUS Core's SOT governs pending a separate resolution.
+- Lighthouse, Agent Smith, BUS Core, buscore-site, and tgc-site remain independent failure domains; one unavailable producer, consumer, optional binding, or presentation layer must not be promoted into an unsupported cross-service diagnosis.
+
 ## 1a. Phase 2 Analytics Foundation (v1.17.0)
 
-Phase 2 of `BUS-Core-Analytics-Plan.md`. Additive, aggregate/operator-only, no PII, no new user telemetry. Lighthouse remains the data layer and still does not post to Discord. See `PHASE2_ANALYTICS_NOTES.md`.
+Phase 2 of `BUS-Core-Analytics-Plan.md`. Additive, aggregate/operator-only, no PII, no new user telemetry. Lighthouse remains the data layer and still does not post to Discord. `PHASE2_ANALYTICS_NOTES.md` is a historical implementation record; use this SOT and `OPERATIONS.md` for current behavior and diagnostics.
 
 Four additive D1 tables and their scheduled writers:
 - `daily_rollup` — one aggregate row per completed UTC day. Writer runs in the daily cron for the **previous completed UTC day** (never partial-day). Reuses existing report query helpers; `wqpi = artifact_downloads + attributed_leads` (same definition as the Phase 1 brief). Missing inputs (e.g. no `BUSCORE_LEADS_DB`) are stored `null`, never faked. `return_rate` is stored `null` (a 7-day windowed metric, not an honest single-day value). Idempotent: `INSERT ... ON CONFLICT(day) DO UPDATE`, `day` is PRIMARY KEY.
@@ -148,7 +171,7 @@ Configuration additions (both optional): `GITHUB_REPO` (defaults to `True-Good-C
 
 ## 1b. Phase 3 Analytics: Monthly Asset Brief, Scoring, Archival (v1.18.0)
 
-Phase 3 of `BUS-Core-Analytics-Plan.md`. Additive, aggregate-only, no PII, no new telemetry, no AI. Lighthouse remains the data/scoring layer and still does not post to Discord (Agent Smith posts and archives). See `PHASE3_ANALYTICS_NOTES.md`.
+Phase 3 of `BUS-Core-Analytics-Plan.md`. Additive, aggregate-only, no PII, no new telemetry, no AI. Lighthouse remains the data/scoring layer and still does not post to Discord (Agent Smith posts and archives). `PHASE3_ANALYTICS_NOTES.md` is a historical implementation record; use this SOT and `OPERATIONS.md` for current behavior and diagnostics.
 
 Two additive D1 tables (migration `0011_add_phase3_report_and_notes.sql`):
 - `report_snapshots(id, generated_at, kind, status, wqpi, summary_json, narrative)` — dated archive of each generated brief. Aggregate only, indefinite retention.
@@ -437,6 +460,8 @@ Required bindings/secrets used by code:
 - `CF_ZONE_TAG` — required for the approved daily Buscore traffic capture job.
 - `TELEMETRY_RATE_LIMIT_SECRET` — required in production; keys scope-separated standardized-site and BUS Core product-telemetry identifiers that rotate by UTC minute and qualified update-check/artifact-request identifiers that use UTC-day buckets. Update-check and artifact-request counting fail closed when this secret is absent. A random per-isolate fallback remains local-development compatibility for product telemetry only, not the production contract.
 - `BUSCORE_LEADS_DB` — optional external read binding used only for aggregate BUS Core operator reporting and CEO voluntary-inquiry totals; Lighthouse core operation and all unrelated report sources remain available when it is absent.
+- `GITHUB_REPO` — optional configured repository slug for the scheduled GitHub snapshot and latest-release probe; defaults to `True-Good-Craft/TGC-BUS-Core` when absent.
+- `GITHUB_TOKEN` — optional secret used by the scheduled GitHub API snapshot to raise rate limits. It is not required by the public latest-release HEAD probe; absence degrades unavailable snapshot fields to `null` rather than fabricated values.
 
 Not used by current code:
 
@@ -648,6 +673,7 @@ Rules:
 - Lighthouse must not combine `anon_user_id` with `ip_hash` or `user_agent_hash` into synthetic identity.
 - Traffic capture uses Cloudflare aggregate analytics only; no raw request logging is introduced outside the documented narrow pageview ingestion path.
 - `/report` is protected by `X-Admin-Token` exact match to `env.ADMIN_TOKEN`.
+- `ADMIN_TOKEN` is a broad administrative credential, not a read-only diagnostic token. The same exact-match credential protects `GET /report` and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Authorization to read a report does not imply authorization to call those writes.
 
 ## 8. Explicit Non-Features
 

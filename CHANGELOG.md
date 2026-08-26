@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.29.3] - 2026-08-26
+
+- Added `OPERATIONS.md` as the canonical Lighthouse access and diagnostic runbook, including ownership boundaries, resource and credential maps, a morning-triage sequence, source/probe interpretation, and standard incident output.
+- Routed agents and operators through the SOT and runbook before live access, with an explicit `ACCESS_BLOCKED` outcome when approved endpoint, credential, account, or tool access is unavailable.
+- Documented that the shared `ADMIN_TOKEN` is broad and protects both report reads and administrative writes.
+- Classified report, manifest, update, redirect, artifact, telemetry, scheduled, D1, deployment, and administrative surfaces by their possible evidence/state side effects.
+- Recorded the separately connected Cloudflare Workers Builds path: publishing the review branch automatically uploaded preview Worker version `33f4db25-9faf-435d-a83e-83d7d1c17eac` and created version/branch preview URLs. The Cloudflare check classified the upload as a preview and did not report an active-production promotion; active-production state was not independently control-plane verified. The checked-in GitHub Actions release gate does not govern this integration, so a merge remains potentially production-deploying until the Cloudflare production-branch and deploy-command settings are explicitly verified or the owner accepts that consequence.
+- Marked the Phase 2, Phase 3, and policy-alignment documents as scoped historical or policy references rather than current operations authority.
+- Reconciled cross-repository producer baselines to released BUS Core `1.4.2` and the merged buscore-site `1.4.2` release sync while retaining Agent Smith `0.25.2` as shipped authority; recorded the unresolved BUS Core restore/import signal authority drift rather than legitimizing it.
+- Added the explicit owner-approved documentation-only bundle exception: code may be omitted only when runtime and contract behavior do not change; SOT, changelog, package, and lockfile remain mandatory, and dummy code changes are forbidden.
+- No Worker code, endpoint, response contract, auth, configuration, binding, storage, retention, schedule, integration, migration, secret, or deployment behavior changed. The last production deployment recorded in repository history is Lighthouse 1.29.2 (`f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`) with CEO contract `1.1`; version 1.29.3 identifies this repository documentation release. The automatic preview upload above is external publication evidence, not proof of current active-production state.
+
 ## [1.29.2] - 2026-08-10
 
 - Repaired the lead-endpoint health check so its safe GET probe accepts `405 Method Not Allowed` even when the live endpoint omits an `Allow` header; `404` and other failures still fail, and Lighthouse never creates a synthetic lead.

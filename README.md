@@ -1,5 +1,13 @@
 # buscore-lighthouse
 
+## 1.29.3 operations documentation release
+
+Repository version 1.29.3 adds the canonical operations and diagnostics runbook and a narrow owner-approved documentation-only governance path. It changes no Worker code, route, contract, auth, binding, storage, retention, schedule, integration, migration, secret, or deployment behavior. The last production deployment recorded in repository history is Lighthouse 1.29.2 (`f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`) with CEO report and metric-definition contract `1.1`; active-production state was not independently control-plane verified during this documentation release. This release does not authorize or require an active-production promotion. Publishing the review branch did cause the separately connected Cloudflare Workers Builds integration to upload a version that its check classified as a preview and for which it reported version/branch preview URLs, as recorded in `CHANGELOG.md` and `OPERATIONS.md`.
+
+## Operations and diagnostics
+
+Use [`OPERATIONS.md`](OPERATIONS.md) as the canonical runbook for Lighthouse alerts, analytics diagnosis, endpoint selection, credential boundaries, and request side effects. Read it after `SOT.md` and before contacting production or Cloudflare. `PHASE2_ANALYTICS_NOTES.md` and `PHASE3_ANALYTICS_NOTES.md` are historical implementation records, not current runbooks.
+
 ## 1.29.2 service-probe truth repair
 
 Version 1.29.2 keeps the non-persisting lead liveness check on GET but recognizes `405 Method Not Allowed` as a healthy method boundary even when the endpoint omits `Allow`. GitHub release liveness uses the public latest-release page rather than the quota-limited unauthenticated REST API and validates same-repository release-tag redirects. CEO contract `1.1`, stored metrics, report windows, ingestion, auth, retention, and cron cadence are unchanged; no migration or secret change was required. It is deployed as Cloudflare Worker version `f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`.
@@ -28,7 +36,7 @@ Production Worker 1.29.0 narrows the consented `site_key=tgc_site` lane to aggre
 
 The server accepts page views, selected commercial/contact/outbound interest, form start/attempt/outcome, and sanitized errors. Version 1.29.1 accepts a producer-supplied coarse viewport label or, for rolling compatibility, exact lowercase `WIDTHxHEIGHT`; exact dimensions are immediately normalized by width to `small` below 768, `medium` from 768 through 1199, or `large` from 1200 upward, and only that bucket is stored. Event-specific value sanitization turns recognized form, error, and outbound values into bounded categories, unrecognized non-empty values into `other`, and discards absent/blank values or values on the remaining TGC events. Lighthouse discards visitor/session fields and rejects the superseded lifecycle, field-level form, scroll/engagement/section, and first-party web-vital event families. The existing TGC report shape remains available for rollback and historical rows; Smith's CEO lane uses page views and voluntary inquiries only. Raw TGC events are retained for 90 days; other standardized-site raw events retain the general 30-day policy, and rotating keyed rate identifiers are retained for two days. See `TGC_SITE_ANALYTICS_POLICY.md` for the current boundaries.
 
-Production deploys use the gated `.github/workflows/deploy.yml`: full tests first, then Wrangler only on manual dispatch or an explicitly marked release merge. Migrations remain separate and are never implied by deployment.
+The repository-visible `.github/workflows/governance.yml` runs `npm ci`, typechecking, and the full test suite for every PR and `main` push. Separately, `.github/workflows/deploy.yml` triggers on `main` pushes and manual dispatch, but its validation gate and downstream Wrangler deployment run only for manual dispatch or an explicitly marked release commit. Neither workflow is the only Cloudflare path: the separately connected Cloudflare Workers Builds integration uploaded a version from the 1.29.3 review branch that its check classified as a preview, and it can deploy from its configured production branch. Those production-branch and deploy-command settings are not checked into this repository and were not read from the control plane during the 1.29.3 documentation release. Treat a merge to `main` as potentially production-deploying until those settings are explicitly verified or the owner accepts that consequence. Migrations remain separate and are never implied by deployment.
 
 BUS Core artifact delivery and demand semantics are defined in `BUS_CORE_TRAFFIC_TRUTH.md`. Version 1.25.0 keeps downloads public while separating raw Worker traffic, successful artifact responses, privacy-preserving daily client-network buckets, probable-human intent proxies, confirmed product telemetry, and leads. Migration `0014_add_artifact_traffic_truth.sql` was applied remotely before the 2026-07-18 v1.25.0 deployment.
 
@@ -221,6 +229,8 @@ dev_mode=1; Domain=.buscore.ca; Path=/; Max-Age=31536000; SameSite=Lax; Secure
 | POST | `/telemetry/v1/events` | Accept one strict BUS Core schema-1.0 event, apply a keyed rotating rate control, and return `202 accepted`, `200 duplicate`, or a bounded error |
 | GET | `/report` | Return protected aggregate report; legacy BUS Core output includes literal `product_telemetry` windows when migration 0013 is available |
 | GET | `/report?view=ceo` | Return the protected CEO contract and metric-definition version `1.1` with exact windows and per-source availability; no legacy view is changed |
+
+This table documents route behavior; it does not authorize production probing. Some GET and HEAD routes refresh, count, persist, or otherwise alter evidence. Consult `OPERATIONS.md` before using any route diagnostically.
 
 Notes:
 - Successful `/manifest/core/stable.json` requests are uncounted. A genuine GET miss/error increments `metrics_daily.errors`; a HEAD miss/error does not.
@@ -724,6 +734,10 @@ Required bindings/secrets:
 - `CF_ZONE_TAG` (required for scheduled Buscore traffic capture)
 - `TELEMETRY_RATE_LIMIT_SECRET` (required in production for keyed standardized-site and BUS Core product-telemetry minute controls and qualified update/artifact daily controls)
 - `BUSCORE_LEADS_DB` (optional external D1 read binding for aggregate BUS Core operator reporting and CEO voluntary-inquiry totals)
+- `GITHUB_REPO` (optional; defaults to `True-Good-Craft/TGC-BUS-Core` for the scheduled GitHub snapshot and latest-release probe)
+- `GITHUB_TOKEN` (optional secret; raises scheduled GitHub API snapshot rate limits and is not required by the public latest-release HEAD probe)
+
+`ADMIN_TOKEN` is a broad administrative credential, not a read-only token. It protects report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Do not expose its value or treat report-read approval as write approval.
 
 No new bindings or secrets are introduced by pageview ingestion.
 
@@ -743,6 +757,10 @@ Traffic capture notes:
 - If the query returns no daily row for the selected day/hostname, Lighthouse treats the run as failed and skips the row.
 - Lighthouse validates that the response includes a numeric daily request `count` field; if missing/undefined/non-numeric, the run is treated as failed and the row is skipped.
 - Bare `/report`, `view=fleet`, and `view=site` perform one best-effort refresh capture for the previous completed UTC day before assembly. Stored-data views, including `view=ceo`, skip that external refresh.
+
+## Provisioning is not diagnosis
+
+The setup commands below create resources, apply migrations, set secrets, start a local runtime, or deploy code. They are provisioning and development procedures, not passive diagnostic steps. Do not run them during read-only incident diagnosis or against remote resources without explicit approval.
 
 ## Setup
 

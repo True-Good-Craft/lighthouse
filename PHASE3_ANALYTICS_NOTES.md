@@ -1,5 +1,7 @@
 # Phase 3 Analytics — Implementation Notes (Lighthouse + Agent Smith)
 
+> **Historical implementation record.** This file preserves the Phase 3 delivery context and is not the current operational runbook. Use `SOT.md` and `OPERATIONS.md` for current Lighthouse behavior and diagnostics, and Agent Smith's current authority for its active report mode and presentation. `POST /report/snapshot` is a write. Do not infer Agent Smith's active production lane from the historical monthly workflow described here.
+
 Scope: Phase 3 of `BUS-Core-Analytics-Plan.md`. Monthly Asset Brief + deterministic scoring +
 report archival + operator notes. No Phase 4, no new telemetry, no AI, no BUS Core Core change,
 no public dashboards, no PII.
