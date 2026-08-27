@@ -1,5 +1,13 @@
 # buscore-lighthouse
 
+## 1.30.0 least-privilege report diagnostics
+
+Repository version 1.30.0 adds an optional report-read credential to the local governed bundle while preserving the existing administrative contract. An independently generated cryptographically random `REPORT_READ_TOKEN` containing 32 to 128 URL-safe ASCII characters and differing from `ADMIN_TOKEN` is accepted only through `X-Report-Token` for `GET /report`; `X-Admin-Token`/`ADMIN_TOKEN` remains a backward-compatible report credential and remains the only credential accepted by `POST /campaign`, `POST /notes`, and `POST /report/snapshot`. An identical non-empty admin/read-secret configuration fails every protected read and write closed before database or deferred work. The new read token changes authorization scope only: report views, response payloads, status semantics, schemas, D1 data, retention, schedules, and metrics are unchanged.
+
+The fixed `npm run --silent diagnostic:ceo` helper makes at most one non-echoing request to the canonical CEO view, validates the strict CEO `1.1` response, and prints pretty-printed JSON only after validation. It has no URL override, arguments, redirect following, retry, user-supplied credential/report file, or `.env` input. Its finite static failures distinguish access blockage, HTTP `503` report unavailability with a possible `metrics_daily.errors` increment, and an otherwise unclassified diagnostic failure without printing response bodies or dynamic details. Production use still requires explicit access approval and is read-mostly rather than zero-write.
+
+This local bundle creates or exposes no secret value and performs no secret provisioning, production request, upload, deployment, migration, or active-traffic change. Production activation requires separately approved secret provisioning, deployment, and readback. Agent Smith remains on its broad `LIGHTHOUSE_ADMIN_TOKEN` until a later snapshot-specific authorization split allows its monthly archive write to be separated safely.
+
 ## 1.29.4 release-control reconciliation
 
 Repository version 1.29.4 records the verified 1.29.3 production promotion and repairs repository-controlled release authority. Active production is Worker version `ba611ac1-653d-47a2-a465-a85f4124b6b6`, promoted from merged `main` commit `59231d09084d0fa4db71012b6f29550886c5b605` by Cloudflare build `793715ef-6123-4d98-a4a7-797634d07812`. The canonical production hostname is `lighthouse.buscore.ca`, attached as a Production Custom Domain rather than a Worker Route. The additional public `workers.dev` surface and branch/version previews are not canonical diagnostic endpoints. The cron remains `5 0 * * *`; CEO report and metric-definition contract remain `1.1`.
@@ -14,7 +22,13 @@ Repository version 1.29.3 adds the canonical operations and diagnostics runbook 
 
 ## Operations and diagnostics
 
-Use [`OPERATIONS.md`](OPERATIONS.md) as the canonical runbook for Lighthouse alerts, analytics diagnosis, endpoint selection, credential boundaries, and request side effects. Read it after `SOT.md` and before contacting production or Cloudflare. `PHASE2_ANALYTICS_NOTES.md` and `PHASE3_ANALYTICS_NOTES.md` are historical implementation records, not current runbooks.
+Use [`OPERATIONS.md`](OPERATIONS.md) as the canonical runbook for Lighthouse alerts, analytics diagnosis, endpoint selection, credential boundaries, and request side effects. Read it after `SOT.md` and before contacting production or Cloudflare. When a CEO production read is explicitly approved, use the fixed helper and enter the credential through its hidden prompt:
+
+```bash
+npm run --silent diagnostic:ceo
+```
+
+Automation may supply a 32-to-128-character URL-safe-ASCII `LIGHTHOUSE_REPORT_READ_TOKEN` through an approved non-echoing environment mechanism. Never place the value in command arguments, files, `.env`, logs, chat, or screenshots. The helper removes the variable from its process after capture, does not grant authorization, and must not be run merely because the command exists. `PHASE2_ANALYTICS_NOTES.md` and `PHASE3_ANALYTICS_NOTES.md` are historical implementation records, not current runbooks.
 
 ## 1.29.2 service-probe truth repair
 
@@ -270,7 +284,7 @@ Notes:
 
 `GET /report?view=ceo` is the preferred decision-report input. Its strict schema is `contracts/ceo-v1/report.schema.json`. The window keys are `today`, `latest_complete_day`, `last_7_complete_days`, `previous_7_complete_days`, and `last_30_complete_days`. Every metric carries those same keys and is either a finite aggregate or `null` when its source is unavailable.
 
-Source state distinguishes `available` from `unavailable`, `fresh` from `stale` or `unknown`, and `full`, `partial`, or `unavailable` coverage. The contract retains `full` for a future source with explicit completeness proof. Current sparse event/counter sources do not prove that every day in a decision window was observable, so available current windows remain partial; they do not claim full coverage from a recent watermark alone. Trusted artifact-click interest begins on `2026-08-10`: earlier intent rows are excluded from sums and the watermark, wholly earlier windows are `null`, and spanning or later windows contain partial totals from the boundary forward. The `buscore_site` source definition reflects that boundary and the limitations explicitly state that pre-definition history is excluded. A successful aggregate query can return numeric zero, but without an all-history watermark its source is `unknown` with `source_history_missing`; an old watermark is `stale` with `source_data_stale`. When a source is unavailable, dependent inquiry-attribution, product-version/failure, or service-probe detail is `null`, not an empty list. Voluntary-inquiry attribution uses only 14 fixed privacy-safe buckets and never emits a raw label. The endpoint is independently guarded per source, aggregate-only, admin-token protected, and contains no PII or persistent identifiers. Its configured-leads path uses nine D1 statements in batches of at most three; client-supplied app versions are SQL-ranked and limited to ten before reaching Worker memory. Strict Ajv 2020 tests validate all fixtures plus representative live producer outputs. Existing views remain available for diagnostics and rollback.
+Source state distinguishes `available` from `unavailable`, `fresh` from `stale` or `unknown`, and `full`, `partial`, or `unavailable` coverage. The contract retains `full` for a future source with explicit completeness proof. Current sparse event/counter sources do not prove that every day in a decision window was observable, so available current windows remain partial; they do not claim full coverage from a recent watermark alone. Trusted artifact-click interest begins on `2026-08-10`: earlier intent rows are excluded from sums and the watermark, wholly earlier windows are `null`, and spanning or later windows contain partial totals from the boundary forward. The `buscore_site` source definition reflects that boundary and the limitations explicitly state that pre-definition history is excluded. A successful aggregate query can return numeric zero, but without an all-history watermark its source is `unknown` with `source_history_missing`; an old watermark is `stale` with `source_data_stale`. When a source is unavailable, dependent inquiry-attribution, product-version/failure, or service-probe detail is `null`, not an empty list. Voluntary-inquiry attribution uses only 14 fixed privacy-safe buckets and never emits a raw label. The endpoint is independently guarded per source, aggregate-only, protected by the current dual report-credential contract, and contains no PII or persistent identifiers. Its configured-leads path uses nine D1 statements in batches of at most three; client-supplied app versions are SQL-ranked and limited to ten before reaching Worker memory. Strict Ajv 2020 tests validate all fixtures plus representative live producer outputs. Existing views remain available for diagnostics and rollback.
 
 The current protected report families are bare legacy `/report`, `view=fleet`, `view=site`, `view=tgc`, `view=source_health`, `view=asset`, `view=monthly`, and `view=ceo`. `view=site` requires a registered `site_key`; the specialized views retain their existing required parameters and response contracts. Explicit `view=legacy` is invalid; omit `view` for the legacy contract.
 
@@ -742,7 +756,8 @@ Pageview ingestion notes:
 Required bindings/secrets:
 - `DB`
 - `MANIFEST_R2`
-- `ADMIN_TOKEN`
+- `ADMIN_TOKEN` (required for protected writes and retained as a backward-compatible report credential)
+- `REPORT_READ_TOKEN` (optional distinct, cryptographically random 32-to-128-character URL-safe-ASCII secret enabling GET-report-only `X-Report-Token` authentication)
 - `IGNORED_IP` (optional)
 - `CF_API_TOKEN` (required for scheduled Buscore traffic capture)
 - `CF_ZONE_TAG` (required for scheduled Buscore traffic capture)
@@ -751,7 +766,7 @@ Required bindings/secrets:
 - `GITHUB_REPO` (optional; defaults to `True-Good-Craft/TGC-BUS-Core` for the scheduled GitHub snapshot and latest-release probe)
 - `GITHUB_TOKEN` (optional secret; raises scheduled GitHub API snapshot rate limits and is not required by the public latest-release HEAD probe)
 
-`ADMIN_TOKEN` is a broad administrative credential, not a read-only token. It protects report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Do not expose its value or treat report-read approval as write approval.
+`ADMIN_TOKEN` remains broad: it authorizes report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. `REPORT_READ_TOKEN` is accepted only for `GET /report`, only through `X-Report-Token`, and only when it is independently generated, cryptographically random, contains 32 to 128 URL-safe ASCII characters (`A-Z`, `a-z`, `0-9`, `_`, and `-`), and differs from `ADMIN_TOKEN`. A malformed report secret disables only that read path while preserving a distinct admin fallback; identical non-empty admin/read secrets fail every protected read and write closed. Production credential values never belong in source, `wrangler.toml`, command arguments, files, logs, chat, or screenshots; `.dev.vars.example` contains local placeholders only and is not a helper credential source. A report-read approval never authorizes a write.
 
 No new bindings or secrets are introduced by pageview ingestion.
 
@@ -802,7 +817,7 @@ Configure that environment's returned database ID explicitly. The production `DB
 
 ### 4. Apply migrations
 
-Local migration uses the stable binding name and cannot reach remote D1. A new remote environment must use its explicit configuration. The checked-in configuration targets production, so its remote command requires separate production-migration approval. Version 1.29.4 has no migration.
+Local migration uses the stable binding name and cannot reach remote D1. A new remote environment must use its explicit configuration. The checked-in configuration targets production, so its remote command requires separate production-migration approval. Version 1.30.0 has no migration.
 
 ```bash
 # local (for wrangler dev)
@@ -817,10 +832,11 @@ npx wrangler d1 migrations apply DB --remote
 
 ### 5. Set secrets
 
-Production secrets already exist; ordinary setup must not recreate, reveal, or rotate them. For a separately approved new environment, target its explicit configuration:
+The production secrets in the last verified inventory already exist; `REPORT_READ_TOKEN` is not part of that verified production state. Ordinary setup must not recreate, reveal, or rotate production secrets. For a separately approved new environment, independently generate a distinct cryptographically random 32-to-128-character URL-safe-ASCII report secret through a non-echoing mechanism and target its explicit configuration:
 
 ```bash
 npx wrangler secret put ADMIN_TOKEN --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
+npx wrangler secret put REPORT_READ_TOKEN --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
 npx wrangler secret put CF_API_TOKEN --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
 npx wrangler secret put CF_ZONE_TAG --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
 npx wrangler secret put TELEMETRY_RATE_LIMIT_SECRET --config YOUR_ENVIRONMENT_WRANGLER_CONFIG

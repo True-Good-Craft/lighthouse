@@ -244,7 +244,7 @@ test("GET /report?view=asset returns rollup, github, health, campaigns with down
   assert.doesNotMatch(JSON.stringify(body), PII, "asset report must contain no PII");
 });
 
-test("GET /report?view=asset requires the admin token", async () => {
+test("GET /report?view=asset rejects a missing report credential", async () => {
   const response = await worker.fetch(new Request("https://lighthouse.buscore.ca/report?view=asset"), assetEnv(), ctx);
   assert.equal(response.status, 401);
 });

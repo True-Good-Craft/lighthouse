@@ -2,11 +2,11 @@
 
 - Status: current operational runbook
 - Scope: Lighthouse analytics access, evidence interpretation, incident diagnosis, and release-control boundaries
-- Repository baseline: Lighthouse `1.29.4` release-control reconciliation; CEO report and metric-definition contract `1.1`
+- Repository baseline: Lighthouse `1.30.0` least-privilege report diagnostics local governed bundle; CEO report and metric-definition contract `1.1`
 - Active production baseline: Lighthouse `1.29.3`, Worker version `ba611ac1-653d-47a2-a465-a85f4124b6b6`, 100% traffic, created `2026-08-26T22:57:30.628Z` from `main` commit `59231d09084d0fa4db71012b6f29550886c5b605` through Cloudflare build `793715ef-6123-4d98-a4a7-797634d07812`
 - Last reconciled: 2026-08-26
-- Diagnostic access used for this reconciliation: owner-approved authenticated Cloudflare control-plane metadata reads in the verified owning account
-- Production interaction: control-plane metadata only; no Lighthouse endpoint, D1 query, log tail, scheduled invocation, deployment, route change, secret operation, or traffic change
+- Diagnostic access used for the 1.30.0 bundle: local repository inspection and tests only; the retained infrastructure baseline comes from the separately recorded, owner-approved 1.29.4 Cloudflare control-plane audit
+- Production interaction for the 1.30.0 bundle: none; no Lighthouse endpoint, Cloudflare read, D1 query, log tail, scheduled invocation, deployment, route change, secret operation, or traffic change
 - Evidence side effects: no Lighthouse application evidence was refreshed, counted, persisted, archived, or otherwise changed
 - Audit snapshot: the preceding 24-hour Cloudflare overview showed 67 invocations and zero Cloudflare platform/runtime errors. This is historical platform telemetry, not proof of Lighthouse endpoint, report, source, probe, or delivery health
 
@@ -34,6 +34,7 @@ The default diagnostic posture is local and zero-mutation:
 - Do not treat `git push` as local-only. Durable readback on 2026-08-26 confirmed that both non-production and production Workers Builds use `npx wrangler versions upload`. Pushes can therefore upload Worker versions and create previews, although they must not promote active traffic.
 - Do not run migrations, deployments, scheduled handlers, retention jobs, report snapshots, notes, campaign writes, telemetry submissions, or release downloads during passive diagnosis.
 - Never print, persist, or commit secret values, raw lead data, identifiers, IP material, or other private payloads.
+- The existence of `npm run --silent diagnostic:ceo` is not production-access approval. Run it only for an explicitly approved production CEO read; that read remains Class 2 and can increment error evidence if report assembly fails.
 
 If the approved endpoint, credential source, account context, or tool authorization is unavailable, record `ACCESS_BLOCKED` and stop that diagnostic branch. Do not substitute guessed URLs, unrelated credentials, direct D1 queries, or broader probes.
 
@@ -92,7 +93,7 @@ The following production identities were verified by approved read-only control-
 | Cron | `5 0 * * *` | Active at `00:05 UTC`; matches checked-in configuration |
 | Persistent logs and traces | Disabled | No retained Worker log/trace evidence is available unless separately approved and enabled |
 
-The active Worker secret names are `ADMIN_TOKEN`, `CF_API_TOKEN`, `CF_ZONE_TAG`, `DISCORD_WEBHOOK_URL`, `IGNORED_IP`, `PRICE_GUARD_KEY`, and `TELEMETRY_RATE_LIMIT_SECRET`. Values were not read or exposed. `DISCORD_WEBHOOK_URL` and `PRICE_GUARD_KEY` are not referenced by current source; retaining, rotating, or removing them is a separate secret operation requiring explicit approval.
+The last approved control-plane inventory found active Worker secret names `ADMIN_TOKEN`, `CF_API_TOKEN`, `CF_ZONE_TAG`, `DISCORD_WEBHOOK_URL`, `IGNORED_IP`, `PRICE_GUARD_KEY`, and `TELEMETRY_RATE_LIMIT_SECRET`. Values were not read or exposed. Version 1.30.0 adds the optional `REPORT_READ_TOKEN` secret-binding contract locally, but this bundle does not create, provision, or verify a production value. Until a separately approved secret operation and readback prove otherwise, do not claim that production has the new credential. `DISCORD_WEBHOOK_URL` and `PRICE_GUARD_KEY` are not referenced by current source; retaining, rotating, or removing them is a separate secret operation requiring explicit approval.
 
 Cloudflare currently displays the historical repository name `True-Good-Craft/buscore-lighthouse`; GitHub redirects it to `True-Good-Craft/lighthouse`. Package metadata now names the canonical repository, but changing the external integration label is a separate control-plane action.
 
@@ -142,7 +143,9 @@ The pre-merge Workers Builds repair was completed on 2026-08-26: the prior produ
 
 | Name | Where used | Boundary |
 |---|---|---|
-| `ADMIN_TOKEN` | Lighthouse runtime | Exact-match credential accepted through `X-Admin-Token` |
+| `ADMIN_TOKEN` | Lighthouse runtime | Exact-match credential accepted through `X-Admin-Token`; authorizes reports and the three protected writes |
+| `REPORT_READ_TOKEN` | Lighthouse runtime | Optional independently generated, cryptographically random, distinct 32-to-128-character URL-safe-ASCII secret accepted through `X-Report-Token` for `GET /report` only; never accepted by an administrative write |
+| `LIGHTHOUSE_REPORT_READ_TOKEN` | Local diagnostic helper process | Optional automation input satisfying the same format for `npm run --silent diagnostic:ceo`; captured and removed from that process environment immediately, never loaded from `.env` |
 | `LIGHTHOUSE_ADMIN_TOKEN` | Agent Smith runtime | Consumer-side name for the Lighthouse admin credential |
 | `LIGHTHOUSE_REPORT_URL` | Agent Smith runtime | Canonical report endpoint; checked-in production value points to `https://lighthouse.buscore.ca/report` |
 | `CF_API_TOKEN` and `CF_ZONE_TAG` | Lighthouse scheduled traffic capture | Cloudflare GraphQL traffic source, not report authentication |
@@ -150,7 +153,23 @@ The pre-merge Workers Builds repair was completed on 2026-08-26: the prior produ
 | `GITHUB_REPO` and optional `GITHUB_TOKEN` | Lighthouse scheduled GitHub snapshot/probe configuration | Repository selection and optional API quota; not Lighthouse report authentication |
 | `TELEMETRY_RATE_LIMIT_SECRET` | Lighthouse ingestion/release counting | Keys rotating abuse-control identifiers; never a diagnostic credential |
 
-`ADMIN_TOKEN` is not a read-only credential. The same token authorizes protected report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Possession of the token does not authorize those writes. Do not paste it into commands, logs, chat, files, or screenshots.
+`ADMIN_TOKEN` is not a read-only credential. It remains a backward-compatible report credential and is the only credential accepted by the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. `REPORT_READ_TOKEN` grants GET-report authorization only when it is independently generated, cryptographically random, contains 32 to 128 URL-safe ASCII characters (`A-Z`, `a-z`, `0-9`, `_`, and `-`), and differs from `ADMIN_TOKEN`, but it does not make the report implementation zero-write. A malformed report secret disables that path while preserving a distinct admin fallback; identical non-empty admin/read secrets intentionally fail every protected read and write closed before database or deferred work. Possession of either credential does not itself authorize a production request. Do not paste a production value into commands, logs, chat, files, screenshots, or `.env`; `.dev.vars.example` contains non-secret local placeholders and is not read by the diagnostic helper.
+
+### 1.30.0 rollout and rollback boundary
+
+The local governed bundle adds the credential contract and helper but performs no secret generation, provisioning, deployment, production request, or readback. Production remains on the previously verified admin-only report contract until separate evidence proves activation.
+
+Roll out in reversible stages, each under its own approval:
+
+1. Validate the complete local Code + SOT + CHANGELOG + Version bundle.
+2. Independently generate and provision a distinct cryptographically random 32-to-128-character URL-safe-ASCII production `REPORT_READ_TOKEN` through an approved non-echoing mechanism without removing or rotating `ADMIN_TOKEN`; record only secret-name/version metadata and the format/distinctness assertion, never the value.
+3. Deploy the approved Worker bundle through the sole authorized production workflow and obtain its deployment receipt.
+4. With separate Class 2 endpoint approval, run exactly one `npm run --silent diagnostic:ceo` request and verify the strict CEO `1.1` output without exposing the credential.
+5. Migrate individual consumers only through their owning repository's governed change. Keep administrative fallback until each consumer is verified.
+
+Rolling back the Lighthouse Worker restores the prior admin-only report-read behavior and does not roll back secret state or another repository. A read-token-only client will receive `401` after such a rollback; use the retained, separately authorized admin fallback only as an intentional compatibility path, not an automatic retry. Secret removal or rotation is a separate destructive security operation and is not implied by code rollback.
+
+Agent Smith is not least-privilege after this Lighthouse-only change: it still needs `LIGHTHOUSE_ADMIN_TOKEN` for `POST /report/snapshot`. Splitting its report reads without first separating that write leaves the broad credential in the same runtime. A snapshot-specific credential or removal of the archive write requires a later owner-approved Agent Smith/Lighthouse contract change before the broad Smith secret can be removed and `ADMIN_TOKEN` rotated.
 
 ## Diagnostic Access Classes
 
@@ -184,6 +203,8 @@ These protected views skip the best-effort Cloudflare traffic refresh and read c
 | `GET /report?view=monthly` | Historical monthly asset/scoring compatibility surface |
 
 These are read-mostly, not guaranteed zero-write: if report assembly throws, Lighthouse best-effort increments `metrics_daily.errors` before returning `503 report_unavailable`.
+
+For the CEO row only, the canonical operator mechanism is `npm run --silent diagnostic:ceo`. The helper has a fixed production URL, `Accept: application/json`, and `X-Report-Token`; makes at most one request with no retry or redirect; rejects non-200 responses; times out after 15 seconds; caps the response at 1 MiB; and validates strict CEO contract `1.1` before emitting pretty-printed JSON plus one newline. It accepts a 32-to-128-character URL-safe-ASCII credential through either a hidden TTY prompt or `LIGHTHOUSE_REPORT_READ_TOKEN` supplied by an approved non-echoing automation environment, and removes that environment variable immediately after capture. It accepts no arguments, URL override, token file, report file, or `.env`. Noninteractive failures are nonzero and finite: missing/invalid credentials or HTTP `401`/`403` emit `Lighthouse CEO diagnostic access blocked.`; HTTP `503` emits `Lighthouse CEO report unavailable; metrics_daily.errors may have been incremented.`; every other transport, response-safety, parse, schema, or output failure emits `Lighthouse CEO diagnostic failed.`. No response body, numeric HTTP status, schema detail, or token reaches output. These controls protect credential handling but do not authorize the request or remove the possible error-counter side effect.
 
 Agent Smith surfaces inherit downstream behavior:
 
@@ -225,9 +246,9 @@ Use this order for a Lighthouse `WATCH`, `ALERT`, unavailable report, or analyti
 1. **Preserve the initiating evidence.** Record the exact message, timestamp, timezone, delivery lane, requested window, and whether it came from Agent Smith `/health`, `/report`, a scheduled Discord message, Cloudflare, or another surface.
 2. **Classify the layer before probing.** Separate report preparation, Lighthouse facts, scheduled service probes, source ingestion, Agent Smith presentation, Discord delivery, and Cloudflare access.
 3. **Read local authority.** Read `AGENTS.md`, `SOT.md`, this runbook, the relevant changelog entry, and the CEO schema/fixture matching the observed state. If `source_health` or supplied evidence identifies a producer, also read that producer's canonical files listed above.
-4. **Confirm authorization and access material.** Use only the approved production endpoint and an owner-approved, non-echoing credential mechanism. Agent Smith's Cloudflare runtime binding is not a user-facing diagnostic credential source. Never reveal the credential. If the endpoint, mechanism, or authorization is unavailable, report `ACCESS_BLOCKED` and continue only with local evidence.
-5. **Read the CEO view first only when both production access and a safe credential mechanism are approved.** Fetch exactly `GET https://lighthouse.buscore.ca/report?view=ceo` with the `X-Admin-Token` header without placing the token literal in command arguments, files, logs, chat, or screenshots. Check HTTP status, JSON parse, `report_contract_version`, `metric_definition_version`, `generated_at`, exact windows, `sources`, `details.service_probes`, and `limitations` before interpreting totals.
-6. **Narrow to one secondary view only when evidence requires it.** Use `source_health` for producer-ingestion integrity, `asset` for stored probe/GitHub/rollup detail, or `tgc` for the TGC compatibility diagnostic. Do not fan out across every surface.
+4. **Confirm authorization and access material.** Use only the approved production endpoint and the repository's fixed non-echoing helper with an owner-approved report-read credential mechanism. Agent Smith's Cloudflare runtime binding is not a user-facing diagnostic credential source. Never reveal or copy a credential. If the endpoint, mechanism, authorization, or deployed/provisioned `REPORT_READ_TOKEN` is unavailable, report `ACCESS_BLOCKED` and continue only with local evidence.
+5. **Read the CEO view first only when both production access and a safe credential mechanism are approved.** Run exactly `npm run --silent diagnostic:ceo`; do not recreate its request with a broader command, substitute an admin credential, add arguments, redirect output to a file, or retry automatically. On validated success, inspect `report_contract_version`, `metric_definition_version`, `generated_at`, exact windows, `sources`, `details.service_probes`, and `limitations` before interpreting totals. Classify `Lighthouse CEO diagnostic access blocked.` as `ACCESS_BLOCKED`; classify `Lighthouse CEO report unavailable; metrics_daily.errors may have been incremented.` as report-unavailable application evidence with the stated possible mutation; classify generic `Lighthouse CEO diagnostic failed.` as an unresolved transport/safety/contract failure. None permits response exposure, an alternate endpoint, or an automatic retry.
+6. **Narrow to one secondary view only when evidence requires it.** Use `source_health` for producer-ingestion integrity, `asset` for stored probe/GitHub/rollup detail, or `tgc` for the TGC compatibility diagnostic. The fixed CEO helper cannot select these views, so their production access remains `ACCESS_BLOCKED` unless a separately approved endpoint scope and non-echoing mechanism are provided; do not alter the helper or improvise a raw request. Do not fan out across every surface.
 7. **Check Agent Smith separately.** Confirm configured mode and active lane. Production is checked in as `ceo_v1`. A Smith `/health` response can show its configuration and CEO readiness; it does not independently prove Discord delivery, Lighthouse cron completion, TGC source freshness, or monthly archive success.
 8. **Correlate by timestamp and ownership.** Compare the alert time, CEO `generated_at`, each source's `data_through`, probe `checked_at` values, and the applicable complete or partial window. Do not compare partial today with a complete day as though they were equivalent.
 9. **Report diagnosis with confidence and gaps.** State what is proven, what is inferred, what is unavailable, whether any diagnostic action could have changed evidence, and the smallest next check requiring approval.
@@ -299,7 +320,7 @@ These are BUS Core-oriented liveness probes. They do not probe `truegoodcraft.ca
 
 Additional failure boundaries:
 
-- HTTP `401 unauthorized` from `/report` proves credential mismatch/missing configuration at that request boundary; it does not prove the Worker is down.
+- HTTP `401 unauthorized` from `/report` proves a missing/malformed/mismatched credential or a fail-closed admin/read-secret collision at that request boundary; it does not prove the Worker is down.
 - HTTP `503 report_unavailable` means report assembly threw and may have incremented `metrics_daily.errors`.
 - A Cloudflare/Wrangler authorization or account-context error—including the previously observed `7403` during a control-plane read—is classified as access/tooling failure until independent service evidence says otherwise. The number alone is not a Lighthouse application status.
 - Producer-side `sendBeacon`/`fetch` behavior, whether apparently queued or failed, does not create delivery proof. Lighthouse acceptance must be established from Lighthouse evidence.
@@ -325,8 +346,9 @@ Never report a WATCH as an outage, an access failure as application failure, a s
 
 ## Known Gaps — Do Not Work Around
 
-- Lighthouse has no least-privilege report-read credential. The current `ADMIN_TOKEN` also authorizes three write routes.
-- This repository has no owner-approved, non-echoing production report helper or canonical operator secret-retrieval mechanism. Until one is separately designed and approved, lack of a safe mechanism is `ACCESS_BLOCKED`.
+- Version 1.30.0 defines a least-privilege report-read credential and fixed non-echoing CEO helper locally, but no production `REPORT_READ_TOKEN` value, deployment, or verification receipt exists in this bundle. Until separately approved external activation is proven, production read-token access is `ACCESS_BLOCKED`.
+- The helper safely consumes a credential but is not a credential-retrieval system. There is still no owner-approved operator secret-retrieval mechanism; do not copy a value from Agent Smith, Cloudflare displays, shell history, files, or another service.
+- Agent Smith still holds the broad `LIGHTHOUSE_ADMIN_TOKEN` because it archives monthly snapshots. Full cross-service least privilege remains blocked on a later snapshot-specific credential split or removal of that write.
 - The active `lighthouse.buscore.ca` attachment is an externally managed Production Custom Domain rather than checked-in route configuration. It was verified on 2026-08-26, but future attachment changes require another control-plane read.
 - Cloudflare Workers Builds commands remain externally managed rather than checked into this repository. Durable readback on 2026-08-26 verified both production Deploy and Version commands as `npx wrangler versions upload`. If that setting becomes inaccessible or differs, report `BLOCKED BEFORE MERGE` until it is reconciled.
 - The checked-in manual deployment workflow is the sole authorized production path. The availability and scope of its GitHub `CLOUDFLARE_API_TOKEN` have not been proven by this local bundle.
@@ -340,19 +362,21 @@ Never report a WATCH as an outage, an access failure as application failure, a s
 - Browser producers are fail-soft and provide no end-to-end delivery receipt.
 - Agent Smith has no independent Discord receipt ledger; a post attempt, log line, or archived monthly snapshot is not receipt proof.
 
-Any helper, token split, further route/config change, cross-repository index repair, receipt mechanism, or automated drift check is a separate future change requiring its owning repository's approval and governance bundle.
+Any additional helper, further token split, further route/config change, cross-repository index repair, receipt mechanism, or automated drift check is a separate future change requiring its owning repository's approval and governance bundle.
 
 ## Approval Boundaries
 
 Separate approval is required before:
 
 - Any production endpoint or external-service request.
+- Any invocation of `npm run --silent diagnostic:ceo` against its fixed production endpoint, even when a read token is already available; it is a Class 2 request and can increment error evidence on report-assembly failure.
 - Any Cloudflare control-plane, log, or D1 access, including `release:status` and `release:history`.
 - Any endpoint in Class 3.
 - Any commit, branch push, or PR merge. A branch push creates external Worker-version or preview state.
 - Any `release:upload`; it creates Cloudflare version state even though it does not intentionally promote traffic.
 - Any manual production deployment-workflow dispatch; it is an active-production deployment operation. Direct `wrangler deploy` is not an authorized alternate path.
 - Any Cloudflare Workers Builds setting change, custom-domain or route change, observability change, secret operation, direct SQL, migration, scheduled invocation, release, or cross-repository edit.
+- Provisioning, verifying, removing, or rotating `REPORT_READ_TOKEN` or `ADMIN_TOKEN`, and any Agent Smith credential migration or snapshot-auth change.
 - Any merge when the last approved Workers Builds readback is missing, superseded by a later setting change, or differs from exactly `npx wrangler versions upload`. Report that state as `BLOCKED BEFORE MERGE`. The last durable verification was 2026-08-26.
 
 With the Workers Builds production command verified as `npx wrangler versions upload`, a merge still requires explicit owner approval and still creates external version state, but it must not be treated as a production release. Production promotion remains a separate, explicit manual action.
