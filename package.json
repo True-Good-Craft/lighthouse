@@ -1,25 +1,27 @@
 {
   "name": "buscore-lighthouse",
-  "version": "1.29.3",
+  "version": "1.29.4",
   "description": "Standalone deterministic metrics worker: manifest proxy + fixed daily counters + protected on-demand reporting.",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "release:upload": "wrangler versions upload",
+    "release:status": "wrangler deployments status --json",
+    "release:history": "wrangler deployments list --json",
     "typecheck": "tsc --noEmit",
     "build": "tsc --outDir dist --module NodeNext --moduleResolution NodeNext --noEmit false",
     "test": "npm run build && node --test"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/truegoodcraft/buscore-lighthouse.git"
+    "url": "git+https://github.com/True-Good-Craft/lighthouse.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/truegoodcraft/buscore-lighthouse/issues"
+    "url": "https://github.com/True-Good-Craft/lighthouse/issues"
   },
-  "homepage": "https://github.com/truegoodcraft/buscore-lighthouse#readme",
+  "homepage": "https://github.com/True-Good-Craft/lighthouse#readme",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260305.0",
     "ajv": "^8.20.0",

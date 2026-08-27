@@ -1,5 +1,13 @@
 # buscore-lighthouse
 
+## 1.29.4 release-control reconciliation
+
+Repository version 1.29.4 records the verified 1.29.3 production promotion and repairs repository-controlled release authority. Active production is Worker version `ba611ac1-653d-47a2-a465-a85f4124b6b6`, promoted from merged `main` commit `59231d09084d0fa4db71012b6f29550886c5b605` by Cloudflare build `793715ef-6123-4d98-a4a7-797634d07812`. The canonical production hostname is `lighthouse.buscore.ca`, attached as a Production Custom Domain rather than a Worker Route. The additional public `workers.dev` surface and branch/version previews are not canonical diagnostic endpoints. The cron remains `5 0 * * *`; CEO report and metric-definition contract remain `1.1`.
+
+The repository now pins the verified Cloudflare account, uses the primary D1 control-plane name `lighthouse` without changing its database ID, provides explicit version-upload, status, and history commands, and deliberately provides no direct production-deploy script. The checked-in production workflow is manual-only, main-only, serialized, fully validated, strict, variable-preserving, and receipted. No Worker runtime contract, endpoint, auth, schema, retention, schedule, metric, secret, or active deployment changes in this local bundle.
+
+> **External release-control verification — 2026-08-26:** the Cloudflare Workers Builds production Deploy command was changed from `npx wrangler deploy` to exactly `npx wrangler versions upload`. Durable readback after reload confirmed that both Deploy and Version commands match. No build, upload, or deployment action was invoked. Git publication can still create version and preview state, but active production promotion is reserved for the checked-in manual workflow.
+
 ## 1.29.3 operations documentation release
 
 Repository version 1.29.3 adds the canonical operations and diagnostics runbook and a narrow owner-approved documentation-only governance path. It changes no Worker code, route, contract, auth, binding, storage, retention, schedule, integration, migration, secret, or deployment behavior. The last production deployment recorded in repository history is Lighthouse 1.29.2 (`f07d4af2-a8d6-4df6-adfa-aad7eb9f578d`) with CEO report and metric-definition contract `1.1`; active-production state was not independently control-plane verified during this documentation release. This release does not authorize or require an active-production promotion. Publishing the review branch did cause the separately connected Cloudflare Workers Builds integration to upload a version that its check classified as a preview and for which it reported version/branch preview URLs, as recorded in `CHANGELOG.md` and `OPERATIONS.md`.
@@ -26,23 +34,29 @@ The CEO lane changes no existing report view or database table. It uses the curr
 
 ## BUS Core minimal product telemetry
 
-Production Worker 1.29.0 retains the 1.27.0 exact event-ID acknowledgement contract with bounded deduplication and aggregate-only product reporting. Current BUS Core product events contain no persistent installation identifier and are limited to first launch, locally deduplicated release/first-success milestones, startup/manual update checks, staged updates, and reliability. Module opens, active days, returning-installation measures, engagement, sessions, retention, and cross-day profiles are prohibited.
+Worker 1.29.0 introduced the retained 1.27.0 exact event-ID acknowledgement contract with bounded deduplication and aggregate-only product reporting; verified active Worker 1.29.3 retains that behavior. Current BUS Core product events contain no persistent installation identifier and are limited to first launch, locally deduplicated release/first-success milestones, startup/manual update checks, staged updates, and reliability. Module opens, active days, returning-installation measures, engagement, sessions, retention, and cross-day profiles are prohibited.
 
 Migration `0015_minimize_buscore_product_telemetry.sql` was applied before the 2026-07-24 Worker deployment. Product telemetry retains event-ID deduplication keys for 30 UTC-day buckets, aggregate counters for 400 UTC-day buckets, and rate-control buckets for two days. It retains no raw product-event history.
 
 ## TGC website analytics
 
-Production Worker 1.29.0 narrows the consented `site_key=tgc_site` lane to aggregate, decision-useful events. Lighthouse is the raw-event and aggregate-report source of truth; the protected operator view remains `GET /report?view=tgc` using the existing `X-Admin-Token` contract.
+Worker 1.29.0 introduced the narrowed consented `site_key=tgc_site` lane; verified active Worker 1.29.3 retains it. Lighthouse is the raw-event and aggregate-report source of truth; the protected operator view remains `GET /report?view=tgc` using the existing `X-Admin-Token` contract.
 
 The server accepts page views, selected commercial/contact/outbound interest, form start/attempt/outcome, and sanitized errors. Version 1.29.1 accepts a producer-supplied coarse viewport label or, for rolling compatibility, exact lowercase `WIDTHxHEIGHT`; exact dimensions are immediately normalized by width to `small` below 768, `medium` from 768 through 1199, or `large` from 1200 upward, and only that bucket is stored. Event-specific value sanitization turns recognized form, error, and outbound values into bounded categories, unrecognized non-empty values into `other`, and discards absent/blank values or values on the remaining TGC events. Lighthouse discards visitor/session fields and rejects the superseded lifecycle, field-level form, scroll/engagement/section, and first-party web-vital event families. The existing TGC report shape remains available for rollback and historical rows; Smith's CEO lane uses page views and voluntary inquiries only. Raw TGC events are retained for 90 days; other standardized-site raw events retain the general 30-day policy, and rotating keyed rate identifiers are retained for two days. See `TGC_SITE_ANALYTICS_POLICY.md` for the current boundaries.
 
-The repository-visible `.github/workflows/governance.yml` runs `npm ci`, typechecking, and the full test suite for every PR and `main` push. Separately, `.github/workflows/deploy.yml` triggers on `main` pushes and manual dispatch, but its validation gate and downstream Wrangler deployment run only for manual dispatch or an explicitly marked release commit. Neither workflow is the only Cloudflare path: the separately connected Cloudflare Workers Builds integration uploaded a version from the 1.29.3 review branch that its check classified as a preview, and it can deploy from its configured production branch. Those production-branch and deploy-command settings are not checked into this repository and were not read from the control plane during the 1.29.3 documentation release. Treat a merge to `main` as potentially production-deploying until those settings are explicitly verified or the owner accepts that consequence. Migrations remain separate and are never implied by deployment.
+## Production release control
+
+`.github/workflows/governance.yml` validates every pull request and `main` push but does not deploy. `.github/workflows/deploy.yml` is the sole repository-authorized production-promotion path following the verified 2026-08-26 external release-control repair: it is manual-dispatch only, rejects non-`main` refs, serializes deployments under `lighthouse-production`, runs `npm ci`, typechecking, and the full test suite, deploys with `wrangler deploy --keep-vars --strict`, and then attempts `wrangler deployments status --json` whenever the deploy step ran, including an uncertain reported failure. The workflow reads the pinned account from `wrangler.toml`; its deployment token must be verified rather than inferred from workflow text.
+
+Cloudflare Workers Builds is a separate external publication path. The initial 2026-08-26 audit found non-production branches using `npx wrangler versions upload` with previews enabled while production branch `main` still used `npx wrangler deploy` without a validation build command. Later that day, the production Deploy command was changed to `npx wrangler versions upload`; durable readback after reload confirmed that both Deploy and Version commands are exactly `npx wrangler versions upload`. No build, upload, or deployment action was invoked. Git publication can still create Worker versions and previews, but it must not promote active traffic. Migrations remain separate and are never implied by an upload or deployment.
+
+## BUS Core artifact traffic truth
 
 BUS Core artifact delivery and demand semantics are defined in `BUS_CORE_TRAFFIC_TRUTH.md`. Version 1.25.0 keeps downloads public while separating raw Worker traffic, successful artifact responses, privacy-preserving daily client-network buckets, probable-human intent proxies, confirmed product telemetry, and leads. Migration `0014_add_artifact_traffic_truth.sql` was applied remotely before the 2026-07-18 v1.25.0 deployment.
 
 ## BUS Core transition direction
 
-Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migrations 0013 and 0015 plus production Worker 1.29.0 provide strict aggregate-only BUS Core product telemetry and qualified, rate-bounded `/update/check` and artifact-request analytics.
+Lighthouse currently serves release data, accepts public-site analytics events, and produces deterministic reports. Migrations 0013 and 0015 plus the current Worker lineage provide strict aggregate-only BUS Core product telemetry and qualified, rate-bounded `/update/check` and artifact-request analytics.
 
 The contract accepts only versioned, allowlisted events and fields; rejects unexpected content; enforces retention; and excludes business content such as customer, supplier, employee, item, recipe, invoice, document, filepath, financial, quantity, raw database, and machine-fingerprint data. BUS Core must continue working normally when Lighthouse is unavailable or telemetry is disabled.
 
@@ -766,54 +780,71 @@ The setup commands below create resources, apply migrations, set secrets, start 
 
 ### 1. Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 18
+- [Node.js](https://nodejs.org/) >= 20.18.1
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (installed as dev dependency)
 - A Cloudflare account
 
 ### 2. Install dependencies
 
 ```bash
-npm install
+npm ci
 ```
 
-### 3. Create the D1 database
+### 3. Create the D1 database for a new environment
+
+The production database already exists. Do not recreate, rename, or replace it during ordinary setup or diagnosis. Do not run new-environment provisioning through the checked-in production `wrangler.toml`, because it pins the production account. Prepare a separately approved environment-specific Wrangler configuration with its intended `account_id` first, then run:
 
 ```bash
-npx wrangler d1 create buscore-lighthouse
+npx wrangler d1 create YOUR_ENVIRONMENT_DATABASE_NAME --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
 ```
 
-Copy the `database_id` from the output and replace `YOUR_D1_DATABASE_ID` in `wrangler.toml`.
+Configure that environment's returned database ID explicitly. The production `DB` binding remains database ID `e46f2daa-7e97-45a3-9bf0-49003a42850c`, named `lighthouse`.
 
 ### 4. Apply migrations
 
+Local migration uses the stable binding name and cannot reach remote D1. A new remote environment must use its explicit configuration. The checked-in configuration targets production, so its remote command requires separate production-migration approval. Version 1.29.4 has no migration.
+
 ```bash
 # local (for wrangler dev)
-npx wrangler d1 migrations apply buscore-lighthouse --local
+npx wrangler d1 migrations apply DB --local
 
-# remote (production)
-npx wrangler d1 migrations apply buscore-lighthouse --remote
+# separately approved new remote environment
+npx wrangler d1 migrations apply DB --remote --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
+
+# separately approved production only
+npx wrangler d1 migrations apply DB --remote
 ```
 
 ### 5. Set secrets
 
+Production secrets already exist; ordinary setup must not recreate, reveal, or rotate them. For a separately approved new environment, target its explicit configuration:
+
 ```bash
-npx wrangler secret put ADMIN_TOKEN
-npx wrangler secret put CF_API_TOKEN
-npx wrangler secret put TELEMETRY_RATE_LIMIT_SECRET
+npx wrangler secret put ADMIN_TOKEN --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
+npx wrangler secret put CF_API_TOKEN --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
+npx wrangler secret put CF_ZONE_TAG --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
+npx wrangler secret put TELEMETRY_RATE_LIMIT_SECRET --config YOUR_ENVIRONMENT_WRANGLER_CONFIG
 ```
 
-Add `CF_ZONE_TAG` to your Worker environment configuration before deploying scheduled traffic capture.
+`IGNORED_IP` is optional and, when approved for an environment, is provisioned through the same secret mechanism. Do not provision the legacy unreferenced `DISCORD_WEBHOOK_URL` or `PRICE_GUARD_KEY` names in a new environment.
 
 ### 6. Configure `wrangler.toml`
 
-Ensure existing bindings are configured for your environment (`DB` and `MANIFEST_R2`).
-Also configure `CF_ZONE_TAG` and ensure the scheduled traffic pull is authorized with `CF_API_TOKEN`.
+Pin the intended Cloudflare account. Production uses account `eb1a8dd5723031d94e57642e3eaaebda`. Verify `DB`, `BUSCORE_LEADS_DB`, and `MANIFEST_R2` by immutable resource ID or bucket name; do not infer them from the Worker name. Ensure the target environment separately provisions `CF_ZONE_TAG` and `CF_API_TOKEN` for scheduled traffic capture.
 
-### 7. Deploy
+### 7. Release inspection, upload, and deployment
+
+These commands contact Cloudflare and require explicit approval. Status and history are control-plane reads. Upload creates external Worker-version or preview state. Deploy changes active production traffic.
 
 ```bash
-npm run deploy
+npm run release:status
+npm run release:history
+npm run release:upload
 ```
+
+Use `release:upload` only for an approved non-promoting version upload. The only authorized production-promotion path is the manually dispatched `Deploy Lighthouse to Cloudflare` workflow from `main`; it validates before deployment, uses `--keep-vars --strict`, and records an active-deployment JSON receipt. There is intentionally no direct production-deploy package script. No deployment applies a D1 migration or authorizes a secret operation.
+
+For a production rollback, follow the immutable-version and receipt procedure in `OPERATIONS.md`. Rollback requires a separately approved, explicitly named version ID and post-rollback status verification; it is not bundled into upload or deployment approval.
 
 ### Local development
 
