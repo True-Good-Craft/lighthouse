@@ -1,4 +1,7 @@
 # Local development placeholders only. Never commit real secret values.
+# The CEO diagnostic helper does not load this file; it uses LIGHTHOUSE_REPORT_READ_TOKEN or a hidden prompt.
+# A real REPORT_READ_TOKEN must be random, 32-128 URL-safe ASCII characters, and differ from ADMIN_TOKEN.
 ADMIN_TOKEN=replace-with-local-admin-token
+REPORT_READ_TOKEN=replace-with-a-distinct-local-report-read-token
 CF_API_TOKEN=replace-with-local-cloudflare-token
 TELEMETRY_RATE_LIMIT_SECRET=replace-with-a-long-random-local-secret

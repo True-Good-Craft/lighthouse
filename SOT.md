@@ -1,5 +1,17 @@
 # Lighthouse — Source of Truth
 
+## Least-privilege report diagnostics — v1.30.0
+
+Version 1.30.0 adds an optional, additive report-read credential without removing the established administrative contract. A usable `REPORT_READ_TOKEN` Worker secret is an independently generated cryptographically random string of 32 to 128 URL-safe ASCII characters (`A-Z`, `a-z`, `0-9`, `_`, and `-`), is distinct from `ADMIN_TOKEN`, and is accepted for any `GET /report` view only through an exact `X-Report-Token` match. Existing callers may continue to authenticate report reads through the exact `X-Admin-Token`/`ADMIN_TOKEN` match. `POST /campaign`, `POST /notes`, and `POST /report/snapshot` remain administrative writes and accept only `X-Admin-Token`; the report-read header never authorizes them. A missing, blank, malformed, or incorrect report credential fails closed with the existing `401 {"ok":false,"error":"unauthorized"}` response while a distinct administrative fallback remains usable. If the two configured secrets are identical and non-empty, every protected report read and administrative write fails closed with that same `401` before database or deferred work; this prevents a provisioning collision from silently granting write authority to the nominal read credential. Report routes, views, payloads, schemas, status semantics, storage, retention, and scheduling are otherwise unchanged.
+
+`REPORT_READ_TOKEN` is an authorization-scope boundary, not a promise of zero evidence mutation. Bare `/report`, `view=fleet`, and `view=site` retain their best-effort previous-completed-day Cloudflare traffic capture/upsert. The stored-data `view=ceo`, `view=tgc`, `view=source_health`, `view=asset`, and `view=monthly` paths continue to skip that refresh, but any report-assembly exception may still best-effort increment `metrics_daily.errors`. Production access therefore still requires explicit approval, and the canonical first diagnostic remains the stored-data CEO view.
+
+The repository provides one fixed, non-echoing operator helper: `npm run --silent diagnostic:ceo`. With a credential satisfying the same 32-to-128 URL-safe-ASCII contract, it performs at most one `GET https://lighthouse.buscore.ca/report?view=ceo` request with `Accept: application/json` and `X-Report-Token`. It accepts no URL or command-line override, retry, redirect, user-supplied credential/report file, or `.env` input; uses a hidden interactive prompt or the `LIGHTHOUSE_REPORT_READ_TOKEN` automation environment variable; removes that variable from the helper process environment immediately after capture; enforces a 15-second timeout and 1 MiB response limit; rejects redirects and non-200 responses; and writes pretty-printed JSON plus one newline to stdout only after fatal UTF-8 decoding, JSON parsing, reflected-token suppression, and validation against the existing strict CEO contract `1.1`. Noninteractive failures are nonzero and use only three finite static lines: missing/invalid credentials and HTTP `401`/`403` emit `Lighthouse CEO diagnostic access blocked.`; HTTP `503` emits `Lighthouse CEO report unavailable; metrics_daily.errors may have been incremented.`; every other transport, response-safety, parse, schema, or output failure emits `Lighthouse CEO diagnostic failed.`. The helper never emits the credential, response body, numeric HTTP status, or schema detail. It does not grant production authorization and cannot make a CEO request zero-write when report assembly fails.
+
+This local governed bundle changes behavior, auth, configuration, and operator workflow, and documents the remaining cross-service boundary. It adds the optional `REPORT_READ_TOKEN` secret-binding capability, but introduces no endpoint, report field, D1 migration, D1/R2 binding or resource change, retention change, scheduled behavior, secret value, secret provisioning, deployment, or active-production interaction. `ADMIN_TOKEN` remains required for administrative writes and remains a backward-compatible report credential. Production use of `REPORT_READ_TOKEN` requires separately approved secret provisioning, deployment, and readback. Rollback to the prior Worker version restores the prior admin-only read contract, so the administrative fallback must remain available until read-token consumers have been verified.
+
+Agent Smith remains outside this least-privilege completion boundary. Its current runtime still uses `LIGHTHOUSE_ADMIN_TOKEN` for report reads and the administrative monthly snapshot write. Migrating its reads alone would leave the broad credential present. Removing that credential from Agent Smith requires a later owner-approved snapshot-specific authorization split (or removal of that write), coordinated cross-repository documentation/version bundles, external secret changes, verification, and only then any administrative-token rotation.
+
 ## Release-control and infrastructure reconciliation — v1.29.4
 
 Version 1.29.4 records the owner-approved read-only Cloudflare control-plane audit performed on 2026-08-26 and aligns repository-controlled release tooling with the verified infrastructure. The audit established that the merge of `main` commit `59231d09084d0fa4db71012b6f29550886c5b605` caused Cloudflare Workers Builds build `793715ef-6123-4d98-a4a7-797634d07812` to run the configured production command `npx wrangler deploy` without a validation build command and promote Worker version `ba611ac1-653d-47a2-a465-a85f4124b6b6` to 100% of production traffic. That version was created at `2026-08-26T22:57:30.628Z`. The canonical production hostname is `lighthouse.buscore.ca`, attached as a Production Custom Domain rather than a Worker Route. The additional production `workers.dev` surface and branch/version previews are enabled but are not canonical diagnostic endpoints. The active cron is `5 0 * * *` (`00:05 UTC`).
@@ -110,7 +122,7 @@ Existing public-site `/metrics/event` and legacy `/metrics/pageview` behavior re
 
   - Lighthouse is a single Cloudflare Worker that acts as a minimal, privacy-first, aggregate-first stats source with a multi-site event ingestion spine and a legacy BUS Core pageview ingestion path.
 - Lighthouse is a generic, deterministic metrics primitive; BUS Core is a current observed client/use-case, not a runtime dependency.
-- It serves/proxies manifest data from R2, records daily aggregate counters in D1, records daily Buscore traffic snapshots in D1, accepts first-party pageview events into D1, and exposes an admin-protected multi-view `GET /report` endpoint.
+- It serves/proxies manifest data from R2, records daily aggregate counters in D1, records daily Buscore traffic snapshots in D1, accepts first-party pageview events into D1, and exposes a credential-protected multi-view `GET /report` endpoint.
 - It does not post reports to Discord. Discord/operator report requirements are satisfied by authenticated local report payloads unless an outbound sender is explicitly approved in this SOT.
 - Runtime surface: Worker `fetch` handler plus one scheduled daily job whose independently fail-soft tasks capture the previous completed traffic day, write rollups and public GitHub/probe snapshots, and prune bounded-retention data.
 
@@ -165,8 +177,8 @@ Four additive D1 tables and their scheduled writers:
 - `health_checks` — active funnel liveness probes, once per daily cron (low frequency). Each probe is isolated and never throws; a failure records `ok = 0` with a note and cannot break reporting or the rest of the scheduled run. Pruned to ~90 days.
 
 New routes/views:
-- `POST /campaign` — admin-token-protected (same `ADMIN_TOKEN` as `/report`). Operator/aggregate data only. `201 {ok,id}` on success; `401` without token; `400 invalid_json`/`invalid_campaign`; `503 campaign_insert_failed`.
-- `GET /report?view=asset` — admin-protected read of stored Phase 2 aggregates: latest + recent `daily_rollup`, latest `github_snapshots`, latest-per-target `health_checks`, and recent `campaign_log` with downstream event/lead counts joined by `tagged_src`/`utm_campaign`. Skips the best-effort traffic refresh (reads stored aggregates only). Existing `legacy`/`fleet`/`site`/`source_health` views are unchanged.
+- `POST /campaign` — administrative-write protected through `X-Admin-Token`/`ADMIN_TOKEN`; `REPORT_READ_TOKEN` is never accepted. Operator/aggregate data only. `201 {ok,id}` on success; `401` without valid admin authentication; `400 invalid_json`/`invalid_campaign`; `503 campaign_insert_failed`.
+- `GET /report?view=asset` — protected read of stored Phase 2 aggregates: latest + recent `daily_rollup`, latest `github_snapshots`, latest-per-target `health_checks`, and recent `campaign_log` with downstream event/lead counts joined by `tagged_src`/`utm_campaign`. It accepts the current report-read contract defined in the v1.30.0 section and skips the best-effort traffic refresh (reads stored aggregates only). Existing `legacy`/`fleet`/`site`/`source_health` views are unchanged.
 
 Scheduling: the existing daily cron `5 0 * * *` now also runs, after traffic capture (so the rollup sees the day's traffic row), the daily-rollup / github-snapshot / health-check / prune writers. Each is independently fail-soft; one failing cannot break the others or core reporting.
 
@@ -194,10 +206,10 @@ Deterministic scoring (pure, exported functions; documented weights):
 - Each returns `{ score: number|null, available, reason, weight, inputs }`.
 - **Honesty invariants (non-negotiable):** a score is `null` (never faked) when its primary input is missing, with a reason such as `awaiting first scheduled rollup` / `insufficient data`; every score carries its raw `inputs` (raw numbers are never hidden); a score is explicitly **not a valuation**; Acquisition Readiness is **capped by Reliability** and returns `null` if Reliability is unavailable; **stars are weighted ≤10%** of GitHub Trust. Downloads are not users; update checks are not active users.
 
-New routes/views (all admin-token-protected, same `ADMIN_TOKEN` as `/report`):
-- `GET /report?view=monthly` — previous completed calendar month's structured asset data: wQPI MoM, downloads, attributed leads + lead quality, known-version check-in average + adoption (labelled proxy), community posts → downstream (per channel), reliability (uptime/errors/freshness), GitHub health, the five scores with inputs, previous-month Acquisition Readiness for the delta, and recent operator notes. Skips the traffic refresh (reads stored aggregates). Missing pieces are `null`/`awaiting first scheduled rollup`, never faked.
-- `POST /notes` — insert an operator note `{ note, tag? }`.
-- `POST /report/snapshot` — archive a generated brief `{ kind (daily|weekly|monthly), status?, wqpi?, summary_json?, narrative? }`.
+New routes/views:
+- `GET /report?view=monthly` — protected by the current report-read contract defined in the v1.30.0 section; returns the previous completed calendar month's structured asset data: wQPI MoM, downloads, attributed leads + lead quality, known-version check-in average + adoption (labelled proxy), community posts → downstream (per channel), reliability (uptime/errors/freshness), GitHub health, the five scores with inputs, previous-month Acquisition Readiness for the delta, and recent operator notes. Skips the traffic refresh (reads stored aggregates). Missing pieces are `null`/`awaiting first scheduled rollup`, never faked.
+- `POST /notes` — administrative-write protected through `X-Admin-Token`/`ADMIN_TOKEN`; insert an operator note `{ note, tag? }`.
+- `POST /report/snapshot` — administrative-write protected through `X-Admin-Token`/`ADMIN_TOKEN`; archive a generated brief `{ kind (daily|weekly|monthly), status?, wqpi?, summary_json?, narrative? }`.
 
 Privacy: `report_snapshots`, `operator_notes`, and `view=monthly` are aggregate/operator-authored. No emails, `bc_uid`/`bc_sid`, `anon_user_id`/`session_id`, raw or hashed IPs, user-agent, or fingerprints. `summary_json` carries compact aggregate numbers only.
 
@@ -360,10 +372,10 @@ The following rules are non-negotiable unless this SOT is explicitly revised:
 ### Reporting
 
 - `GET /report`
-  - Requires header `X-Admin-Token`.
-  - Auth check is exact equality against `env.ADMIN_TOKEN`:
-    - `const token = request.headers.get("X-Admin-Token")`
-    - `if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) { ...401 unauthorized... }`
+  - Accepts either the exact usable `X-Report-Token`/`env.REPORT_READ_TOKEN` match or the backward-compatible exact non-empty `X-Admin-Token`/`env.ADMIN_TOKEN` match.
+  - `REPORT_READ_TOKEN` is optional and usable only when it is an independently generated cryptographically random string containing 32 to 128 URL-safe ASCII characters (`A-Z`, `a-z`, `0-9`, `_`, and `-`). Absence or malformed configuration never disables a distinct administrative fallback and never authorizes a request.
+  - If non-empty `REPORT_READ_TOKEN` and `ADMIN_TOKEN` values are identical, both report-read paths and all three administrative writes fail closed with `401` before database or deferred work.
+  - Header names are not interchangeable: the read credential is accepted only through `X-Report-Token`, and placing it in `X-Admin-Token` does not grant administrative access.
   - On auth failure: returns `401` JSON `{ "ok": false, "error": "unauthorized" }`.
   - If `view` is omitted, blank, or absent, `/report` preserves the legacy response shape with `today`, `yesterday`, `last_7_days`, additive top-level `last_30_days`, `month_to_date`, `trends`, additive top-level `traffic`, additive top-level `human_traffic`, additive top-level `identity`, additive top-level `site_events`, and additive top-level `release_signals`.
   - Bare legacy `/report` continues to support `site_key` with optional flags `exclude_test_mode` (default `true`) and `production_only` (default from tracked-site `production_only_default`) for the additive `site_events` block only.
@@ -466,7 +478,8 @@ Required bindings/secrets used by code:
 
 - `DB`
 - `MANIFEST_R2`
-- `ADMIN_TOKEN`
+- `ADMIN_TOKEN` — required exact-match administrative credential accepted through `X-Admin-Token` for the three protected writes and retained as a backward-compatible report credential.
+- `REPORT_READ_TOKEN` — optional secret; when it is an independently generated cryptographically random string containing 32 to 128 URL-safe ASCII characters (`A-Z`, `a-z`, `0-9`, `_`, and `-`) and differs from `ADMIN_TOKEN`, its exact value is accepted only through `X-Report-Token` for `GET /report`. It is never accepted by a write route and is not configured in `[vars]`. An identical non-empty admin/read configuration disables every protected read and write until corrected.
 - `IGNORED_IP` — optional; if set, requests whose `CF-Connecting-IP` exactly matches this value skip counter increments but receive normal responses.
 - `CF_API_TOKEN` — required for the approved daily Buscore traffic capture job.
 - `CF_ZONE_TAG` — required for the approved daily Buscore traffic capture job.
@@ -684,8 +697,9 @@ Rules:
 - Anonymous continuity values are first-party random UUID-like values and remain independent from `ip_hash` and `user_agent_hash`.
 - Lighthouse must not combine `anon_user_id` with `ip_hash` or `user_agent_hash` into synthetic identity.
 - Traffic capture uses Cloudflare aggregate analytics only; no raw request logging is introduced outside the documented narrow pageview ingestion path.
-- `/report` is protected by `X-Admin-Token` exact match to `env.ADMIN_TOKEN`.
-- `ADMIN_TOKEN` is a broad administrative credential, not a read-only diagnostic token. The same exact-match credential protects `GET /report` and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Authorization to read a report does not imply authorization to call those writes.
+- `GET /report` accepts an exact `X-Report-Token` match to an optional 32-to-128-character URL-safe-ASCII `env.REPORT_READ_TOKEN`, or the backward-compatible exact non-empty `X-Admin-Token` match to `env.ADMIN_TOKEN`, only while the two configured secrets do not collide.
+- `ADMIN_TOKEN` remains a broad administrative credential. It protects the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes and remains accepted for report reads. `REPORT_READ_TOKEN` is GET-report-only and is never valid for those writes. Authorization to read a report does not imply authorization to call a write.
+- `X-Report-Token` is not added to browser CORS allow-headers. Version 1.30.0 does not create a browser-readable report surface.
 
 ## 8. Explicit Non-Features
 

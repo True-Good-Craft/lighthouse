@@ -188,7 +188,7 @@ test("GET /report?view=monthly with data computes scores, shows sub-scores + inp
   assert.doesNotMatch(JSON.stringify(body), PII);
 });
 
-test("GET /report?view=monthly requires the admin token", async () => {
+test("GET /report?view=monthly rejects a missing report credential", async () => {
   const res = await worker.fetch(new Request("https://lighthouse.buscore.ca/report?view=monthly"), monthlyEnv(), ctx);
   assert.equal(res.status, 401);
 });

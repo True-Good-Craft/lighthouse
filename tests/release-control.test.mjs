@@ -46,16 +46,19 @@ test("production deployment is manual, main-only, serialized, gated, and receipt
 test("operator scripts expose reads and upload without a direct production bypass", () => {
   assert.equal(packageJson.scripts.deploy, undefined);
   assert.equal(packageJson.scripts["release:deploy"], undefined);
+  assert.equal(packageJson.scripts["diagnostic:ceo"], "node scripts/read-ceo-report.mjs");
   assert.equal(packageJson.scripts["release:upload"], "wrangler versions upload");
   assert.equal(packageJson.scripts["release:status"], "wrangler deployments status --json");
   assert.equal(packageJson.scripts["release:history"], "wrangler deployments list --json");
   assert.equal(packageJson.repository.url, "git+https://github.com/True-Good-Craft/lighthouse.git");
 });
 
-test("the mandatory release-control bundle records the verified external receipt", () => {
-  assert.equal(packageJson.version, "1.29.4");
+test("the current governed bundle and historical release-control receipt stay synchronized", () => {
+  assert.equal(packageJson.version, "1.30.0");
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[""].version, packageJson.version);
+  assert.match(sot, /^## Least-privilege report diagnostics — v1\.30\.0$/m);
+  assert.match(changelog, /^## \[1\.30\.0\] - 2026-08-26$/m);
   assert.match(sot, /^## Release-control and infrastructure reconciliation — v1\.29\.4$/m);
   assert.match(changelog, /^## \[1\.29\.4\] - 2026-08-26$/m);
   assert.match(

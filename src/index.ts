@@ -15,6 +15,7 @@ export interface Env {
   BUSCORE_LEADS_DB?: D1Database;
   MANIFEST_R2: R2Bucket;
   ADMIN_TOKEN: string;
+  REPORT_READ_TOKEN?: string;
   IGNORED_IP: string;
   CF_API_TOKEN: string;
   CF_ZONE_TAG: string;
@@ -5147,6 +5148,43 @@ function safeRatio(numerator: number, denominator: number): number {
   return numerator / Math.max(1, denominator);
 }
 
+const REPORT_READ_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
+
+function hasExactHeaderToken(request: Request, headerName: string, expectedToken: string | undefined): boolean {
+  if (!expectedToken) return false;
+  const presentedToken = request.headers.get(headerName);
+  return presentedToken !== null && presentedToken === expectedToken;
+}
+
+function hasCredentialCollision(env: Env): boolean {
+  return Boolean(
+    env.ADMIN_TOKEN &&
+    env.REPORT_READ_TOKEN &&
+    env.ADMIN_TOKEN === env.REPORT_READ_TOKEN
+  );
+}
+
+function hasUsableReportReadToken(env: Env): env is Env & { REPORT_READ_TOKEN: string } {
+  return Boolean(env.REPORT_READ_TOKEN && REPORT_READ_TOKEN_PATTERN.test(env.REPORT_READ_TOKEN));
+}
+
+function hasAdminAccess(request: Request, env: Env): boolean {
+  if (hasCredentialCollision(env)) return false;
+  return hasExactHeaderToken(request, "X-Admin-Token", env.ADMIN_TOKEN);
+}
+
+function hasReportReadAccess(request: Request, env: Env): boolean {
+  if (hasCredentialCollision(env)) return false;
+  return (
+    hasAdminAccess(request, env) ||
+    (
+      request.method === "GET" &&
+      hasUsableReportReadToken(env) &&
+      hasExactHeaderToken(request, "X-Report-Token", env.REPORT_READ_TOKEN)
+    )
+  );
+}
+
 function withCors(request: Request, response: Response, allowMethods: string = "GET, OPTIONS"): Response {
   const headers = new Headers(response.headers);
 
@@ -6587,8 +6625,7 @@ export default {
     // Admin-token-protected operator route for logging community posts.
     // Operator-authored aggregate/annotation data only; no user data, no PII.
     if (url.pathname === "/campaign" && request.method === "POST") {
-      const token = request.headers.get("X-Admin-Token");
-      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+      if (!hasAdminAccess(request, env)) {
         return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
       }
 
@@ -6615,8 +6652,7 @@ export default {
 
     // Admin-token-protected operator note insert (feeds the monthly narrative).
     if (url.pathname === "/notes" && request.method === "POST") {
-      const token = request.headers.get("X-Admin-Token");
-      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+      if (!hasAdminAccess(request, env)) {
         return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
       }
       let body: unknown;
@@ -6639,8 +6675,7 @@ export default {
 
     // Admin-token-protected report archival (Agent Smith archives what it posts).
     if (url.pathname === "/report/snapshot" && request.method === "POST") {
-      const token = request.headers.get("X-Admin-Token");
-      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+      if (!hasAdminAccess(request, env)) {
         return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
       }
       let body: unknown;
@@ -6903,8 +6938,7 @@ export default {
     }
 
     if (url.pathname === "/report") {
-      const token = request.headers.get("X-Admin-Token");
-      if (!env.ADMIN_TOKEN || !token || token !== env.ADMIN_TOKEN) {
+      if (!hasReportReadAccess(request, env)) {
         return withCors(request, Response.json({ ok: false, error: "unauthorized" }, { status: 401 }));
       }
 

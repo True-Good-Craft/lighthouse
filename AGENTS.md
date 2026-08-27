@@ -36,6 +36,8 @@ Authority sources in descending order:
 - Any Cloudflare Workers Builds configuration change requires explicit external-change approval and a read-only verification receipt before relying on it.
 - When code depends on a D1 schema change, a migration requires explicit approval and remote verification before any Worker deployment.
 - Do not print or commit secret values.
+- The optional `REPORT_READ_TOKEN` is a secret-binding capability, not repository data. Do not generate, provision, inspect, remove, or rotate its production value without explicit secret-operation approval. It must be independently generated and cryptographically random, contain 32 to 128 URL-safe ASCII characters (`A-Z`, `a-z`, `0-9`, `_`, and `-`), and differ from `ADMIN_TOKEN`; an identical non-empty configuration intentionally fails every protected read and write closed.
+- `npm run --silent diagnostic:ceo` is the sole canonical operator helper for a Lighthouse production CEO read. Its fixed, non-echoing behavior does not grant endpoint approval; every invocation still requires explicit production-read scope.
 - Cross-repository contracts with Agent Smith, BUS Core, buscore-site, or the leads database must be documented when touched.
 
 ## Canonical Analytics Access and Diagnostics
@@ -45,8 +47,8 @@ For any Lighthouse alert, WATCH, analytics question, report failure, service-hea
 1. Read `SOT.md`, then `OPERATIONS.md`, then the relevant `CHANGELOG.md` entry and contract/fixture.
 2. Treat `OPERATIONS.md` as the canonical procedure for choosing a diagnostic surface and classifying its side effects. It is subordinate to `SOT.md` and cannot authorize behavior absent from the SOT.
 3. Default to local zero-mutation diagnosis. Production, Cloudflare, Discord, GitHub, D1, or other external access requires explicit scope approval.
-4. If the approved endpoint, credential source, account context, or tool access is missing, report `ACCESS_BLOCKED`. Do not improvise an endpoint, credential, direct SQL query, or alternate service.
-5. Do not fan out across every endpoint. Start with supplied evidence; when live access is approved, use the stored-data `GET /report?view=ceo` diagnostic first and narrow from there.
+4. If the approved endpoint, credential source, account context, deployed read-token capability, or tool access is missing, report `ACCESS_BLOCKED`. Do not improvise an endpoint, credential, direct SQL query, raw request command, or alternate service.
+5. Do not fan out across every endpoint. Start with supplied evidence; when a production CEO read and its credential mechanism are explicitly approved, run exactly `npm run --silent diagnostic:ceo` and narrow from its validated stored-data result. Do not add arguments, substitute a URL/header, redirect its output to a file, or retry automatically.
 
 Canonical Cloudflare identity: account `eb1a8dd5723031d94e57642e3eaaebda`, Worker `buscore-lighthouse`, primary D1 binding `DB` at database ID `e46f2daa-7e97-45a3-9bf0-49003a42850c` named `lighthouse`, and Production Custom Domain `lighthouse.buscore.ca`. An empty Worker Routes list is expected for this Custom Domain. If another account context lacks the Worker, correct the account rather than diagnosing an outage.
 
@@ -54,7 +56,11 @@ Operational constraints:
 
 - `GET /report?view=source_health` is ingestion-integrity evidence, not service-probe truth.
 - `WATCH` is not synonymous with outage; Agent Smith owns WATCH/ALERT/UNAVAILABLE wording, while Lighthouse owns facts and availability.
-- The current `ADMIN_TOKEN` is broad: it protects report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Possession does not authorize writes.
+- `ADMIN_TOKEN` remains broad: it protects report reads and is the only credential accepted by the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Optional `REPORT_READ_TOKEN`, when separately provisioned, is accepted only through `X-Report-Token` for `GET /report`; the admin credential remains a backward-compatible report fallback and the read credential never authorizes a write.
+- The report-read split does not make report requests zero-mutation. Bare/fleet/site reports refresh stored traffic, and every report view—including CEO—can increment `metrics_daily.errors` when assembly fails. The helper is therefore Class 2 and approval-gated.
+- Treat the helper's three static failure lines literally: `access blocked` is credential/access evidence, `report unavailable` is application evidence with a possible error-counter increment, and generic `diagnostic failed` is an unclassified transport/safety/contract failure. None authorizes a retry or alternate probe.
+- The local 1.30.0 bundle contains no secret value, provisioning, deployment, or production verification. Do not claim production read-token availability until separately approved external activation and readback prove it.
+- Agent Smith still carries `LIGHTHOUSE_ADMIN_TOKEN` for report reads and monthly snapshot writes. Do not remove or rotate that credential until an owner-approved snapshot-specific authorization split or write removal is implemented and verified in the owning repositories.
 - Many GET/HEAD surfaces change evidence. Bare/fleet/site reports refresh stored traffic; report failures can increment errors; artifact HEAD records raw/HEAD truth; update, redirect, artifact, telemetry, and admin-write routes are not passive probes.
 - Git publication is not zero-mutation. The 1.29.3 `main` merge proved that the former Workers Builds production command could promote active traffic independently of the checked-in gate. Durable readback on 2026-08-26 confirmed that both non-production and production publication now use `npx wrangler versions upload`. Pushes still create version or preview state, while active production promotion is reserved for the explicitly approved manual GitHub workflow. Any future external-setting drift reinstates `BLOCKED BEFORE MERGE`.
 - Lighthouse, Agent Smith, BUS Core, buscore-site, and tgc-site are separate failure domains. Do not infer a cross-service outage from one unavailable layer.
