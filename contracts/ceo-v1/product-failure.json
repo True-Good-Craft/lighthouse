@@ -1,6 +1,6 @@
 {
   "view": "ceo",
-  "report_contract_version": "1.1",
+  "report_contract_version": "1.2",
   "metric_definition_version": "1.1",
   "report_id": "00000000-0000-4000-8000-000000000004",
   "generated_at": "2026-08-08T13:00:00.000Z",
@@ -35,7 +35,7 @@
   "sources": {
     "artifact_delivery": {
       "availability": "available",
-      "freshness": "fresh",
+      "freshness": "unknown",
       "data_through": "2026-08-08T13:00:00.000Z",
       "definition_start_day": "2026-07-18",
       "coverage": {
@@ -45,11 +45,12 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": null
+      "reason_code": "activity_only",
+      "freshness_basis": "activity"
     },
     "update_checks": {
       "availability": "available",
-      "freshness": "fresh",
+      "freshness": "unknown",
       "data_through": "2026-08-08T13:00:00.000Z",
       "definition_start_day": "2026-07-15",
       "coverage": {
@@ -59,11 +60,12 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": null
+      "reason_code": "activity_only",
+      "freshness_basis": "activity"
     },
     "product_telemetry": {
       "availability": "available",
-      "freshness": "fresh",
+      "freshness": "unknown",
       "data_through": "2026-08-08T13:00:00.000Z",
       "definition_start_day": "2026-07-24",
       "coverage": {
@@ -73,7 +75,8 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": null
+      "reason_code": "activity_only",
+      "freshness_basis": "activity"
     },
     "buscore_site": {
       "availability": "available",
@@ -87,11 +90,12 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": "source_history_missing"
+      "reason_code": "source_history_missing",
+      "freshness_basis": "activity"
     },
     "tgc_site": {
       "availability": "available",
-      "freshness": "fresh",
+      "freshness": "unknown",
       "data_through": "2026-08-08T13:00:00.000Z",
       "definition_start_day": "2026-07-18",
       "coverage": {
@@ -101,11 +105,12 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": null
+      "reason_code": "activity_only",
+      "freshness_basis": "activity"
     },
     "voluntary_inquiries": {
       "availability": "available",
-      "freshness": "fresh",
+      "freshness": "unknown",
       "data_through": "2026-08-08T13:00:00.000Z",
       "definition_start_day": "2026-06-01",
       "coverage": {
@@ -115,11 +120,12 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": null
+      "reason_code": "activity_only",
+      "freshness_basis": "activity"
     },
     "lighthouse_errors": {
       "availability": "available",
-      "freshness": "fresh",
+      "freshness": "unknown",
       "data_through": "2026-08-08T13:00:00.000Z",
       "definition_start_day": "2026-03-10",
       "coverage": {
@@ -129,7 +135,8 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": null
+      "reason_code": "activity_only",
+      "freshness_basis": "activity"
     },
     "service_probes": {
       "availability": "available",
@@ -143,7 +150,8 @@
         "previous_7_complete_days": "partial",
         "last_30_complete_days": "partial"
       },
-      "reason_code": null
+      "reason_code": null,
+      "freshness_basis": "scheduled_probe"
     }
   },
   "bus_core": {
@@ -302,7 +310,12 @@
         "state": "pass",
         "checked_at": "2026-08-08T00:09:00.000Z"
       }
-    ]
+    ],
+    "voluntary_inquiry_records": {
+      "total_records": 1,
+      "last_created_at": "2026-08-08T13:00:00.000Z",
+      "last_updated_at": "2026-08-08T13:00:00.000Z"
+    }
   },
   "limitations": {
     "artifact_transfer_completion_known": false,
@@ -310,6 +323,9 @@
     "source_credits_are_unique_across_days": false,
     "download_interest_distinguishes_page_visit_from_file_click": true,
     "download_interest_includes_pre_definition_history": false,
-    "product_telemetry_is_opt_in_only": true
+    "product_telemetry_is_opt_in_only": true,
+    "activity_recency_proves_producer_health": false,
+    "voluntary_inquiries_are_lead_records": true,
+    "existing_lead_updates_increment_inquiry_windows": false
   }
 }

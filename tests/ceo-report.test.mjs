@@ -74,7 +74,14 @@ function productAggregateRow({ zero, watermark, includeProductFailures }) {
 }
 
 function defaultLeadRows({ zero, watermark }) {
-  if (zero) return [{ source: null, data_through: null }];
+  if (zero) return [{
+    source: null,
+    data_through: null,
+    total_records: 0,
+    last_created_at: null,
+    last_updated_at: null,
+  }];
+  const observedAt = `${watermark}T12:00:00.000Z`;
   return [{
     source: "reddit",
     count_today: 0,
@@ -82,8 +89,14 @@ function defaultLeadRows({ zero, watermark }) {
     count_last_7_complete_days: 2,
     count_previous_7_complete_days: 0,
     count_last_30_complete_days: 2,
-    data_through: `${watermark}T12:00:00.000Z`,
-  }, { source: null, data_through: `${watermark}T12:00:00.000Z` }];
+    data_through: observedAt,
+  }, {
+    source: null,
+    data_through: observedAt,
+    total_records: 2,
+    last_created_at: observedAt,
+    last_updated_at: observedAt,
+  }];
 }
 
 function makeCeoDb({
@@ -232,7 +245,7 @@ test("CEO report routing is additive and protected", async () => {
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.view, "ceo");
-  assert.equal(payload.report_contract_version, "1.1");
+  assert.equal(payload.report_contract_version, "1.2");
   assert.equal(payload.metric_definition_version, "1.1");
 
   const wrongMethod = await worker.fetch(
@@ -303,12 +316,26 @@ test("CEO metrics use literal sources, page_view only, exact lead rows, and all 
   assert.equal(report.business.tgc_consented_page_views.latest_complete_day, 4);
   assert.equal(report.business.voluntary_inquiries.latest_complete_day, 2);
   assert.deepEqual(report.business.inquiry_sources_last_7_complete_days, [{ source: "reddit", count: 2 }]);
-  assert.equal(report.details.service_probes, null, "an incomplete probe source has no believable detail list");
+  assert.deepEqual(report.details.service_probes?.map((row) => row.target), ["manifest", "release_artifact"]);
+  assert.equal(report.sources.service_probes.availability, "available");
+  assert.equal(report.sources.service_probes.freshness_basis, "scheduled_probe");
+  assert.equal(report.sources.service_probes.reason_code, "probe_history_incomplete");
+  assert.deepEqual(report.details.voluntary_inquiry_records, {
+    total_records: 2,
+    last_created_at: "2026-08-08T12:00:00.000Z",
+    last_updated_at: "2026-08-08T12:00:00.000Z",
+  });
+  assert.equal(report.sources.tgc_site.freshness_basis, "activity");
+  assert.equal(report.sources.tgc_site.freshness, "unknown");
+  assert.equal(report.sources.tgc_site.reason_code, "activity_only");
   assert.equal(report.sources.artifact_delivery.coverage.today, "partial");
   assert.equal(report.sources.artifact_delivery.coverage.latest_complete_day, "partial");
   assert.equal(report.sources.artifact_delivery.coverage.last_30_complete_days, "partial");
   assert.equal(report.limitations.download_interest_distinguishes_page_visit_from_file_click, true);
   assert.equal(report.limitations.download_interest_includes_pre_definition_history, false);
+  assert.equal(report.limitations.activity_recency_proves_producer_health, false);
+  assert.equal(report.limitations.voluntary_inquiries_are_lead_records, true);
+  assert.equal(report.limitations.existing_lead_updates_increment_inquiry_windows, false);
   assert.equal(report.sources.buscore_site.definition_start_day, TRUSTED_ARTIFACT_CLICK_START_DAY);
   assert.equal(report.sources.buscore_site.data_through, null);
   assert.ok(sqlLog.some((sql) => sql.includes("event_name = 'page_view'")));
@@ -342,12 +369,33 @@ test("trusted artifact-click intent starts at cutover without relabeling histori
     previous_7_complete_days: null,
     last_30_complete_days: 1,
   });
-  assert.equal(spanningReport.sources.buscore_site.data_through, "2026-08-11T23:59:59.999Z");
+  assert.equal(spanningReport.sources.buscore_site.data_through, "2026-08-11T12:00:00.000Z");
   assert.equal(spanningReport.sources.buscore_site.coverage.last_7_complete_days, "partial");
 
   const intentSql = cutoverSql.find((sql) => sql.includes("buscore_download_intent_daily"));
   assert.match(intentSql, /MAX\(day\) FROM buscore_download_intent_daily WHERE day >= '2026-08-10'/);
   assert.match(intentSql, /AND day >= '2026-08-10'/);
+});
+
+test("composite watermarks compare date-only components at end-of-day semantics", async () => {
+  const db = makeCeoDb({ watermark: "2026-08-11" });
+  const report = await buildCeoReport(db, db, new Date("2026-08-12T12:00:00.000Z"));
+
+  assert.equal(
+    report.sources.buscore_site.data_through,
+    "2026-08-11T12:00:00.000Z",
+    "an exact noon observation is earlier than the same daily watermark's eventual end of day"
+  );
+});
+
+test("activity watermarks never extend beyond report generation", async () => {
+  const now = new Date("2026-08-12T12:00:00.000Z");
+  const db = makeCeoDb({ watermark: "2026-08-13" });
+  const report = await buildCeoReport(db, db, now);
+
+  assert.equal(report.sources.artifact_delivery.data_through, now.toISOString());
+  assert.equal(report.sources.update_checks.data_through, now.toISOString());
+  assert.equal(report.sources.product_telemetry.data_through, now.toISOString());
 });
 
 test("CEO report stays far below D1 Free query and simultaneous connection limits", async () => {
@@ -376,6 +424,18 @@ test("inquiry attribution is a fixed privacy bucket and never a raw label", asyn
     count_last_30_complete_days: 1,
     data_through: `2026-08-08T12:00:0${index}.000Z`,
   }));
+  leadRows.push({
+    source: null,
+    count_today: 0,
+    count_latest_complete_day: 0,
+    count_last_7_complete_days: 0,
+    count_previous_7_complete_days: 0,
+    count_last_30_complete_days: 0,
+    data_through: "2026-08-08T12:00:02.000Z",
+    total_records: 3,
+    last_created_at: "2026-08-08T12:00:02.000Z",
+    last_updated_at: "2026-08-08T21:00:00.000Z",
+  });
   const sqlLog = [];
   const db = makeCeoDb({ leadRows, sqlLog });
   const report = await buildCeoReport(db, db, new Date("2026-08-08T22:00:00.000Z"));
@@ -383,20 +443,80 @@ test("inquiry attribution is a fixed privacy bucket and never a raw label", asyn
 
   assert.deepEqual(report.business.inquiry_sources_last_7_complete_days, [{ source: "other", count: 3 }]);
   assert.equal(report.business.voluntary_inquiries.last_7_complete_days, 3);
+  assert.deepEqual(report.details.voluntary_inquiry_records, {
+    total_records: 3,
+    last_created_at: "2026-08-08T12:00:02.000Z",
+    last_updated_at: "2026-08-08T21:00:00.000Z",
+  });
+  assert.equal(report.sources.voluntary_inquiries.data_through, "2026-08-08T12:00:02.000Z");
+  assert.equal(
+    report.details.voluntary_inquiry_records.last_created_at,
+    report.sources.voluntary_inquiries.data_through,
+    "the aggregate record watermark and source activity watermark must stay identical"
+  );
   for (const raw of rawLabels) assert.equal(serialized.includes(raw), false);
   const leadSql = sqlLog.find((sql) => sql.includes("FROM early_access_leads"));
   assert.match(leadSql, /CASE .* ELSE 'other' END/);
   assert.match(leadSql, /GROUP BY source/);
+  assert.match(leadSql, /COUNT\(\*\) AS total_records/);
+  assert.match(leadSql, /MAX\(created_at\) AS last_created_at/);
+  assert.match(leadSql, /MAX\(updated_at\) AS last_updated_at/);
 });
 
-test("service probes remain explicitly incomplete until every active target has run", async () => {
+test("partial service-probe history remains available and returns only observed evidence", async () => {
   const db = makeCeoDb();
+  const report = await buildCeoReport(db, db, new Date("2026-08-08T22:00:00.000Z"));
+
+  assert.equal(report.sources.service_probes.availability, "available");
+  assert.equal(report.sources.service_probes.freshness, "unknown");
+  assert.equal(report.sources.service_probes.freshness_basis, "scheduled_probe");
+  assert.equal(report.sources.service_probes.data_through, "2026-08-08T12:00:00.000Z");
+  assert.equal(report.sources.service_probes.reason_code, "probe_history_incomplete");
+  assert.equal(report.sources.service_probes.coverage.today, "partial");
+  assert.deepEqual(report.details.service_probes?.map((row) => row.target), ["manifest", "release_artifact"]);
+});
+
+test("exact service-probe timestamp ties deterministically keep the failing result", async () => {
+  const checkedAt = "2026-08-08T12:00:00.000Z";
+  const pass = { target: "manifest", ok: 1, status_code: 200, latency_ms: 2, checked_at: checkedAt, note: null };
+  const fail = { target: "manifest", ok: 0, status_code: 500, latency_ms: 3, checked_at: checkedAt, note: "failed" };
+
+  for (const healthRows of [[pass, fail], [fail, pass]]) {
+    const sqlLog = [];
+    const db = makeCeoDb({ healthRows, sqlLog });
+    const report = await buildCeoReport(db, db, new Date("2026-08-08T22:00:00.000Z"));
+
+    assert.deepEqual(report.details.service_probes, [
+      { target: "manifest", state: "fail", checked_at: checkedAt },
+    ]);
+    assert.ok(sqlLog.some((sql) => (
+      sql.includes("ORDER BY candidate.checked_at DESC, candidate.ok ASC, candidate.id ASC LIMIT 1")
+    )));
+  }
+});
+
+test("successful empty service-probe history is available without invented detail", async () => {
+  const db = makeCeoDb({ healthRows: [] });
+  const report = await buildCeoReport(db, db, new Date("2026-08-08T22:00:00.000Z"));
+
+  assert.equal(report.sources.service_probes.availability, "available");
+  assert.equal(report.sources.service_probes.freshness, "unknown");
+  assert.equal(report.sources.service_probes.freshness_basis, "scheduled_probe");
+  assert.equal(report.sources.service_probes.data_through, null);
+  assert.equal(report.sources.service_probes.reason_code, "probe_history_missing");
+  assert.equal(report.sources.service_probes.coverage.today, "partial");
+  assert.deepEqual(report.details.service_probes, []);
+});
+
+test("a service-probe query failure remains unavailable with no detail", async () => {
+  const db = makeCeoDb({ failPattern: "FROM health_checks" });
   const report = await buildCeoReport(db, db, new Date("2026-08-08T22:00:00.000Z"));
 
   assert.equal(report.sources.service_probes.availability, "unavailable");
   assert.equal(report.sources.service_probes.freshness, "unknown");
+  assert.equal(report.sources.service_probes.freshness_basis, "scheduled_probe");
   assert.equal(report.sources.service_probes.data_through, null);
-  assert.equal(report.sources.service_probes.reason_code, "probe_history_missing");
+  assert.equal(report.sources.service_probes.reason_code, "query_failed");
   assert.equal(report.sources.service_probes.coverage.today, "unavailable");
   assert.equal(report.details.service_probes, null);
 });
@@ -415,6 +535,7 @@ test("service probe freshness uses the oldest required target watermark", async 
 
   assert.equal(report.sources.service_probes.availability, "available");
   assert.equal(report.sources.service_probes.freshness, "stale");
+  assert.equal(report.sources.service_probes.freshness_basis, "scheduled_probe");
   assert.equal(report.sources.service_probes.data_through, "2026-08-06T00:00:00.000Z");
   assert.equal(report.sources.service_probes.reason_code, "probe_data_stale");
   assert.equal(report.sources.service_probes.coverage.today, "partial");
@@ -440,19 +561,21 @@ test("successful empty queries are zero while an unavailable source is null", as
   assert.equal(partial.bus_core.site_page_views.latest_complete_day, 3, "other sources stay available");
 });
 
-test("an old direct-source watermark fails closed as stale without erasing observed counts", async () => {
+test("direct-source watermarks remain activity evidence without claiming producer freshness", async () => {
   const sqlLog = [];
   const db = makeCeoDb({ watermark: "2026-08-01", sqlLog });
   const report = await buildCeoReport(db, db, new Date("2026-08-08T22:00:00.000Z"));
 
   assert.equal(report.sources.artifact_delivery.availability, "available");
-  assert.equal(report.sources.artifact_delivery.freshness, "stale");
+  assert.equal(report.sources.artifact_delivery.freshness, "unknown");
+  assert.equal(report.sources.artifact_delivery.freshness_basis, "activity");
   assert.equal(report.sources.artifact_delivery.data_through, "2026-08-01T23:59:59.999Z");
-  assert.equal(report.sources.artifact_delivery.reason_code, "source_data_stale");
+  assert.equal(report.sources.artifact_delivery.reason_code, "activity_only");
   assert.equal(report.bus_core.full_artifact_responses_offered.latest_complete_day, 104);
   for (const source of ["update_checks", "tgc_site", "lighthouse_errors"]) {
-    assert.equal(report.sources[source].freshness, "stale", `${source} must retain an all-history watermark`);
-    assert.equal(report.sources[source].reason_code, "source_data_stale");
+    assert.equal(report.sources[source].freshness, "unknown", `${source} must not infer producer health from activity`);
+    assert.equal(report.sources[source].freshness_basis, "activity");
+    assert.equal(report.sources[source].reason_code, "activity_only");
   }
   assert.equal(report.sources.buscore_site.freshness, "unknown", "pre-cutover intent cannot become a trusted watermark");
   assert.equal(report.sources.buscore_site.data_through, null);
@@ -467,9 +590,11 @@ test("missing voluntary inquiry binding is explicit and never rendered as zero",
   const db = makeCeoDb();
   const report = await buildCeoReport(db, undefined, new Date("2026-08-08T22:00:00.000Z"));
   assert.equal(report.sources.voluntary_inquiries.availability, "unavailable");
+  assert.equal(report.sources.voluntary_inquiries.freshness_basis, "activity");
   assert.equal(report.sources.voluntary_inquiries.reason_code, "binding_not_configured");
   assert.equal(report.business.voluntary_inquiries.latest_complete_day, null);
   assert.equal(report.business.inquiry_sources_last_7_complete_days, null);
+  assert.equal(report.details.voluntary_inquiry_records, null);
 });
 
 test("strict CEO schema accepts every fixture and representative live producer state", async () => {
@@ -479,11 +604,17 @@ test("strict CEO schema accepts every fixture and representative live producer s
   addFormats(ajv);
   const validate = ajv.compile(schema);
   const fixtureNames = readdirSync(contractDir)
-    .filter((name) => name.endsWith(".json") && name !== "report.schema.json")
+    .filter((name) => name.endsWith(".json") && !name.endsWith(".schema.json"))
     .sort();
   for (const name of fixtureNames) {
     assertSchemaValid(JSON.parse(readFileSync(new URL(name, contractDir), "utf8")), validate, `fixture ${name}`);
   }
+  const rollbackSchema = JSON.parse(readFileSync(new URL("report-1.1.schema.json", contractDir), "utf8"));
+  const rollbackAjv = new Ajv2020({ strict: true, allErrors: true });
+  addFormats(rollbackAjv);
+  const validateRollback = rollbackAjv.compile(rollbackSchema);
+  const rollbackFixture = JSON.parse(readFileSync(new URL("compat-1.1/healthy-zero.json", contractDir), "utf8"));
+  assertSchemaValid(rollbackFixture, validateRollback, "rollback fixture 1.1");
 
   const now = new Date("2026-08-08T22:00:00.000Z");
   const currentDb = makeCeoDb({ includeProductFailures: false });
@@ -532,8 +663,40 @@ test("strict CEO schema accepts every fixture and representative live producer s
   unavailablePartial.sources.artifact_delivery.coverage.today = "partial";
   const unavailableStaleReason = structuredClone(runtimeReports[4][1]);
   unavailableStaleReason.sources.artifact_delivery.reason_code = "source_data_stale";
+  const directWithProbeBasis = structuredClone(base);
+  directWithProbeBasis.sources.artifact_delivery.freshness_basis = "scheduled_probe";
+  const probeWithActivityBasis = structuredClone(base);
+  probeWithActivityBasis.sources.service_probes.freshness_basis = "activity";
+  const freshProbeWithEmptyDetails = structuredClone(base);
+  freshProbeWithEmptyDetails.sources.service_probes.freshness = "fresh";
+  freshProbeWithEmptyDetails.sources.service_probes.reason_code = null;
+  freshProbeWithEmptyDetails.details.service_probes = [];
+  const missingProbeWithDetails = structuredClone(runtimeReports[0][1]);
+  missingProbeWithDetails.details.service_probes = structuredClone(base.details.service_probes);
+  const incompleteProbeWithCompleteDetails = structuredClone(base);
+  incompleteProbeWithCompleteDetails.details.service_probes = [
+    "site_home",
+    "site_downloads",
+    "manifest",
+    "release_artifact",
+    "lead_endpoint",
+    "github_release",
+  ].map((target) => ({ target, state: "pass", checked_at: "2026-08-08T12:00:00.000Z" }));
+  const duplicateProbeTarget = structuredClone(base);
+  duplicateProbeTarget.details.service_probes[1] = {
+    ...duplicateProbeTarget.details.service_probes[1],
+    target: duplicateProbeTarget.details.service_probes[0].target,
+    checked_at: "2026-08-08T12:00:01.000Z",
+  };
+  const zeroLeadRecordsWithTimestamps = structuredClone(runtimeReports[0][1]);
+  zeroLeadRecordsWithTimestamps.details.voluntary_inquiry_records.last_created_at = "2026-08-08T12:00:00.000Z";
+  zeroLeadRecordsWithTimestamps.details.voluntary_inquiry_records.last_updated_at = "2026-08-08T12:00:00.000Z";
+  const nonzeroLeadRecordsWithNullTimestamp = structuredClone(base);
+  nonzeroLeadRecordsWithNullTimestamp.details.voluntary_inquiry_records.last_updated_at = null;
   const unavailableLeadDetails = structuredClone(runtimeReports[2][1]);
   unavailableLeadDetails.business.inquiry_sources_last_7_complete_days = [];
+  const unavailableLeadCount = structuredClone(runtimeReports[2][1]);
+  unavailableLeadCount.business.voluntary_inquiries.today = 1;
   const productSourceFailure = await buildCeoReport(
     makeCeoDb({ failPattern: "FROM buscore_product_events_daily" }),
     makeCeoDb(),
@@ -557,11 +720,22 @@ test("strict CEO schema accepts every fixture and representative live producer s
     ["unknown full coverage", unknownFull],
     ["unavailable partial coverage", unavailablePartial],
     ["unavailable stale reason", unavailableStaleReason],
+    ["direct source with probe basis", directWithProbeBasis],
+    ["probe source with activity basis", probeWithActivityBasis],
+    ["fresh probe with empty details", freshProbeWithEmptyDetails],
+    ["missing probe with observed details", missingProbeWithDetails],
+    ["incomplete probe with complete details", incompleteProbeWithCompleteDetails],
+    ["duplicate probe target", duplicateProbeTarget],
+    ["zero lead records with timestamps", zeroLeadRecordsWithTimestamps],
+    ["nonzero lead records with null timestamp", nonzeroLeadRecordsWithNullTimestamp],
     ["unavailable lead details", unavailableLeadDetails],
+    ["unavailable lead source with observed count", unavailableLeadCount],
     ["unavailable product details", unavailableProductDetails],
   ]) {
     assert.equal(validate(invalid), false, `${label} must fail strict schema validation`);
   }
+  assert.equal(validate(rollbackFixture), false, "1.1 shape must fail 1.2 validation");
+  assert.equal(validateRollback(base), false, "1.2 shape must fail 1.1 validation");
 });
 
 test("health checks exercise only non-counted public manifest HEAD and artifact HEAD routes", async () => {

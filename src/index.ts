@@ -458,15 +458,17 @@ export type CeoWindowValues = Record<CeoWindowKey, number | null>;
 type CeoCoverage = Record<CeoWindowKey, "full" | "partial" | "unavailable">;
 type CeoSourceReason =
   | null
+  | "activity_only"
   | "query_failed"
   | "binding_not_configured"
   | "probe_history_missing"
+  | "probe_history_incomplete"
   | "probe_data_stale"
-  | "source_history_missing"
-  | "source_data_stale";
+  | "source_history_missing";
 type CeoSourceState = {
   availability: "available" | "unavailable";
   freshness: "fresh" | "stale" | "unknown";
+  freshness_basis: "activity" | "scheduled_probe";
   data_through: string | null;
   definition_start_day: string | null;
   coverage: CeoCoverage;
@@ -501,7 +503,7 @@ type CeoMetricMap = {
 };
 type CeoReportPayload = {
   view: "ceo";
-  report_contract_version: "1.1";
+  report_contract_version: "1.2";
   metric_definition_version: "1.1";
   report_id: string;
   generated_at: string;
@@ -527,6 +529,11 @@ type CeoReportPayload = {
     versions_observed_last_30_complete_days: Array<{ version: string; count: number }> | null;
     recent_product_failures_by_name: Array<{ name: string; count: number }> | null;
     service_probes: Array<{ target: string; state: "pass" | "fail"; checked_at: string }> | null;
+    voluntary_inquiry_records: {
+      total_records: number;
+      last_created_at: string | null;
+      last_updated_at: string | null;
+    } | null;
   };
   limitations: {
     artifact_transfer_completion_known: false;
@@ -535,6 +542,9 @@ type CeoReportPayload = {
     download_interest_distinguishes_page_visit_from_file_click: true;
     download_interest_includes_pre_definition_history: false;
     product_telemetry_is_opt_in_only: true;
+    activity_recency_proves_producer_health: false;
+    voluntary_inquiries_are_lead_records: true;
+    existing_lead_updates_increment_inquiry_windows: false;
   };
 };
 type CloudflareGraphQLResponse = {
@@ -3956,11 +3966,15 @@ export function buildCeoReportWindows(now: Date): { windows: CeoWindows; ranges:
   return { windows, ranges };
 }
 
-type GuardedCeoSource<T> =
+type GuardedCeoQuerySource<T> =
   | { available: true; value: T }
-  | { available: false; reason: "query_failed" | "binding_not_configured" };
+  | { available: false; reason: "query_failed" };
 
-async function guardCeoSource<T>(name: string, run: () => Promise<T>): Promise<GuardedCeoSource<T>> {
+type GuardedCeoSource<T> =
+  | GuardedCeoQuerySource<T>
+  | { available: false; reason: "binding_not_configured" };
+
+async function guardCeoSource<T>(name: string, run: () => Promise<T>): Promise<GuardedCeoQuerySource<T>> {
   try {
     return { available: true, value: await run() };
   } catch (error) {
@@ -4004,9 +4018,9 @@ function selectCeoWindowValuesFromDefinition<T>(
 
 function coverageForCeoSource(available: boolean): CeoCoverage {
   // These sources are sparse event/counter tables rather than a daily
-  // completeness ledger. A recent watermark proves freshness, not that every
-  // day inside a decision window was observable. Until a source provides an
-  // explicit completeness proof, its available windows remain partial.
+  // completeness ledger. A watermark proves only the latest observed activity,
+  // not producer health or that every day in a decision window was observable.
+  // Until a source provides explicit completeness proof, its windows stay partial.
   return Object.fromEntries(
     CEO_WINDOW_KEYS.map((key) => [key, available ? "partial" : "unavailable"])
   ) as CeoCoverage;
@@ -4019,17 +4033,18 @@ function partialCeoCoverage(): CeoCoverage {
 function normalizeCeoDataThrough(value: string | null, now: Date): string | null {
   if (!value) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return value === utcDay(now) ? now.toISOString() : `${value}T23:59:59.999Z`;
+    const endOfDay = new Date(`${value}T23:59:59.999Z`);
+    if (!Number.isFinite(endOfDay.getTime())) return null;
+    return new Date(Math.min(endOfDay.getTime(), now.getTime())).toISOString();
   }
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) return null;
   return new Date(Math.min(parsed.getTime(), now.getTime())).toISOString();
 }
 
-function directCeoSourceState(
+function activityCeoSourceState(
   source: GuardedCeoSource<unknown>,
   definitionStartDay: string,
-  ranges: CeoWindowRanges,
   now: Date,
   observedDataThrough: string | null
 ): CeoSourceState {
@@ -4037,6 +4052,7 @@ function directCeoSourceState(
     return {
       availability: "unavailable",
       freshness: "unknown",
+      freshness_basis: "activity",
       data_through: null,
       definition_start_day: definitionStartDay,
       coverage: coverageForCeoSource(false),
@@ -4048,20 +4064,21 @@ function directCeoSourceState(
     return {
       availability: "available",
       freshness: "unknown",
+      freshness_basis: "activity",
       data_through: null,
       definition_start_day: definitionStartDay,
       coverage: partialCeoCoverage(),
       reason_code: "source_history_missing",
     };
   }
-  const stale = dataThrough.slice(0, 10) < ranges.latest_complete_day.end_day;
   return {
     availability: "available",
-    freshness: stale ? "stale" : "fresh",
+    freshness: "unknown",
+    freshness_basis: "activity",
     data_through: dataThrough,
     definition_start_day: definitionStartDay,
     coverage: coverageForCeoSource(true),
-    reason_code: stale ? "source_data_stale" : null,
+    reason_code: "activity_only",
   };
 }
 
@@ -4095,8 +4112,11 @@ function ceoMetricValue(row: Record<string, unknown> | null, metric: string, key
 
 function earliestCeoDataThrough(...values: Array<string | null | undefined>): string | null {
   const present = values.filter((value): value is string => Boolean(value));
+  const comparable = (value: string): string => /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T23:59:59.999Z`
+    : value;
   return present.length === values.length && present.length > 0
-    ? present.reduce((earliest, value) => value < earliest ? value : earliest)
+    ? present.reduce((earliest, value) => comparable(value) < comparable(earliest) ? value : earliest)
     : null;
 }
 
@@ -4311,6 +4331,11 @@ type CeoLeadAggregate = {
   windows: Record<CeoWindowKey, number>;
   sources: Array<{ source: CeoInquirySourceBucket; count: number }>;
   data_through: string | null;
+  records: {
+    total_records: number;
+    last_created_at: string | null;
+    last_updated_at: string | null;
+  };
 };
 
 async function queryCeoLeadAggregates(db: D1Database, ranges: CeoWindowRanges): Promise<CeoLeadAggregate> {
@@ -4345,21 +4370,43 @@ async function queryCeoLeadAggregates(db: D1Database, ranges: CeoWindowRanges): 
      ),
      bucketed AS (
        SELECT created_day, created_at, ${bucketCase} AS source FROM normalized
+     ),
+     record_summary AS (
+       SELECT COUNT(*) AS total_records,
+              MAX(created_at) AS last_created_at,
+              MAX(updated_at) AS last_updated_at
+       FROM early_access_leads
      )
-     SELECT source, ${countColumns.join(", ")}, MAX(created_at) AS data_through
+     SELECT source, ${countColumns.join(", ")}, MAX(created_at) AS data_through,
+            NULL AS total_records, NULL AS last_created_at, NULL AS last_updated_at
      FROM bucketed CROSS JOIN bounds
      GROUP BY source
      UNION ALL
-     SELECT NULL, ${sentinelCounts.join(", ")}, (SELECT MAX(created_at) FROM early_access_leads)`
+     SELECT NULL, ${sentinelCounts.join(", ")}, last_created_at,
+            total_records, last_created_at, last_updated_at
+     FROM record_summary`
   ).bind(...ceoBoundsBindings(ranges)).all<Record<string, unknown>>();
   const sourceCounts = new Map<CeoInquirySourceBucket, number>();
   const windows = Object.fromEntries(CEO_WINDOW_KEYS.map((key) => [key, 0])) as Record<CeoWindowKey, number>;
   let dataThrough: string | null = null;
+  let records = {
+    total_records: 0,
+    last_created_at: null as string | null,
+    last_updated_at: null as string | null,
+  };
   for (const row of result.results ?? []) {
     if (typeof row.data_through === "string" && (!dataThrough || row.data_through > dataThrough)) {
       dataThrough = row.data_through;
     }
-    if (typeof row.source !== "string") continue;
+    if (typeof row.source !== "string") {
+      const totalRecords = Number(row.total_records ?? 0);
+      records = {
+        total_records: Number.isSafeInteger(totalRecords) && totalRecords >= 0 ? totalRecords : 0,
+        last_created_at: typeof row.last_created_at === "string" ? row.last_created_at : null,
+        last_updated_at: typeof row.last_updated_at === "string" ? row.last_updated_at : null,
+      };
+      continue;
+    }
     const source = (CEO_INQUIRY_SOURCE_BUCKET_SET.has(row.source) ? row.source : "other") as CeoInquirySourceBucket;
     for (const key of CEO_WINDOW_KEYS) windows[key] += Number(row[`count_${key}`] ?? 0);
     const count = Number(row.count_last_7_complete_days ?? 0);
@@ -4370,7 +4417,7 @@ async function queryCeoLeadAggregates(db: D1Database, ranges: CeoWindowRanges): 
     .filter((row) => row.count > 0)
     .sort((left, right) => (right.count - left.count) || left.source.localeCompare(right.source))
     .slice(0, 10);
-  return { windows, sources, data_through: dataThrough };
+  return { windows, sources, data_through: records.last_created_at ?? dataThrough, records };
 }
 
 async function queryCeoLighthouseErrorWindows(
@@ -4397,43 +4444,71 @@ function activeCeoProbeRows(rows: CeoProbeRow[]): CeoProbeRow[] {
   for (const row of rows) {
     if (!ACTIVE_HEALTH_CHECK_TARGETS.has(row.target)) continue;
     const current = latestByTarget.get(row.target);
-    if (!current || row.checked_at > current.checked_at) latestByTarget.set(row.target, row);
+    const newer = !current || row.checked_at > current.checked_at;
+    const tiedFailure = current !== undefined
+      && row.checked_at === current.checked_at
+      && Number(row.ok) < Number(current.ok);
+    if (newer || tiedFailure) latestByTarget.set(row.target, row);
   }
   return [...latestByTarget.values()].sort((left, right) => left.target.localeCompare(right.target));
 }
 
 function probeCeoSourceState(
-  source: GuardedCeoSource<Awaited<ReturnType<typeof queryHealthLatestPerTarget>>>,
-  ranges: CeoWindowRanges,
+  source: GuardedCeoQuerySource<Awaited<ReturnType<typeof queryHealthLatestPerTarget>>>,
   now: Date
 ): CeoSourceState {
   const definitionStartDay = CEO_SOURCE_DEFINITION_START.service_probes;
   if (!source.available) {
-    return directCeoSourceState(source, definitionStartDay, ranges, now, null);
+    return {
+      availability: "unavailable",
+      freshness: "unknown",
+      freshness_basis: "scheduled_probe",
+      data_through: null,
+      definition_start_day: definitionStartDay,
+      coverage: coverageForCeoSource(false),
+      reason_code: "query_failed",
+    };
   }
   const activeRows = activeCeoProbeRows(source.value);
   const observedTargets = new Set(activeRows.map((row) => row.target));
   const hasCompleteProbeSet = [...ACTIVE_HEALTH_CHECK_TARGETS].every((target) => observedTargets.has(target));
-  const dataThrough = activeRows.reduce<string | null>(
+  const oldestDataThrough = activeRows.reduce<string | null>(
     (oldest, row) => !oldest || row.checked_at < oldest ? row.checked_at : oldest,
     null
   );
-  if (!hasCompleteProbeSet || !dataThrough) {
+  const latestDataThrough = activeRows.reduce<string | null>(
+    (latest, row) => !latest || row.checked_at > latest ? row.checked_at : latest,
+    null
+  );
+  if (activeRows.length === 0) {
     return {
-      availability: "unavailable",
+      availability: "available",
       freshness: "unknown",
+      freshness_basis: "scheduled_probe",
       data_through: null,
       definition_start_day: definitionStartDay,
-      coverage: coverageForCeoSource(false),
+      coverage: partialCeoCoverage(),
       reason_code: "probe_history_missing",
     };
   }
-  const ageMs = now.getTime() - new Date(dataThrough).getTime();
+  if (!hasCompleteProbeSet || !oldestDataThrough) {
+    return {
+      availability: "available",
+      freshness: "unknown",
+      freshness_basis: "scheduled_probe",
+      data_through: latestDataThrough,
+      definition_start_day: definitionStartDay,
+      coverage: partialCeoCoverage(),
+      reason_code: "probe_history_incomplete",
+    };
+  }
+  const ageMs = now.getTime() - new Date(oldestDataThrough).getTime();
   const stale = !Number.isFinite(ageMs) || ageMs > 36 * 60 * 60 * 1000;
   return {
     availability: "available",
     freshness: stale ? "stale" : "fresh",
-    data_through: dataThrough,
+    freshness_basis: "scheduled_probe",
+    data_through: oldestDataThrough,
     definition_start_day: definitionStartDay,
     coverage: coverageForCeoSource(true),
     reason_code: stale ? "probe_data_stale" : null,
@@ -4483,7 +4558,7 @@ export async function buildCeoReport(
     : nullCeoWindowValues();
 
   const probeRows = probes.available ? activeCeoProbeRows(probes.value) : [];
-  const probeState = probeCeoSourceState(probes, ranges, now);
+  const probeState = probeCeoSourceState(probes, now);
   const last30Product = product.available ? product.value.windows.last_30_complete_days : null;
   const recentProductWindows = product.available
     ? [product.value.windows.today, product.value.windows.latest_complete_day]
@@ -4496,20 +4571,20 @@ export async function buildCeoReport(
 
   return {
     view: "ceo",
-    report_contract_version: "1.1",
+    report_contract_version: "1.2",
     metric_definition_version: "1.1",
     report_id: crypto.randomUUID(),
     generated_at: generatedAt,
     display_timezone: "America/Toronto",
     windows,
     sources: {
-      artifact_delivery: directCeoSourceState(artifact, CEO_SOURCE_DEFINITION_START.artifact_delivery, ranges, now, artifact.available ? artifact.value.data_through : null),
-      update_checks: directCeoSourceState(update, CEO_SOURCE_DEFINITION_START.update_checks, ranges, now, update.available ? update.value.data_through : null),
-      product_telemetry: directCeoSourceState(product, CEO_SOURCE_DEFINITION_START.product_telemetry, ranges, now, product.available ? product.value.data_through : null),
-      buscore_site: directCeoSourceState(buscoreSite, CEO_SOURCE_DEFINITION_START.buscore_site, ranges, now, buscoreSite.available ? buscoreSite.value.data_through : null),
-      tgc_site: directCeoSourceState(tgcSite, CEO_SOURCE_DEFINITION_START.tgc_site, ranges, now, tgcSite.available ? tgcSite.value.data_through : null),
-      voluntary_inquiries: directCeoSourceState(leads, CEO_SOURCE_DEFINITION_START.voluntary_inquiries, ranges, now, leads.available ? leads.value.data_through : null),
-      lighthouse_errors: directCeoSourceState(errors, CEO_SOURCE_DEFINITION_START.lighthouse_errors, ranges, now, errors.available ? errors.value.data_through : null),
+      artifact_delivery: activityCeoSourceState(artifact, CEO_SOURCE_DEFINITION_START.artifact_delivery, now, artifact.available ? artifact.value.data_through : null),
+      update_checks: activityCeoSourceState(update, CEO_SOURCE_DEFINITION_START.update_checks, now, update.available ? update.value.data_through : null),
+      product_telemetry: activityCeoSourceState(product, CEO_SOURCE_DEFINITION_START.product_telemetry, now, product.available ? product.value.data_through : null),
+      buscore_site: activityCeoSourceState(buscoreSite, CEO_SOURCE_DEFINITION_START.buscore_site, now, buscoreSite.available ? buscoreSite.value.data_through : null),
+      tgc_site: activityCeoSourceState(tgcSite, CEO_SOURCE_DEFINITION_START.tgc_site, now, tgcSite.available ? tgcSite.value.data_through : null),
+      voluntary_inquiries: activityCeoSourceState(leads, CEO_SOURCE_DEFINITION_START.voluntary_inquiries, now, leads.available ? leads.value.data_through : null),
+      lighthouse_errors: activityCeoSourceState(errors, CEO_SOURCE_DEFINITION_START.lighthouse_errors, now, errors.available ? errors.value.data_through : null),
       service_probes: probeState,
     },
     bus_core: {
@@ -4567,6 +4642,13 @@ export async function buildCeoReport(
           checked_at: row.checked_at,
         }))
         : null,
+      voluntary_inquiry_records: leads.available
+        ? {
+          total_records: leads.value.records.total_records,
+          last_created_at: normalizeCeoDataThrough(leads.value.records.last_created_at, now),
+          last_updated_at: normalizeCeoDataThrough(leads.value.records.last_updated_at, now),
+        }
+        : null,
     },
     limitations: {
       artifact_transfer_completion_known: false,
@@ -4575,6 +4657,9 @@ export async function buildCeoReport(
       download_interest_distinguishes_page_visit_from_file_click: true,
       download_interest_includes_pre_definition_history: false,
       product_telemetry_is_opt_in_only: true,
+      activity_recency_proves_producer_health: false,
+      voluntary_inquiries_are_lead_records: true,
+      existing_lead_updates_increment_inquiry_windows: false,
     },
   };
 }
@@ -5845,7 +5930,7 @@ async function queryHealthLatestPerTarget(db: D1Database): Promise<
 > {
   const rows = await db
     .prepare(
-      "SELECT h.target, h.ok, h.status_code, h.latency_ms, h.checked_at, h.note FROM health_checks h JOIN (SELECT target, MAX(checked_at) AS max_checked FROM health_checks GROUP BY target) latest ON h.target = latest.target AND h.checked_at = latest.max_checked ORDER BY h.target ASC"
+      "SELECT h.target, h.ok, h.status_code, h.latency_ms, h.checked_at, h.note FROM health_checks h WHERE h.id = (SELECT candidate.id FROM health_checks candidate WHERE candidate.target = h.target ORDER BY candidate.checked_at DESC, candidate.ok ASC, candidate.id ASC LIMIT 1) ORDER BY h.target ASC"
     )
     .all<{ target: string; ok: number; status_code: number | null; latency_ms: number | null; checked_at: string; note: string | null }>();
   return rows.results ?? [];

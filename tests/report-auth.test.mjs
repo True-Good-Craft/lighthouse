@@ -71,7 +71,7 @@ async function assertUnauthorized(response) {
   assert.deepEqual(await response.json(), { ok: false, error: "unauthorized" });
 }
 
-test("GET /report accepts the exact report-read token without changing the report contract", async () => {
+test("GET /report accepts the exact report-read token for the current report contract", async () => {
   const { db, calls } = makeDb();
   const { ctx } = makeContext();
   const response = await worker.fetch(
@@ -85,7 +85,7 @@ test("GET /report accepts the exact report-read token without changing the repor
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.view, "ceo");
-  assert.equal(payload.report_contract_version, "1.1");
+  assert.equal(payload.report_contract_version, "1.2");
   assert.ok(calls.prepare > 0, "an authorized report reaches stored-data reads");
   assert.equal(calls.run, 0, "the stored-data CEO view performs no writes");
   assert.equal(response.headers.get("Access-Control-Allow-Headers"), "Content-Type");
