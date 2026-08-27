@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://truegoodcraft.ca/contracts/ceo-v1/report-1.2.schema.json",
-  "title": "TGC CEO Report Contract V1.2",
+  "$id": "https://truegoodcraft.ca/contracts/ceo-v1/report.schema.json",
+  "title": "TGC CEO Report Contract V1.1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,7 +23,7 @@
       "const": "ceo"
     },
     "report_contract_version": {
-      "const": "1.2"
+      "const": "1.1"
     },
     "metric_definition_version": {
       "const": "1.1"
@@ -58,28 +58,28 @@
       ],
       "properties": {
         "artifact_delivery": {
-          "$ref": "#/$defs/activitySourceState"
+          "$ref": "#/$defs/sourceState"
         },
         "update_checks": {
-          "$ref": "#/$defs/activitySourceState"
+          "$ref": "#/$defs/sourceState"
         },
         "product_telemetry": {
-          "$ref": "#/$defs/activitySourceState"
+          "$ref": "#/$defs/sourceState"
         },
         "buscore_site": {
-          "$ref": "#/$defs/activitySourceState"
+          "$ref": "#/$defs/sourceState"
         },
         "tgc_site": {
-          "$ref": "#/$defs/activitySourceState"
+          "$ref": "#/$defs/sourceState"
         },
         "voluntary_inquiries": {
-          "$ref": "#/$defs/activitySourceState"
+          "$ref": "#/$defs/sourceState"
         },
         "lighthouse_errors": {
-          "$ref": "#/$defs/activitySourceState"
+          "$ref": "#/$defs/sourceState"
         },
         "service_probes": {
-          "$ref": "#/$defs/probeSourceState"
+          "$ref": "#/$defs/sourceState"
         }
       }
     },
@@ -184,8 +184,7 @@
       "required": [
         "versions_observed_last_30_complete_days",
         "recent_product_failures_by_name",
-        "service_probes",
-        "voluntary_inquiry_records"
+        "service_probes"
       ],
       "properties": {
         "versions_observed_last_30_complete_days": {
@@ -219,17 +218,11 @@
         "service_probes": {
           "oneOf": [
             {
-              "$ref": "#/$defs/serviceProbeArray"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "voluntary_inquiry_records": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/voluntaryInquiryRecords"
+              "type": "array",
+              "maxItems": 6,
+              "items": {
+                "$ref": "#/$defs/serviceProbe"
+              }
             },
             {
               "type": "null"
@@ -247,10 +240,7 @@
         "source_credits_are_unique_across_days",
         "download_interest_distinguishes_page_visit_from_file_click",
         "download_interest_includes_pre_definition_history",
-        "product_telemetry_is_opt_in_only",
-        "activity_recency_proves_producer_health",
-        "voluntary_inquiries_are_lead_records",
-        "existing_lead_updates_increment_inquiry_windows"
+        "product_telemetry_is_opt_in_only"
       ],
       "properties": {
         "artifact_transfer_completion_known": {
@@ -270,15 +260,6 @@
         },
         "product_telemetry_is_opt_in_only": {
           "const": true
-        },
-        "activity_recency_proves_producer_health": {
-          "const": false
-        },
-        "voluntary_inquiries_are_lead_records": {
-          "const": true
-        },
-        "existing_lead_updates_increment_inquiry_windows": {
-          "const": false
         }
       }
     }
@@ -310,23 +291,7 @@
           "business": {
             "type": "object",
             "properties": {
-              "voluntary_inquiries": {
-                "type": "object",
-                "properties": {
-                  "today": { "type": "null" },
-                  "latest_complete_day": { "type": "null" },
-                  "last_7_complete_days": { "type": "null" },
-                  "previous_7_complete_days": { "type": "null" },
-                  "last_30_complete_days": { "type": "null" }
-                }
-              },
               "inquiry_sources_last_7_complete_days": { "type": "null" }
-            }
-          },
-          "details": {
-            "type": "object",
-            "properties": {
-              "voluntary_inquiry_records": { "type": "null" }
             }
           }
         }
@@ -338,12 +303,6 @@
             "type": "object",
             "properties": {
               "inquiry_sources_last_7_complete_days": { "type": "array" }
-            }
-          },
-          "details": {
-            "type": "object",
-            "properties": {
-              "voluntary_inquiry_records": { "$ref": "#/$defs/voluntaryInquiryRecords" }
             }
           }
         }
@@ -431,120 +390,7 @@
           "details": {
             "type": "object",
             "properties": {
-              "service_probes": { "$ref": "#/$defs/serviceProbeArray" }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "type": "object",
-        "required": ["sources"],
-        "properties": {
-          "sources": {
-            "type": "object",
-            "required": ["service_probes"],
-            "properties": {
-              "service_probes": {
-                "type": "object",
-                "required": ["reason_code"],
-                "properties": {
-                  "reason_code": { "const": "probe_history_missing" }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "type": "object",
-        "properties": {
-          "details": {
-            "type": "object",
-            "properties": {
-              "service_probes": {
-                "allOf": [
-                  { "$ref": "#/$defs/serviceProbeArray" },
-                  { "type": "array", "maxItems": 0 }
-                ]
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "type": "object",
-        "required": ["sources"],
-        "properties": {
-          "sources": {
-            "type": "object",
-            "required": ["service_probes"],
-            "properties": {
-              "service_probes": {
-                "type": "object",
-                "required": ["reason_code"],
-                "properties": {
-                  "reason_code": { "const": "probe_history_incomplete" }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "type": "object",
-        "properties": {
-          "details": {
-            "type": "object",
-            "properties": {
-              "service_probes": {
-                "allOf": [
-                  { "$ref": "#/$defs/serviceProbeArray" },
-                  { "type": "array", "minItems": 1, "maxItems": 5 }
-                ]
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "type": "object",
-        "required": ["sources"],
-        "properties": {
-          "sources": {
-            "type": "object",
-            "required": ["service_probes"],
-            "properties": {
-              "service_probes": {
-                "type": "object",
-                "required": ["reason_code"],
-                "properties": {
-                  "reason_code": {
-                    "enum": [null, "probe_data_stale"]
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "type": "object",
-        "properties": {
-          "details": {
-            "type": "object",
-            "properties": {
-              "service_probes": {
-                "allOf": [
-                  { "$ref": "#/$defs/serviceProbeArray" },
-                  { "type": "array", "minItems": 6, "maxItems": 6 }
-                ]
-              }
+              "service_probes": { "type": "array" }
             }
           }
         }
@@ -712,13 +558,12 @@
         }
       }
     },
-    "sourceStateBase": {
+    "sourceState": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "availability",
         "freshness",
-        "freshness_basis",
         "data_through",
         "definition_start_day",
         "coverage",
@@ -736,12 +581,6 @@
             "fresh",
             "stale",
             "unknown"
-          ]
-        },
-        "freshness_basis": {
-          "enum": [
-            "activity",
-            "scheduled_probe"
           ]
         },
         "data_through": {
@@ -772,203 +611,102 @@
         "reason_code": {
           "enum": [
             null,
-            "activity_only",
             "query_failed",
             "binding_not_configured",
             "probe_history_missing",
-            "probe_history_incomplete",
             "probe_data_stale",
-            "source_history_missing"
-          ]
-        }
-      }
-    },
-    "activitySourceState": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/sourceStateBase"
-        },
-        {
-          "oneOf": [
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "available" },
-                "freshness": { "const": "unknown" },
-                "freshness_basis": { "const": "activity" },
-                "data_through": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "coverage": { "$ref": "#/$defs/availableCoverage" },
-                "reason_code": { "const": "activity_only" }
-              }
-            },
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "available" },
-                "freshness": { "const": "unknown" },
-                "freshness_basis": { "const": "activity" },
-                "data_through": { "type": "null" },
-                "coverage": { "$ref": "#/$defs/partialCoverage" },
-                "reason_code": { "const": "source_history_missing" }
-              }
-            },
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "unavailable" },
-                "freshness": { "const": "unknown" },
-                "freshness_basis": { "const": "activity" },
-                "data_through": { "type": "null" },
-                "coverage": { "$ref": "#/$defs/unavailableCoverage" },
-                "reason_code": {
-                  "enum": [
-                    "query_failed",
-                    "binding_not_configured"
-                  ]
-                }
-              }
-            }
-          ]
-        }
-      ]
-    },
-    "probeSourceState": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/sourceStateBase"
-        },
-        {
-          "oneOf": [
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "available" },
-                "freshness": { "const": "fresh" },
-                "freshness_basis": { "const": "scheduled_probe" },
-                "data_through": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "coverage": { "$ref": "#/$defs/availableCoverage" },
-                "reason_code": { "const": null }
-              }
-            },
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "available" },
-                "freshness": { "const": "stale" },
-                "freshness_basis": { "const": "scheduled_probe" },
-                "data_through": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "coverage": { "$ref": "#/$defs/availableCoverage" },
-                "reason_code": { "const": "probe_data_stale" }
-              }
-            },
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "available" },
-                "freshness": { "const": "unknown" },
-                "freshness_basis": { "const": "scheduled_probe" },
-                "data_through": { "type": "null" },
-                "coverage": { "$ref": "#/$defs/partialCoverage" },
-                "reason_code": { "const": "probe_history_missing" }
-              }
-            },
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "available" },
-                "freshness": { "const": "unknown" },
-                "freshness_basis": { "const": "scheduled_probe" },
-                "data_through": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "coverage": { "$ref": "#/$defs/partialCoverage" },
-                "reason_code": { "const": "probe_history_incomplete" }
-              }
-            },
-            {
-              "type": "object",
-              "properties": {
-                "availability": { "const": "unavailable" },
-                "freshness": { "const": "unknown" },
-                "freshness_basis": { "const": "scheduled_probe" },
-                "data_through": { "type": "null" },
-                "coverage": { "$ref": "#/$defs/unavailableCoverage" },
-                "reason_code": { "const": "query_failed" }
-              }
-            }
-          ]
-        }
-      ]
-    },
-    "voluntaryInquiryRecords": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "total_records",
-        "last_created_at",
-        "last_updated_at"
-      ],
-      "properties": {
-        "total_records": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "last_created_at": {
-          "oneOf": [
-            {
-              "type": "string",
-              "format": "date-time"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "last_updated_at": {
-          "oneOf": [
-            {
-              "type": "string",
-              "format": "date-time"
-            },
-            {
-              "type": "null"
-            }
+            "source_history_missing",
+            "source_data_stale"
           ]
         }
       },
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": {
-              "total_records": { "const": 0 }
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "available"
+            },
+            "freshness": {
+              "const": "fresh"
+            },
+            "data_through": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "coverage": {
+              "$ref": "#/$defs/availableCoverage"
+            },
+            "reason_code": {
+              "const": null
             }
-          },
-          "then": {
-            "properties": {
-              "last_created_at": { "type": "null" },
-              "last_updated_at": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "available"
+            },
+            "freshness": {
+              "const": "stale"
+            },
+            "data_through": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "coverage": {
+              "$ref": "#/$defs/availableCoverage"
+            },
+            "reason_code": {
+              "enum": [
+                "probe_data_stale",
+                "source_data_stale"
+              ]
             }
-          },
-          "else": {
-            "properties": {
-              "last_created_at": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "last_updated_at": {
-                "type": "string",
-                "format": "date-time"
-              }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "available"
+            },
+            "freshness": {
+              "const": "unknown"
+            },
+            "data_through": {
+              "type": "null"
+            },
+            "coverage": {
+              "$ref": "#/$defs/partialCoverage"
+            },
+            "reason_code": {
+              "const": "source_history_missing"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "const": "unavailable"
+            },
+            "freshness": {
+              "const": "unknown"
+            },
+            "data_through": {
+              "type": "null"
+            },
+            "coverage": {
+              "$ref": "#/$defs/unavailableCoverage"
+            },
+            "reason_code": {
+              "enum": [
+                "query_failed",
+                "binding_not_configured",
+                "probe_history_missing"
+              ]
             }
           }
         }
@@ -1156,75 +894,6 @@
           "format": "date-time"
         }
       }
-    },
-    "serviceProbeArray": {
-      "type": "array",
-      "maxItems": 6,
-      "items": {
-        "$ref": "#/$defs/serviceProbe"
-      },
-      "allOf": [
-        {
-          "not": {
-            "contains": {
-              "type": "object",
-              "required": ["target"],
-              "properties": { "target": { "const": "site_home" } }
-            },
-            "minContains": 2
-          }
-        },
-        {
-          "not": {
-            "contains": {
-              "type": "object",
-              "required": ["target"],
-              "properties": { "target": { "const": "site_downloads" } }
-            },
-            "minContains": 2
-          }
-        },
-        {
-          "not": {
-            "contains": {
-              "type": "object",
-              "required": ["target"],
-              "properties": { "target": { "const": "manifest" } }
-            },
-            "minContains": 2
-          }
-        },
-        {
-          "not": {
-            "contains": {
-              "type": "object",
-              "required": ["target"],
-              "properties": { "target": { "const": "release_artifact" } }
-            },
-            "minContains": 2
-          }
-        },
-        {
-          "not": {
-            "contains": {
-              "type": "object",
-              "required": ["target"],
-              "properties": { "target": { "const": "lead_endpoint" } }
-            },
-            "minContains": 2
-          }
-        },
-        {
-          "not": {
-            "contains": {
-              "type": "object",
-              "required": ["target"],
-              "properties": { "target": { "const": "github_release" } }
-            },
-            "minContains": 2
-          }
-        }
-      ]
     }
   }
 }

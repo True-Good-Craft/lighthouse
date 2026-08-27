@@ -18,7 +18,10 @@ export const ACCESS_BLOCKED_LINE = "Lighthouse CEO diagnostic access blocked.\n"
 export const REPORT_UNAVAILABLE_LINE = "Lighthouse CEO report unavailable; metrics_daily.errors may have been incremented.\n";
 export const TOKEN_PROMPT = "Lighthouse report token: ";
 
-const CEO_SCHEMA_URL = new URL("../contracts/ceo-v1/report.schema.json", import.meta.url);
+const CEO_SCHEMA_URLS = Object.freeze({
+  "1.1": new URL("../contracts/ceo-v1/report-1.1.schema.json", import.meta.url),
+  "1.2": new URL("../contracts/ceo-v1/report.schema.json", import.meta.url),
+});
 const REPORT_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const FAILURE_KIND = Object.freeze({
   ACCESS_BLOCKED: "access_blocked",
@@ -34,7 +37,7 @@ class DiagnosticFailure extends Error {
   }
 }
 
-let reportValidator;
+let reportValidators;
 
 function fail(kind = FAILURE_KIND.DIAGNOSTIC) {
   throw new DiagnosticFailure(kind);
@@ -46,14 +49,16 @@ export function isUsableReportToken(token) {
   return bytes >= MIN_REPORT_TOKEN_BYTES && bytes <= MAX_REPORT_TOKEN_BYTES;
 }
 
-function getReportValidator() {
-  if (reportValidator) return reportValidator;
-
-  const schema = JSON.parse(readFileSync(CEO_SCHEMA_URL, "utf8"));
-  const ajv = new Ajv2020({ strict: true, allErrors: true });
-  addFormats(ajv);
-  reportValidator = ajv.compile(schema);
-  return reportValidator;
+function getReportValidator(version) {
+  if (!reportValidators) {
+    reportValidators = new Map(Object.entries(CEO_SCHEMA_URLS).map(([contractVersion, schemaUrl]) => {
+      const schema = JSON.parse(readFileSync(schemaUrl, "utf8"));
+      const ajv = new Ajv2020({ strict: true, allErrors: true });
+      addFormats(ajv);
+      return [contractVersion, ajv.compile(schema)];
+    }));
+  }
+  return reportValidators.get(version) ?? null;
 }
 
 export function takeEnvironmentToken(environment) {
@@ -231,7 +236,8 @@ export async function fetchValidatedCeoReport({
     if (text.includes(token)) fail();
 
     const report = JSON.parse(text);
-    if (!getReportValidator()(report)) fail();
+    const validator = getReportValidator(report?.report_contract_version);
+    if (!validator || !validator(report)) fail();
 
     const output = `${JSON.stringify(report, null, 2)}\n`;
     if (output.includes(token)) fail();

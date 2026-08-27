@@ -41,6 +41,10 @@ const fixtureText = readFileSync(
   "utf8",
 );
 const fixture = JSON.parse(fixtureText);
+const rollbackFixtureText = readFileSync(
+  new URL("../contracts/ceo-v1/compat-1.1/healthy-zero.json", import.meta.url),
+  "utf8",
+);
 
 function writer({ isTTY = false } = {}) {
   const chunks = [];
@@ -126,6 +130,21 @@ test("automation credential is deleted before one fixed validated GET reaches st
   assert.equal(stdout.text.endsWith("\n"), true);
   assert.equal(stderr.text, "");
   assert.equal(`${stdout.text}${stderr.text}`.includes(secret), false);
+});
+
+test("helper strictly accepts the preserved 1.1 rollback contract", async () => {
+  const stdout = writer();
+  const stderr = writer();
+  const exitCode = await runDiagnostic({
+    environment: { [REPORT_TOKEN_ENV]: VALID_REPORT_TOKEN },
+    stdout,
+    stderr,
+    fetchImpl: async () => successfulResponse(rollbackFixtureText),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(JSON.parse(stdout.text).report_contract_version, "1.1");
+  assert.equal(stderr.text, "");
 });
 
 test("hidden TTY prompt does not echo the interactive credential", async () => {

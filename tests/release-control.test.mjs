@@ -54,9 +54,11 @@ test("operator scripts expose reads and upload without a direct production bypas
 });
 
 test("the current governed bundle and historical release-control receipt stay synchronized", () => {
-  assert.equal(packageJson.version, "1.30.0");
+  assert.equal(packageJson.version, "1.31.0");
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[""].version, packageJson.version);
+  assert.match(sot, /^## CEO activity truth and sparse probe health — v1\.31\.0$/m);
+  assert.match(changelog, /^## \[1\.31\.0\] - 2026-08-27$/m);
   assert.match(sot, /^## Least-privilege report diagnostics — v1\.30\.0$/m);
   assert.match(changelog, /^## \[1\.30\.0\] - 2026-08-26$/m);
   assert.match(sot, /^## Release-control and infrastructure reconciliation — v1\.29\.4$/m);
@@ -66,6 +68,9 @@ test("the current governed bundle and historical release-control receipt stay sy
     /\*\*External release-control verification — 2026-08-26:\*\*[\s\S]*Deploy command[\s\S]*Version command[\s\S]*exactly `npx wrangler versions upload`/
   );
   assert.match(sot, /Workers Builds may now create version or preview state[\s\S]*must not promote active traffic/);
-  assert.match(sot, /`CLOUDFLARE_API_TOKEN` remain unverified/);
+  assert.match(
+    sot,
+    /release run `33086080869`[\s\S]*proved[\s\S]*approved 1\.30\.0 deployment[\s\S]*current availability or broader scope must not be inferred/
+  );
   assert.doesNotMatch(sot, /production command (?:remains|still uses|still runs) `npx wrangler deploy`/i);
 });
