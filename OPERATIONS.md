@@ -1,11 +1,14 @@
 # Lighthouse Operations and Diagnostics
 
 - Status: current operational runbook
-- Scope: Lighthouse analytics access, evidence interpretation, and incident diagnosis
-- Runtime baseline: last production deployment recorded in repository history is Lighthouse Worker `1.29.2`; repository documentation release `1.29.3`; CEO report and metric-definition contract `1.1`; current active-production state not independently control-plane verified
+- Scope: Lighthouse analytics access, evidence interpretation, incident diagnosis, and release-control boundaries
+- Repository baseline: Lighthouse `1.29.4` release-control reconciliation; CEO report and metric-definition contract `1.1`
+- Active production baseline: Lighthouse `1.29.3`, Worker version `ba611ac1-653d-47a2-a465-a85f4124b6b6`, 100% traffic, created `2026-08-26T22:57:30.628Z` from `main` commit `59231d09084d0fa4db71012b6f29550886c5b605` through Cloudflare build `793715ef-6123-4d98-a4a7-797634d07812`
 - Last reconciled: 2026-08-26
-- Live Lighthouse endpoint and Cloudflare control-plane verification during this documentation change: not performed
-- Repository-publication evidence: the PR branch push triggered Cloudflare Workers Builds, whose check classified uploaded version `33f4db25-9faf-435d-a83e-83d7d1c17eac` as a preview, reported version/branch preview URLs, and did not report an active-production promotion; this is not independent proof of current active-production state
+- Diagnostic access used for this reconciliation: owner-approved authenticated Cloudflare control-plane metadata reads in the verified owning account
+- Production interaction: control-plane metadata only; no Lighthouse endpoint, D1 query, log tail, scheduled invocation, deployment, route change, secret operation, or traffic change
+- Evidence side effects: no Lighthouse application evidence was refreshed, counted, persisted, archived, or otherwise changed
+- Audit snapshot: the preceding 24-hour Cloudflare overview showed 67 invocations and zero Cloudflare platform/runtime errors. This is historical platform telemetry, not proof of Lighthouse endpoint, report, source, probe, or delivery health
 
 ## Authority and Purpose
 
@@ -28,7 +31,7 @@ The default diagnostic posture is local and zero-mutation:
 - Read repository documentation, contracts, fixtures, configuration names, and code.
 - Inspect local Git state without changing it.
 - Do not contact production, Cloudflare, Discord, GitHub, Airtable, or another service unless the user has authorized that scope.
-- Do not treat `git push` as local-only. This repository's Cloudflare Workers Builds integration uploaded a preview Worker version for the 1.29.3 review-branch push; future branch and production-branch behavior depends on external build settings.
+- Do not treat `git push` as local-only. Durable readback on 2026-08-26 confirmed that both non-production and production Workers Builds use `npx wrangler versions upload`. Pushes can therefore upload Worker versions and create previews, although they must not promote active traffic.
 - Do not run migrations, deployments, scheduled handlers, retention jobs, report snapshots, notes, campaign writes, telemetry submissions, or release downloads during passive diagnosis.
 - Never print, persist, or commit secret values, raw lead data, identifiers, IP material, or other private payloads.
 
@@ -72,28 +75,66 @@ Sibling paths above describe the audited local checkout layout. If a repository 
 
 ## Deployed Resource Map
 
-The following identifiers are checked into `wrangler.toml`:
+The following production identities were verified by approved read-only control-plane access on 2026-08-26. Repository-controlled values are pinned in `wrangler.toml`; external attachments remain Cloudflare control-plane state.
 
-| Binding or trigger | Configured resource | Purpose |
+| Binding, attachment, or trigger | Verified production resource | Authority and purpose |
 |---|---|---|
-| Worker name | `buscore-lighthouse` | Cloudflare Worker service name |
-| `DB` | D1 database `buscore-lighthouse` | Primary Lighthouse aggregates and bounded evidence |
-| `BUSCORE_LEADS_DB` | D1 database `buscore-leads` | Optional read binding for aggregate inquiry reporting |
+| Cloudflare account | `eb1a8dd5723031d94e57642e3eaaebda` | Owning account; pinned in `wrangler.toml` |
+| Worker service | `buscore-lighthouse` | Cloudflare Worker service |
+| Compatibility | `2026-02-26`; `global_fetch_strictly_public` | Matches checked-in runtime compatibility configuration |
+| `DB` | D1 `lighthouse`, ID `e46f2daa-7e97-45a3-9bf0-49003a42850c` | Primary aggregates and bounded evidence; name and ID reconciled in `wrangler.toml` |
+| `BUSCORE_LEADS_DB` | D1 `buscore-leads`, ID `75c09145-ce89-418c-b0f0-92afa2835bfd` | Optional aggregate inquiry-report read binding |
 | `MANIFEST_R2` | R2 bucket `bus-core` | Stable manifest and versioned release artifacts |
-| Cron | `5 0 * * *` | Daily traffic capture, rollup, GitHub snapshot, service probes, and retention |
+| `GITHUB_REPO` | `True-Good-Craft/TGC-BUS-Core` | Scheduled GitHub snapshot and release-probe repository |
+| Production hostname | Custom Domain `lighthouse.buscore.ca` | Active Production Custom Domain; not a Worker Route and not declared in `wrangler.toml` |
+| Production `workers.dev` | Enabled and public | Additional external surface; not the canonical consumer or diagnostic endpoint |
+| Version and branch previews | Enabled | Externally reachable publication state; do not use as production truth or probe without endpoint-specific approval |
+| Cron | `5 0 * * *` | Active at `00:05 UTC`; matches checked-in configuration |
+| Persistent logs and traces | Disabled | No retained Worker log/trace evidence is available unless separately approved and enabled |
 
-The checked-in production consumer endpoint is `https://lighthouse.buscore.ca/report` in `../Agent_Smith/wrangler.toml`. Lighthouse's own `wrangler.toml` does not declare the custom hostname/route, so the consumer configuration is the current repository-visible pointer, not independent deployment proof. A control-plane read is required to verify route attachment; do not infer a `workers.dev` URL from the Worker name.
+The active Worker secret names are `ADMIN_TOKEN`, `CF_API_TOKEN`, `CF_ZONE_TAG`, `DISCORD_WEBHOOK_URL`, `IGNORED_IP`, `PRICE_GUARD_KEY`, and `TELEMETRY_RATE_LIMIT_SECRET`. Values were not read or exposed. `DISCORD_WEBHOOK_URL` and `PRICE_GUARD_KEY` are not referenced by current source; retaining, rotating, or removing them is a separate secret operation requiring explicit approval.
+
+Cloudflare currently displays the historical repository name `True-Good-Craft/buscore-lighthouse`; GitHub redirects it to `True-Good-Craft/lighthouse`. Package metadata now names the canonical repository, but changing the external integration label is a separate control-plane action.
 
 ## Repository Publication and Deployment Paths
 
-| Path | Proven or repository-visible behavior | Operational boundary |
+| Path | Verified or repository-controlled behavior | Operational boundary |
 |---|---|---|
 | `.github/workflows/governance.yml` | Runs dependency installation, typechecking, and the full test suite for every PR and `main` push | Validation only; it does not deploy |
-| `.github/workflows/deploy.yml` | Triggers on `main` push or manual dispatch; both its validation gate and downstream deploy run only for manual dispatch or the workflow's explicit commit-message release opt-in | This release gate governs only the checked-in deploy workflow |
-| Cloudflare Workers Builds, non-production branch | The 1.29.3 review-branch push uploaded a Worker version and produced version/branch preview URLs; the check classified it as a preview and did not report an active-production promotion | This is external preview state created by `git push`, not independent proof of current active-production state. Do not call a preview URL during passive diagnosis because its effective bindings and request side effects have not been separately verified |
-| Cloudflare Workers Builds, configured production branch | Cloudflare-managed production branch and deploy-command settings are outside this repository | A merge or production-branch push is potentially active-production-deploying even if the GitHub Actions deploy job skips; require explicit owner approval and either control-plane verification or explicit acceptance of that consequence |
+| `.github/workflows/deploy.yml` | Manual dispatch only; refuses non-`main` refs; serializes under `lighthouse-production`; runs install, typecheck, and tests before `wrangler deploy --keep-vars --strict`; attempts `wrangler deployments status --json` whenever the deploy step ran, including an uncertain reported failure | Sole repository-authorized production-promotion path; the external Workers Builds prerequisite was verified on 2026-08-26 |
+| `npm run release:upload` | Runs `wrangler versions upload` | Creates external Worker-version or preview state without intentionally changing active traffic |
+| `npm run release:status` / `release:history` | Read JSON deployment metadata using the pinned account context | Approved Class 1 control-plane reads only |
+| Cloudflare Workers Builds, non-production | Verified `npx wrangler versions upload`; builds enabled; include rule `*`; previews enabled | A branch push creates external preview/version state |
+| Cloudflare Workers Builds, production — pre-repair audit | Branch `main`; root `/`; no build command; `npx wrangler deploy`; cache enabled; no build variables or secrets | Automatically promoted the 1.29.3 merge; historical unsafe parallel production authority |
+| Cloudflare Workers Builds, production — verified current state | Branch `main`; Deploy command `npx wrangler versions upload`; Version command `npx wrangler versions upload` | Durable readback after reload confirmed both values on 2026-08-26. No build, upload, or deployment was invoked; future pushes may create version state but must not promote traffic |
 
-The absence of Cloudflare deployment secrets in GitHub Actions does not disable Cloudflare Workers Builds, which uses separately managed integration credentials. Do not describe the checked-in workflow as the sole deployment control.
+The checked-in manual workflow is the sole authorized production-promotion path. Cloudflare Workers Builds is restricted to version uploads by the verified external configuration. The availability and scope of GitHub's `CLOUDFLARE_API_TOKEN` must not be assumed from workflow text; a failed or unverified credential path is `ACCESS_BLOCKED`, not authorization to use another deployment path. Cloudflare Workers Builds uses separately managed integration credentials.
+
+### Canonical Cloudflare control-plane read sequence
+
+Use this sequence only after explicit approval for Cloudflare control-plane reads. It contacts Cloudflare but does not intentionally call Lighthouse endpoints or mutate D1/application evidence.
+
+1. Select account `eb1a8dd5723031d94e57642e3eaaebda`, then select Worker `buscore-lighthouse`. If the Worker is absent under another account context, correct the account; do not classify that as a Lighthouse outage.
+2. Read **Deployments** and record the active version ID, traffic percentage, creation time, source commit, and Workers Builds build ID. `npm run release:status` and `npm run release:history` are the repository-provided JSON alternatives for deployment metadata only.
+3. Read **Builds** and record the connected repository label, production branch, root directory, build command, production deploy command, version command, non-production include/exclude rules, preview setting, cache setting, and build-variable/secret presence. The mandatory safe production command is exactly `npx wrangler versions upload`.
+4. Read **Domains & Routes** and distinguish Custom Domains, Worker Routes, `workers.dev`, and preview URLs. `lighthouse.buscore.ca` is expected as a Production Custom Domain; an empty Worker Routes list is not a missing-domain diagnosis.
+5. Read bindings, compatibility settings, and triggers. Match immutable D1 IDs and R2 bucket names against the resource map above; record secret names only, never values; verify cron `5 0 * * *` and both compatibility settings.
+6. Read observability enablement separately. Disabled persistent logs/traces means retained evidence is unavailable; it is not proof that no application error occurred.
+7. Treat the Worker overview's invocation and platform-error counters as platform telemetry only. A zero platform-error count does not prove Lighthouse application, report, source, probe, or delivery health.
+8. Report each fact with its timestamp and classify any inaccessible surface as `ACCESS_BLOCKED`. Do not compensate by calling public or protected Worker endpoints, tailing logs, querying D1 rows, changing settings, uploading a version, or deploying without the corresponding separate approval.
+
+### Production rollback and receipt sequence
+
+A version upload needs no traffic rollback because it does not intentionally promote traffic; its external version/preview state remains part of the publication record. A production deployment rollback is a separate production mutation and is never implied by deployment approval.
+
+1. Confirm that no `lighthouse-production` workflow run, Workers Builds production job, direct deployment, or rollback is in progress. GitHub concurrency serializes only that workflow; it cannot prevent a direct Wrangler or Workers Builds race. If any production mutation is active or uncertain, stop and wait.
+2. With approved Class 1 access, read deployment status/history and record the current version, traffic split, and exact immutable candidate rollback version ID. Never select a rollback target by package label, timestamp guess, or branch name.
+3. Obtain explicit owner approval naming that version ID. For the first 1.29.4 production promotion, the audited pre-change candidate is `ba611ac1-653d-47a2-a465-a85f4124b6b6`, but it must still be present and verified before use.
+4. Run `npx wrangler rollback <verified-version-id> --message "<reason>"` only under that approval. Do not add `--yes`; preserve the interactive confirmation boundary.
+5. Read `npm run release:status` and verify that the intended version receives the expected traffic. Record the JSON receipt and time. A successful command without the readback is not rollback proof.
+6. Reconcile repository source separately. Reverting a deployment does not revert Git, Cloudflare Workers Builds settings, secrets, custom domains, D1 data, or migrations. Version 1.29.4 has no migration, so its release-control rollback requires no D1 rollback.
+
+The pre-merge Workers Builds repair was completed on 2026-08-26: the prior production value `npx wrangler deploy` was replaced with `npx wrangler versions upload`, and reload/readback confirmed that both Deploy and Version commands exactly match the new value. No build, upload, or deployment was invoked. Restoring the prior value requires new explicit external-change approval and immediately reinstates `BLOCKED BEFORE MERGE`; it must never occur as an automatic fallback.
 
 `tgc-ops` is not yet safe as an analytics source of truth: its current records include stale future-tense BUS Core telemetry claims and a reversed Lighthouse/buscore-site dependency. Use owning repositories until that separate repository is explicitly reconciled.
 
@@ -105,6 +146,7 @@ The absence of Cloudflare deployment secrets in GitHub Actions does not disable 
 | `LIGHTHOUSE_ADMIN_TOKEN` | Agent Smith runtime | Consumer-side name for the Lighthouse admin credential |
 | `LIGHTHOUSE_REPORT_URL` | Agent Smith runtime | Canonical report endpoint; checked-in production value points to `https://lighthouse.buscore.ca/report` |
 | `CF_API_TOKEN` and `CF_ZONE_TAG` | Lighthouse scheduled traffic capture | Cloudflare GraphQL traffic source, not report authentication |
+| `CLOUDFLARE_API_TOKEN` | GitHub Actions production workflow | Separately scoped Wrangler deployment credential; presence and scope are not proven by repository text. It is not the Worker runtime `CF_API_TOKEN` |
 | `GITHUB_REPO` and optional `GITHUB_TOKEN` | Lighthouse scheduled GitHub snapshot/probe configuration | Repository selection and optional API quota; not Lighthouse report authentication |
 | `TELEMETRY_RATE_LIMIT_SECRET` | Lighthouse ingestion/release counting | Keys rotating abuse-control identifiers; never a diagnostic credential |
 
@@ -125,7 +167,7 @@ This class changes neither local tracked files nor external state.
 
 ### Class 1 — approved control-plane reads
 
-Cloudflare deployment, route, binding, cron, log, or D1 metadata reads may establish infrastructure state without intentionally changing Lighthouse application data. They still require explicit authorization, a valid account context, and the least-privileged supported command. A Cloudflare/Wrangler access failure is infrastructure evidence, not a Lighthouse application failure.
+Cloudflare deployment, route, binding, cron, log, or D1 metadata reads may establish infrastructure state without intentionally changing Lighthouse application data. They still require explicit authorization, account `eb1a8dd5723031d94e57642e3eaaebda`, and the least-privileged supported command. Use the canonical control-plane read sequence above. A Cloudflare/Wrangler access failure is infrastructure evidence, not a Lighthouse application failure.
 
 Do not use direct D1 SQL as a fallback merely because a protected report cannot be accessed. SQL can bypass report semantics, expose data outside the contract, or be accidentally executed as a write.
 
@@ -169,8 +211,9 @@ Do not call these during passive diagnosis:
 | `POST /metrics/pageview` and `POST /metrics/event` | Return `204` after body capture, then asynchronously validate, rate-limit, and persist. The HTTP response is not acceptance or persistence proof; invalid pageview bodies can still write dropped-invalid evidence |
 | `POST /telemetry/v1/events` | After basic content-type/size checks, mutates product-telemetry rate-control state before parsing the payload. Valid events then persist deduplication/aggregate state and return an event-ID acknowledgement. The receiver is public and has no diagnostic authentication |
 | `POST /campaign`, `POST /notes`, `POST /report/snapshot` | Explicit protected writes |
-| `git push` to a non-production branch | Connected Cloudflare Workers Builds can upload a preview Worker version and create preview URLs, as observed for the 1.29.3 review branch; the check did not report an active-production promotion, but active-production state was not independently verified |
-| Merge or push to the Cloudflare-configured production branch | May run the integration's externally configured deploy command and promote the active production deployment independently of the checked-in GitHub Actions gate |
+| `git push` to a non-production branch | Verified Workers Builds configuration runs `npx wrangler versions upload` and can create externally reachable version/branch previews |
+| Historical 1.29.3 merge before the external repair | Workers Builds ran `npx wrangler deploy` and promoted production independently of the checked-in GitHub Actions gate |
+| Merge or push to `main` after the verified 2026-08-26 repair | Workers Builds runs `npx wrangler versions upload`; it creates external version state but must not promote traffic |
 | Scheduled handler, D1 command, migration, secret operation, deployment, release | Operational mutation requiring separate explicit approval |
 
 The existence of a route in `README.md` or `SOT.md` is not authorization to probe it.
@@ -284,24 +327,34 @@ Never report a WATCH as an outage, an access failure as application failure, a s
 
 - Lighthouse has no least-privilege report-read credential. The current `ADMIN_TOKEN` also authorizes three write routes.
 - This repository has no owner-approved, non-echoing production report helper or canonical operator secret-retrieval mechanism. Until one is separately designed and approved, lack of a safe mechanism is `ACCESS_BLOCKED`.
-- Lighthouse's `wrangler.toml` does not declare the checked-in consumer hostname, so local configuration alone cannot prove the production route attachment.
-- Cloudflare Workers Builds production-branch, build-command, and deploy-command settings are not checked into this repository and were not control-plane verified for this release. The observed branch-preview upload proves the integration is active, so the GitHub Actions gate cannot be used as sole merge-safety evidence.
+- The active `lighthouse.buscore.ca` attachment is an externally managed Production Custom Domain rather than checked-in route configuration. It was verified on 2026-08-26, but future attachment changes require another control-plane read.
+- Cloudflare Workers Builds commands remain externally managed rather than checked into this repository. Durable readback on 2026-08-26 verified both production Deploy and Version commands as `npx wrangler versions upload`. If that setting becomes inaccessible or differs, report `BLOCKED BEFORE MERGE` until it is reconciled.
+- The checked-in manual deployment workflow is the sole authorized production path. The availability and scope of its GitHub `CLOUDFLARE_API_TOKEN` have not been proven by this local bundle.
+- Persistent Worker logs and traces are disabled, limiting retained runtime diagnostic evidence.
+- Unused legacy secret names `DISCORD_WEBHOOK_URL` and `PRICE_GUARD_KEY` remain attached. Do not inspect, rotate, or remove them without separate approval.
+- Cloudflare displays the historical redirecting repository name `True-Good-Craft/buscore-lighthouse`; package metadata now points to canonical `True-Good-Craft/lighthouse`, but the external label remains unreconciled.
+- The current lockfile install reports one low- and five high-severity npm audit findings. Their production relevance and safe remediation are unassessed; handle them in a separate dependency audit and never run an automatic audit fix as part of incident diagnosis or release-control repair.
 - `tgc-ops` analytics/dependency records are stale and cannot yet serve as the trusted cross-repository entry point.
 - BUS Core `1.4.2` has an explicit producer-side code/SOT authority conflict: its code emits repeatable `restore_attempted`, `restore_completed`, `import_completed`, and `import_failed` events, and the current Lighthouse contract accepts them, but they remain outside BUS Core's SOT-authorized signal set. Lighthouse acceptance does not resolve producer authority. Treat their presence as known drift, not approval or a new metric definition; use BUS Core's SOT, operations runbook, and changelog as authority pending separate resolution.
 - Agent Smith exposes no raw diagnostic command. Its retained diagnostic formatter is test-only; current private `/report` is the active business/decision product.
 - Browser producers are fail-soft and provide no end-to-end delivery receipt.
 - Agent Smith has no independent Discord receipt ledger; a post attempt, log line, or archived monthly snapshot is not receipt proof.
 
-Any helper, token split, route/config reconciliation, cross-repository index repair, receipt mechanism, or automated drift check is a separate future change requiring its owning repository's approval and governance bundle.
+Any helper, token split, further route/config change, cross-repository index repair, receipt mechanism, or automated drift check is a separate future change requiring its owning repository's approval and governance bundle.
 
 ## Approval Boundaries
 
 Separate approval is required before:
 
-- Any production or external-service request.
-- Any Cloudflare control-plane, log, or D1 access.
+- Any production endpoint or external-service request.
+- Any Cloudflare control-plane, log, or D1 access, including `release:status` and `release:history`.
 - Any endpoint in Class 3.
-- Any branch push or PR merge; a branch push can create Cloudflare preview state and did so for the 1.29.3 review branch, while a merge is potentially active-production-deploying until the integration settings are verified.
-- Any POST, scheduled invocation, direct SQL, migration, secret operation, deployment, release, commit, push, or cross-repository edit.
+- Any commit, branch push, or PR merge. A branch push creates external Worker-version or preview state.
+- Any `release:upload`; it creates Cloudflare version state even though it does not intentionally promote traffic.
+- Any manual production deployment-workflow dispatch; it is an active-production deployment operation. Direct `wrangler deploy` is not an authorized alternate path.
+- Any Cloudflare Workers Builds setting change, custom-domain or route change, observability change, secret operation, direct SQL, migration, scheduled invocation, release, or cross-repository edit.
+- Any merge when the last approved Workers Builds readback is missing, superseded by a later setting change, or differs from exactly `npx wrangler versions upload`. Report that state as `BLOCKED BEFORE MERGE`. The last durable verification was 2026-08-26.
 
-When authorization covers only read-only diagnosis, stop before the first action that can mutate evidence or configuration and ask for the narrower additional approval.
+With the Workers Builds production command verified as `npx wrangler versions upload`, a merge still requires explicit owner approval and still creates external version state, but it must not be treated as a production release. Production promotion remains a separate, explicit manual action.
+
+When authorization covers only read-only diagnosis, stop before the first action that can mutate evidence, configuration, version state, or traffic and ask for the narrower additional approval.

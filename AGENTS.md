@@ -28,8 +28,12 @@ Authority sources in descending order:
 ## Owner Approval and Operational Safety
 
 - Do not commit unless Jamie/the user explicitly approves.
-- Do not push or merge unless Jamie/the user explicitly approves. This repository is connected to Cloudflare Workers Builds: the 1.29.3 review-branch push uploaded a preview Worker version, and a push to the Cloudflare-configured production branch may promote an active deployment independently of the checked-in GitHub Actions gate.
-- Do not deploy, run `wrangler deploy`, apply D1 migrations, rotate secrets, perform destructive operations, or publish releases unless Jamie/the user explicitly approves.
+- Do not push or merge unless Jamie/the user explicitly approves. Git publication is an external mutation: branch pushes can upload Worker versions and create preview URLs even when they do not change active traffic.
+- External release-control receipt: on 2026-08-26, the Cloudflare Workers Builds production Deploy command was changed from `npx wrangler deploy` to `npx wrangler versions upload`; durable readback after reload confirmed that both Deploy and Version commands are exactly `npx wrangler versions upload`. No build, upload, or deployment was invoked.
+- Cloudflare Workers Builds is authorized only to upload versions and previews. The checked-in manual, main-only, validated, serialized, receipted GitHub workflow is the sole authorized production-promotion path. If the external command becomes inaccessible or differs from the verified value, stop and report `BLOCKED BEFORE MERGE`.
+- Do not dispatch the production workflow, run `wrangler deploy`, run `wrangler rollback`, apply D1 migrations, rotate or remove secrets, alter routes/custom domains, change observability, perform destructive operations, or publish releases unless Jamie/the user explicitly approves that action. Direct `wrangler deploy` is not an authorized alternate promotion path.
+- `npm run release:upload` and `wrangler versions upload` are non-promoting but not zero-mutation; they require explicit publication approval.
+- Any Cloudflare Workers Builds configuration change requires explicit external-change approval and a read-only verification receipt before relying on it.
 - When code depends on a D1 schema change, a migration requires explicit approval and remote verification before any Worker deployment.
 - Do not print or commit secret values.
 - Cross-repository contracts with Agent Smith, BUS Core, buscore-site, or the leads database must be documented when touched.
@@ -44,13 +48,15 @@ For any Lighthouse alert, WATCH, analytics question, report failure, service-hea
 4. If the approved endpoint, credential source, account context, or tool access is missing, report `ACCESS_BLOCKED`. Do not improvise an endpoint, credential, direct SQL query, or alternate service.
 5. Do not fan out across every endpoint. Start with supplied evidence; when live access is approved, use the stored-data `GET /report?view=ceo` diagnostic first and narrow from there.
 
+Canonical Cloudflare identity: account `eb1a8dd5723031d94e57642e3eaaebda`, Worker `buscore-lighthouse`, primary D1 binding `DB` at database ID `e46f2daa-7e97-45a3-9bf0-49003a42850c` named `lighthouse`, and Production Custom Domain `lighthouse.buscore.ca`. An empty Worker Routes list is expected for this Custom Domain. If another account context lacks the Worker, correct the account rather than diagnosing an outage.
+
 Operational constraints:
 
 - `GET /report?view=source_health` is ingestion-integrity evidence, not service-probe truth.
 - `WATCH` is not synonymous with outage; Agent Smith owns WATCH/ALERT/UNAVAILABLE wording, while Lighthouse owns facts and availability.
 - The current `ADMIN_TOKEN` is broad: it protects report reads and the mutating `POST /campaign`, `POST /notes`, and `POST /report/snapshot` routes. Possession does not authorize writes.
 - Many GET/HEAD surfaces change evidence. Bare/fleet/site reports refresh stored traffic; report failures can increment errors; artifact HEAD records raw/HEAD truth; update, redirect, artifact, telemetry, and admin-write routes are not passive probes.
-- Git publication is not zero-mutation. The 1.29.3 review-branch push triggered Cloudflare Workers Builds, uploaded a Worker preview version, and created preview URLs; future non-production behavior depends on external integration settings. The checked-in workflow's release gate does not govern that separate integration; treat a merge or production-branch push as potentially production-deploying until the Cloudflare build settings are explicitly verified.
+- Git publication is not zero-mutation. The 1.29.3 `main` merge proved that the former Workers Builds production command could promote active traffic independently of the checked-in gate. Durable readback on 2026-08-26 confirmed that both non-production and production publication now use `npx wrangler versions upload`. Pushes still create version or preview state, while active production promotion is reserved for the explicitly approved manual GitHub workflow. Any future external-setting drift reinstates `BLOCKED BEFORE MERGE`.
 - Lighthouse, Agent Smith, BUS Core, buscore-site, and tgc-site are separate failure domains. Do not infer a cross-service outage from one unavailable layer.
 
 ---

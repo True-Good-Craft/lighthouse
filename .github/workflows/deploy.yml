@@ -2,15 +2,24 @@ name: Deploy Lighthouse to Cloudflare
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
+
+concurrency:
+  group: lighthouse-production
+  cancel-in-progress: false
 
 jobs:
-  gate:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[deploy lighthouse]')
+  deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
+      - name: Require an explicit main-branch dispatch
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Production deployment must be dispatched from main."
+            exit 1
+          fi
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
@@ -19,23 +28,15 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-
-  deploy:
-    needs: gate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      deployments: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - name: Deploy Worker while preserving provisioned secrets
+      - name: Deploy Worker while preserving provisioned variables and secrets
+        id: production_deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+          command: deploy --keep-vars --strict
+      - name: Record the active deployment receipt
+        if: ${{ always() && steps.production_deploy.outcome != 'skipped' }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: deployments status --json
