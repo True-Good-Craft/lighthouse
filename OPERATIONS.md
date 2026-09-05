@@ -1,5 +1,11 @@
 # Lighthouse Operations and Diagnostics
 
+## Kingston review candidate — 2026-09-04
+
+The new isolated Kingston path is governed by [KFH_ANALYTICS_CONTRACT.md](KFH_ANALYTICS_CONTRACT.md). Source version is `1.32.0`. No production state is inferred from this branch. `view=kfh` reads only stored Kingston aggregates and skips traffic refresh; no live read is performed. Migration 0016 requires separate approval/remote verification before Worker promotion. Existing CEO consumer-parity and external Workers Builds verification gates remain in force.
+
+The website emitter remains disabled. Cloudflare/Discord/D1 production access was unavailable and no endpoint, control-plane, secret or storage operation was attempted. Repository review publication is separately authorized and may trigger CI or non-promoting preview/version uploads.
+
 - Status: current operational runbook
 - Scope: Lighthouse analytics access, evidence interpretation, incident diagnosis, and release-control boundaries
 - Repository baseline: Lighthouse `1.31.0` local governed bundle; CEO response contract `1.2`, metric-definition contract `1.1`; production promotion pending

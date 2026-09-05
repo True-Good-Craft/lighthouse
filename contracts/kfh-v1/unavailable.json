@@ -1,0 +1,54 @@
+{
+  "view": "kfh",
+  "report_contract_version": "1.0",
+  "site_key": "kingston_food_help",
+  "generated_at": "2026-09-04T12:00:00.000Z",
+  "source": {
+    "availability": "unavailable",
+    "reason": "query_failed",
+    "first_observed_day": null,
+    "last_observed_day": null
+  },
+  "windows": {
+    "today": {
+      "start_day": "2026-09-04",
+      "end_day": "2026-09-04",
+      "partial": true,
+      "counts": null
+    },
+    "latest_complete_day": {
+      "start_day": "2026-09-03",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": null
+    },
+    "last_7_complete_days": {
+      "start_day": "2026-08-28",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": null
+    },
+    "previous_7_complete_days": {
+      "start_day": "2026-08-21",
+      "end_day": "2026-08-27",
+      "partial": false,
+      "counts": null
+    },
+    "last_30_complete_days": {
+      "start_day": "2026-08-05",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": null
+    }
+  },
+  "discovery_last_7_complete_days": null,
+  "limitations": {
+    "coverage": "observed_only",
+    "counts_are": "consented_activity_not_people_or_service_outcomes",
+    "attribution": "page_views_only_no_action_join",
+    "activity_is_health": false,
+    "raw_events_stored": false,
+    "identifiers_reported": false,
+    "aggregate_retention_days": 400
+  }
+}
