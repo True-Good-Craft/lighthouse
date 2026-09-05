@@ -1,6 +1,6 @@
 {
   "view": "kfh",
-  "report_contract_version": "1.0",
+  "report_contract_version": "1.1",
   "site_key": "kingston_food_help",
   "generated_at": "2026-09-04T12:00:00.000Z",
   "source": {
@@ -44,7 +44,7 @@
   "discovery_last_7_complete_days": null,
   "limitations": {
     "coverage": "observed_only",
-    "counts_are": "consented_activity_not_people_or_service_outcomes",
+    "counts_are": "observed_activity_not_people_or_service_outcomes",
     "attribution": "page_views_only_no_action_join",
     "activity_is_health": false,
     "raw_events_stored": false,

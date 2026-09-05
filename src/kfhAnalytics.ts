@@ -11,8 +11,11 @@ function member(value: unknown, allowed: readonly string[]): value is string {
 
 export function parseKfhEvent(value: unknown): { counter: CountKey; source?: string; campaign?: string; content?: string } | null {
   if (!object(value)) return null;
-  if (value.site_key !== KFH_SITE_KEY || value.contract_version !== 1 || value.consent !== true || value.page !== "directory") return null;
-  const keys = ["site_key", "contract_version", "consent", "page", "event_name"];
+  if (value.site_key !== KFH_SITE_KEY || value.page !== "directory") return null;
+  const legacy = value.contract_version === 1 && value.consent === true;
+  const optOut = value.contract_version === 2 && value.collection_mode === "opt_out";
+  if (!legacy && !optOut) return null;
+  const keys = ["site_key", "contract_version", legacy ? "consent" : "collection_mode", "page", "event_name"];
   if (value.event_name === "page_view") {
     keys.push("source", "campaign", "content");
     if (Object.keys(value).some(key => !keys.includes(key))) return null;
@@ -120,7 +123,7 @@ function kfhReportFromRows(input: Row[] | null, now: Date): KfhReport {
     return [...totals].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
   };
   const report: KfhReport = {
-    view: "kfh", report_contract_version: "1.0", site_key: KFH_SITE_KEY, generated_at: now.toISOString(),
+    view: "kfh", report_contract_version: "1.1", site_key: KFH_SITE_KEY, generated_at: now.toISOString(),
     source: {
       availability: available ? "available" : "unavailable",
       reason: !available ? "query_failed" : eventDays.length ? "observed_activity" : "no_observed_history",

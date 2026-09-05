@@ -54,7 +54,7 @@ test("operator scripts expose reads and upload without a direct production bypas
 });
 
 test("the current governed bundle and historical release-control receipt stay synchronized", () => {
-  assert.equal(packageJson.version, "1.32.0");
+  assert.equal(packageJson.version, "1.33.0");
   assert.match(sot, /^## Kingston Food Help — v1\.32\.0 review candidate \(2026-09-04\)$/m);
   assert.match(changelog, /^## \[1\.32\.0\] - 2026-09-04$/m);
   assert.equal(packageLock.version, packageJson.version);

@@ -172,3 +172,23 @@ test("strict response contract rejects identity, unsafe numbers and invented cov
   }
   assert.equal(KFH_COUNT_KEYS.length, 6);
 });
+
+test("v2 default-on contract is explicit, isolated and persists the same bounded aggregates", async () => {
+  const current = {site_key: KFH_SITE_KEY, contract_version: 2, collection_mode: "opt_out", page: "directory", event_name: "page_view"};
+  assert.deepEqual(parseKfhEvent(current), parseKfhEvent(payload()));
+  for (const extra of [{consent:true}, {consent:false}, {collection_mode:"opt_in"}, {collection_mode:undefined}, {contract_version:3}, {resource_id:"private"}, {search:"private"}]) assert.equal(parseKfhEvent({...current,...extra}), null);
+  assert.equal(parseKfhEvent({...payload(),collection_mode:"opt_out"}), null);
+  await ingestKfhEvent(current, db, KFH_ORIGINS[0], async () => true, now);
+  const rows = await db.prepare("SELECT metric,value,count FROM kfh_daily ORDER BY metric").all();
+  assert.equal(rows.results.length,4); assert.ok(rows.results.every(row => row.count === 1));
+  const report = await buildKfhReport(db,now);
+  assert.equal(report.report_contract_version,"1.1");
+  assert.equal(report.limitations.counts_are,"observed_activity_not_people_or_service_outcomes");
+});
+
+test("KFH report legacy compatibility cannot mislabel current default-on counts", () => {
+  const legacy=JSON.parse(fs.readFileSync(new URL("../contracts/kfh-v1/legacy-empty.json",import.meta.url),"utf8"));
+  assert.equal(isKfhReport(legacy),true);
+  assert.equal(isKfhReport({...legacy,report_contract_version:"1.1"}),false);
+  assert.equal(isKfhReport({...legacy,report_contract_version:1.0}),false);
+});

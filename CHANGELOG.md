@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.33.0] - 2026-09-05
+
+- Added owner-authorized KFH ingestion v2 for default-on/opt-out collection without falsely asserting consent. Retained strict v1 compatibility and all suppression/privacy limits.
+- Updated KFH report semantics to 1.1 observed activity, with exact legacy validator and fixtures retained for coordinated Smith rollback compatibility.
+- Added strict v2, persistence and semantic-version rejection tests. No migration, secret/auth, binding, retention, schedule or other client-contract change.
+- The owner authorized ordered Smith deployment, manual Lighthouse promotion and final website publication; actual promotion evidence is recorded in the deployment workflow and Kingston launch receipt.
+
 ## [1.32.0] - 2026-09-04
 
 - Added an isolated consented Kingston Food Help profile on `/metrics/event`, with exact production origins, strict field/value rejection, GPC/DNT suppression, bounded input and scope-separated fail-closed minute abuse control. No raw event, identity, provider or journey history is stored.

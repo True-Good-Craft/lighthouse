@@ -9,7 +9,7 @@ export const KFH_COUNT_KEYS = ["page_views", "resource_calls", "help_211", "dire
 export const KFH_WINDOW_KEYS = ["today", "latest_complete_day", "last_7_complete_days", "previous_7_complete_days", "last_30_complete_days"] as const;
 export const KFH_LIMITATIONS = {
   coverage: "observed_only",
-  counts_are: "consented_activity_not_people_or_service_outcomes",
+  counts_are: "observed_activity_not_people_or_service_outcomes",
   attribution: "page_views_only_no_action_join",
   activity_is_health: false,
   raw_events_stored: false,
@@ -17,13 +17,15 @@ export const KFH_LIMITATIONS = {
   aggregate_retention_days: 400,
 } as const;
 
+export const KFH_LEGACY_LIMITATIONS = { ...KFH_LIMITATIONS, counts_are: "consented_activity_not_people_or_service_outcomes" } as const;
+
 export type CountKey = typeof KFH_COUNT_KEYS[number];
 export type WindowKey = typeof KFH_WINDOW_KEYS[number];
 export type Counts = Record<CountKey, number>;
 type Dimension = { value: string; count: number };
 export type KfhReport = {
   view: "kfh";
-  report_contract_version: "1.0";
+  report_contract_version: "1.0" | "1.1";
   site_key: typeof KFH_SITE_KEY;
   generated_at: string;
   source: {
@@ -34,7 +36,7 @@ export type KfhReport = {
   };
   windows: Record<WindowKey, { start_day: string; end_day: string; partial: boolean; counts: Counts | null }>;
   discovery_last_7_complete_days: { sources: Dimension[]; campaigns: Dimension[]; contents: Dimension[] } | null;
-  limitations: typeof KFH_LIMITATIONS;
+  limitations: typeof KFH_LIMITATIONS | typeof KFH_LEGACY_LIMITATIONS;
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -57,11 +59,12 @@ export function kfhWindowDays(now: Date): Record<WindowKey, [string, string]> {
 // Strict shared producer/consumer contract. No runtime schema compiler is needed.
 export function isKfhReport(value: unknown): value is KfhReport {
   if (!exact(value, ["view", "report_contract_version", "site_key", "generated_at", "source", "windows", "discovery_last_7_complete_days", "limitations"])) return false;
-  if (value.view !== "kfh" || value.report_contract_version !== "1.0" || value.site_key !== KFH_SITE_KEY) return false;
+  if (value.view !== "kfh" || (value.report_contract_version !== "1.0" && value.report_contract_version !== "1.1") || value.site_key !== KFH_SITE_KEY) return false;
   if (typeof value.generated_at !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.generated_at)
     || !Number.isFinite(Date.parse(value.generated_at)) || new Date(value.generated_at).toISOString() !== value.generated_at) return false;
   if (!exact(value.limitations, Object.keys(KFH_LIMITATIONS))) return false;
-  for (const [key, expected] of Object.entries(KFH_LIMITATIONS)) if (value.limitations[key] !== expected) return false;
+  const limitations = value.report_contract_version === "1.0" ? KFH_LEGACY_LIMITATIONS : KFH_LIMITATIONS;
+  for (const [key, expected] of Object.entries(limitations)) if (value.limitations[key] !== expected) return false;
   const source = value.source;
   if (!exact(source, ["availability", "reason", "first_observed_day", "last_observed_day"])) return false;
   const unavailable = source.availability === "unavailable";

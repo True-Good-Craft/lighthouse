@@ -1,5 +1,13 @@
 # Kingston Food Help analytics contract
 
+## Current owner-authorized revision — ingestion 2 / report 1.1
+
+Jamie explicitly changed Kingston to default-on aggregate analytics with an opt-out in Your privacy and no popup, and authorized the coordinated changes and production deployment. Existing saved no choices, GPC/DNT, dev_mode and noAnalytics suppression remain effective. No additional context, identifiers, raw history, queue, retries or third-party analytics are introduced.
+
+Version 2 replaces consent:true with collection_mode:"opt_out"; all other common keys, event/dimension allowlists, exact origins, byte limits, suppression, storage and retention are unchanged. consent is forbidden in v2. Version 1 still requires consent:true and rejects collection_mode, for existing cached opt-in clients. Both feed the same daily aggregate counters; no consent history or visitor data is retained.
+
+Report 1.1 changes only report_contract_version and limitations.counts_are to observed_activity_not_people_or_service_outcomes. The exact shared validator accepts 1.0 only with its legacy consented_activity limitation and 1.1 only with its observed_activity limitation. Smith must support both before promotion. These current definitions supersede the original opt-in-only text below.
+
 Version: ingestion `1`, report `1.0`; Lighthouse `1.32.0` review candidate, 2026-09-04.
 
 The owner authorized staging and review PRs. No migration, deployment, secret operation or website collection has been activated. Kingston's approved product policy remains the privacy ceiling; this implementation intentionally collects less context. Lighthouse owns measurements; Agent Smith owns the private `/kfh` presentation.

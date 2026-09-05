@@ -1,5 +1,11 @@
 # Lighthouse — Source of Truth
 
+## Current source — 1.33.0, Kingston default-on policy
+
+Jamie explicitly changed Kingston to default-on aggregate analytics with an opt-out in Your privacy and no popup, and authorized the coordinated changes and production deployment. Existing saved no choices, GPC/DNT, dev_mode and noAnalytics suppression remain effective. No additional context, identifiers, raw history, queue, retries or third-party analytics are introduced.
+
+The Kingston parser accepts strict ingestion v2 with collection_mode=opt_out and no consent assertion; v1 with consent=true remains accepted for cached opt-in clients. Report 1.1 labels counts as observed activity. Smith 0.28.0 must be deployed with exact 1.0/1.1 validators before this producer is promoted. BUS Core/TGC/CEO contracts, existing auth, bindings, tables, retention and schedules are unchanged. Migration 0016 and production 1.32.0 were verified during launch; no new migration is required. Production promotion remains the validated manual main workflow, after verified upload-only Workers Builds settings.
+
 ## Kingston Food Help — v1.32.0 review candidate (2026-09-04)
 
 The owner authorized a review branch and PR for Kingston analytics. This is an approved proposed behavior change, not a production receipt. `KFH_ANALYTICS_CONTRACT.md` governs this isolated aggregate profile and its Agent Smith `/kfh` consumer.

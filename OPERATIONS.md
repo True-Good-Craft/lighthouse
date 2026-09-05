@@ -1,5 +1,11 @@
 # Lighthouse Operations and Diagnostics
 
+## Kingston default-on rollout — 1.33.0
+
+Jamie explicitly changed Kingston to default-on aggregate analytics with an opt-out in Your privacy and no popup, and authorized the coordinated changes and production deployment. Existing saved no choices, GPC/DNT, dev_mode and noAnalytics suppression remain effective. No additional context, identifiers, raw history, queue, retries or third-party analytics are introduced.
+
+Deploy Smith 0.28.0 first and verify its exact 1.0/1.1 consumer support; then publish Lighthouse main and dispatch only its validated manual deployment workflow after upload-only Builds readback. Verify active Worker version and a bounded v2 event in D1; HTTP 204 alone remains insufficient. Publish the v2 website last. Preserve migration 0016; no new schema or secret change. The older 1.32.0 worker drops v2 traffic, so disable/revert the website producer first for rollback. Static KFH error categories in Smith distinguish access, timeout, transport and validation without logging credentials or payloads.
+
 ## Kingston review candidate — 2026-09-04
 
 The new isolated Kingston path is governed by [KFH_ANALYTICS_CONTRACT.md](KFH_ANALYTICS_CONTRACT.md). Source version is `1.32.0`. No production state is inferred from this branch. `view=kfh` reads only stored Kingston aggregates and skips traffic refresh; no live read is performed. Migration 0016 requires separate approval/remote verification before Worker promotion. Existing CEO consumer-parity and external Workers Builds verification gates remain in force.
