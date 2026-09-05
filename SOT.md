@@ -1,5 +1,16 @@
 # Lighthouse — Source of Truth
 
+## Kingston Food Help — v1.32.0 review candidate (2026-09-04)
+
+The owner authorized a review branch and PR for Kingston analytics. This is an approved proposed behavior change, not a production receipt. `KFH_ANALYTICS_CONTRACT.md` governs this isolated aggregate profile and its Agent Smith `/kfh` consumer.
+
+- `POST /metrics/event` accepts the strict consented `kingston_food_help` profile only from the two production HTTPS origins. Unknown fields, resource context, identifiers, unapproved campaign tags, test traffic, GPC/DNT, and missing rate-control inputs are dropped. The profile uses six fixed action counters plus separate page-view-only source/campaign/content counts; it writes no raw events.
+- Migration `0016_add_kfh_daily.sql` adds one aggregate table with 400 UTC-day-bucket retention. Existing two-day minute-HMAC abuse storage is reused with a Kingston-specific scope. Existing cron cadence is unchanged; Kingston pruning is an independent fail-soft task.
+- Protected `GET /report?view=kfh` reads only Kingston aggregates and skips traffic refresh. It returns explicit UTC windows, nullable unavailable measurements, observed-only coverage and activity days, never a health/people/help-received claim. It has no CEO dependency or scheduled outbound delivery.
+- Kingston is registered as `event_only` with a dedicated daily-report profile. It is excluded from raw-event fleet/source-health reports; legacy/site selectors reject its key rather than manufacture raw-event zeroes. Existing sites and CEO report contracts are preserved.
+- Review publication does not authorize migration, Worker promotion, secret operations, website collection, or live report reads. Migration must be separately approved and verified before promotion. The previous CEO consumer-parity/promotion gate still applies. The website emitter remains disabled pending its separately reviewed producer change.
+
+
 ## CEO activity truth and sparse probe health — v1.31.0
 
 Version 1.31.0 advances only the CEO response contract from `1.1` to `1.2`; `metric_definition_version` remains `1.1`. The change prevents sparse activity from being presented as a scheduled health signal, makes partial scheduled-probe evidence truthful, and clarifies that voluntary-inquiry totals count unique lead records. The authenticated route remains `GET /report?view=ceo`. No other report view, route, auth rule, header, CORS permission, Worker binding, environment variable, D1 table, retention rule, cron, probe target, canary, or producer contract changes.

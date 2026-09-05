@@ -1,0 +1,93 @@
+{
+  "view": "kfh",
+  "report_contract_version": "1.0",
+  "site_key": "kingston_food_help",
+  "generated_at": "2026-09-04T12:00:00.000Z",
+  "source": {
+    "availability": "available",
+    "reason": "no_observed_history",
+    "first_observed_day": null,
+    "last_observed_day": null
+  },
+  "windows": {
+    "today": {
+      "start_day": "2026-09-04",
+      "end_day": "2026-09-04",
+      "partial": true,
+      "counts": {
+        "page_views": 0,
+        "resource_calls": 0,
+        "help_211": 0,
+        "directions": 0,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "latest_complete_day": {
+      "start_day": "2026-09-03",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": {
+        "page_views": 0,
+        "resource_calls": 0,
+        "help_211": 0,
+        "directions": 0,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "last_7_complete_days": {
+      "start_day": "2026-08-28",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": {
+        "page_views": 0,
+        "resource_calls": 0,
+        "help_211": 0,
+        "directions": 0,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "previous_7_complete_days": {
+      "start_day": "2026-08-21",
+      "end_day": "2026-08-27",
+      "partial": false,
+      "counts": {
+        "page_views": 0,
+        "resource_calls": 0,
+        "help_211": 0,
+        "directions": 0,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "last_30_complete_days": {
+      "start_day": "2026-08-05",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": {
+        "page_views": 0,
+        "resource_calls": 0,
+        "help_211": 0,
+        "directions": 0,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    }
+  },
+  "discovery_last_7_complete_days": {
+    "sources": [],
+    "campaigns": [],
+    "contents": []
+  },
+  "limitations": {
+    "coverage": "observed_only",
+    "counts_are": "consented_activity_not_people_or_service_outcomes",
+    "attribution": "page_views_only_no_action_join",
+    "activity_is_health": false,
+    "raw_events_stored": false,
+    "identifiers_reported": false,
+    "aggregate_retention_days": 400
+  }
+}

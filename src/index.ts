@@ -1,3 +1,5 @@
+import { KFH_SITE_KEY, KFH_ORIGINS } from "./kfhContract.js";
+import { ingestKfhEvent, readKfhBody, buildKfhReport, pruneKfhData } from "./kfhAnalytics.js";
 import {
   BUSCORE_TELEMETRY_PATH,
   BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS,
@@ -353,7 +355,7 @@ type SiteSectionAvailability = {
   identity: boolean;
   read: boolean;
 };
-type ReportView = "legacy" | "fleet" | "site" | "tgc" | "source_health" | "asset" | "monthly" | "ceo";
+type ReportView = "kfh" | "legacy" | "fleet" | "site" | "tgc" | "source_health" | "asset" | "monthly" | "ceo";
 type ReportWindow = {
   start_day: string;
   end_day: string;
@@ -442,6 +444,7 @@ type ReportRequestResolution =
   | { ok: true; view: "fleet" }
   | { ok: true; view: "site"; siteEventFilter: SiteEventFilter }
   | { ok: true; view: "tgc" }
+  | { ok: true; view: "kfh" }
   | { ok: true; view: "source_health" }
   | { ok: true; view: "asset" }
   | { ok: true; view: "monthly" }
@@ -566,6 +569,7 @@ type CloudflareGraphQLResponse = {
 type SiteStatus = "active" | "staging" | "planned";
 
 type TrackedSite = {
+  readonly report_profile?: "kfh_daily";
   readonly site_key: string;
   readonly label: string;
   readonly status: SiteStatus;
@@ -578,6 +582,13 @@ type TrackedSite = {
 };
 
 const TRACKED_SITES: readonly TrackedSite[] = [
+  {
+    site_key: KFH_SITE_KEY, label: "Kingston Food Help", status: "active",
+    report_profile: "kfh_daily",
+    production_hosts: ["kingstonfoodhelp.ca", "www.kingstonfoodhelp.ca"],
+    allowed_origins: KFH_ORIGINS, staging_hosts: [],
+    cloudflare_traffic_enabled: false, cloudflare_host: null, production_only_default: true,
+  },
   {
     site_key: "buscore",
     label: "BUS Core",
@@ -1306,6 +1317,7 @@ export function normalizeReportView(value: string | null): ReportView | null {
   }
 
   if (
+    normalized === "kfh" ||
     normalized === "fleet" ||
     normalized === "site" ||
     normalized === "tgc" ||
@@ -1582,6 +1594,7 @@ export function sanitizeAnalyticsLocation(value: string, allowEmpty: boolean = f
 export function parseCanonicalEventPayload(payload: unknown): SiteEventInput | null {
   const root = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
   const siteKey = readRequiredString(root, "site_key");
+  if (siteKey === KFH_SITE_KEY) return null; // Never fall back to raw-event storage.
   const eventName = readRequiredString(root, "event_name");
   const clientTs = readRequiredString(root, "client_ts");
   const path = readRequiredString(root, "path");
@@ -3065,6 +3078,7 @@ function parseBooleanQueryFlag(value: string | null, defaultValue: boolean): boo
 
 function normalizeSiteEventFilter(url: URL): SiteEventFilter | null {
   const siteKey = nullIfBlank(url.searchParams.get("site_key"));
+  if (siteKey === KFH_SITE_KEY) return null; // Use the dedicated aggregate view.
   if (!siteKey) {
     return null;
   }
@@ -4850,7 +4864,7 @@ async function buildLegacyReport(
 async function buildFleetReport(db: D1Database, now: Date): Promise<ReturnType<typeof assembleFleetReport>> {
   const { todayDay, last7StartDay } = reportDayBounds(now);
   const sites = await Promise.all(
-    TRACKED_SITES.map(async (site): Promise<FleetSiteEntry> => {
+    TRACKED_SITES.filter(site => site.report_profile !== "kfh_daily").map(async (site): Promise<FleetSiteEntry> => {
       const snapshot = await buildSiteSignalSnapshot(db, site, defaultSiteEventFilter(site), last7StartDay, todayDay);
 
       return {
@@ -5126,7 +5140,7 @@ async function buildSourceHealthReport(
 ): Promise<ReturnType<typeof assembleSourceHealthReport>> {
   const { todayDay, last7StartDay } = reportDayBounds(now);
   const sites = await Promise.all(
-    TRACKED_SITES.map(async (site): Promise<SourceHealthSiteEntry> => {
+    TRACKED_SITES.filter(site => site.report_profile !== "kfh_daily").map(async (site): Promise<SourceHealthSiteEntry> => {
       const snapshot = await buildSiteSignalSnapshot(db, site, defaultSiteEventFilter(site), last7StartDay, todayDay);
 
       return {
@@ -5293,7 +5307,7 @@ function withCors(request: Request, response: Response, allowMethods: string = "
     const activeOrigins = getAllActiveAllowedOrigins();
     if (origin && activeOrigins.has(origin)) {
       headers.set("Access-Control-Allow-Origin", origin);
-      headers.set("Access-Control-Allow-Credentials", "true");
+      if (!(KFH_ORIGINS as readonly string[]).includes(origin)) headers.set("Access-Control-Allow-Credentials", "true");
       headers.set("Access-Control-Allow-Headers", "Content-Type");
       headers.set("Vary", "Origin");
     } else {
@@ -6635,6 +6649,7 @@ export default {
 
         // Independent, fail-soft writers. One failing cannot break the others.
         await Promise.all([
+          pruneKfhData(env.DB).catch(() => { console.warn("KFH retention cleanup unavailable."); }),
           prunePageviewData(env.DB).catch((error) => {
             console.warn("Pageview retention cleanup skipped after D1 failure.", error);
           }),
@@ -6688,6 +6703,25 @@ export default {
     }
 
     if (url.pathname === SITE_EVENT_METRICS_PATH && request.method === "POST") {
+      if ((KFH_ORIGINS as readonly string[]).includes(request.headers.get("Origin") ?? "")) {
+        if (request.headers.get("Sec-GPC") === "1" || request.headers.get("DNT") === "1") {
+          return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
+        }
+        const raw = await readKfhBody(request);
+        let payload: unknown;
+        try { payload = raw ? JSON.parse(raw) : null; } catch { payload = null; }
+        const now = new Date();
+        const origin = request.headers.get("Origin");
+        ctx.waitUntil(ingestKfhEvent(payload, env.DB, origin, async () => {
+          const clientIp = getClientIp(request);
+          const secret = env.TELEMETRY_RATE_LIMIT_SECRET?.trim();
+          if (!clientIp || !secret || shouldSkipCounting(clientIp, env.IGNORED_IP)) return false;
+          const minute = utcMinuteBucket(now);
+          const key = await keyedRateIdentifier(secret, minute, `${KFH_SITE_KEY}:${clientIp}`);
+          return await incrementSiteEventRateLimitBucket(env.DB, minute, key) <= SITE_EVENT_RATE_LIMIT_PER_MINUTE;
+        }, now).catch(() => { console.warn("KFH ingest unavailable; submission dropped."); }));
+        return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
+      }
       const requestContext = buildPageviewRequestContext(request);
       const capture = await readRawBodyCapture(request);
       ctx.waitUntil(
@@ -7040,13 +7074,16 @@ export default {
           reportRequest.view !== "asset" &&
           reportRequest.view !== "monthly" &&
           reportRequest.view !== "ceo" &&
-          reportRequest.view !== "tgc"
+          reportRequest.view !== "tgc" &&
+          reportRequest.view !== "kfh"
         ) {
           await refreshPreviousCompletedTrafficBestEffort(env, now);
         }
 
         const payload =
-          reportRequest.view === "legacy"
+          reportRequest.view === "kfh"
+            ? await buildKfhReport(env.DB, now)
+            : reportRequest.view === "legacy"
             ? await buildLegacyReport(env.DB, env.BUSCORE_LEADS_DB, now, reportRequest.siteEventFilter)
             : reportRequest.view === "fleet"
               ? await buildFleetReport(env.DB, now)
@@ -7064,7 +7101,7 @@ export default {
 
         return withCors(
           request,
-          Response.json(payload, { status: 200 })
+          Response.json(payload, { status: 200, ...(reportRequest.view === "kfh" ? { headers: { "Cache-Control": "no-store" } } : {}) })
         );
       } catch {
         await incrementErrorCounterBestEffort(env.DB, day);

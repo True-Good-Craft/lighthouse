@@ -1,5 +1,7 @@
 # buscore-lighthouse
 
+Kingston Food Help review candidate: see [KFH_ANALYTICS_CONTRACT.md](KFH_ANALYTICS_CONTRACT.md) for the isolated aggregate report, privacy bounds and owner-controlled rollout. No live collection is enabled by this repository change.
+
 ## 1.31.0 CEO activity truth and sparse probe health
 
 Version 1.31.0 advances the strict CEO response contract to `1.2` while keeping `metric_definition_version: "1.1"`. Direct aggregate sources now declare `freshness_basis: "activity"`: `data_through` is an activity watermark, freshness stays `unknown`, and `activity_only` prevents a quiet sparse source from being presented as a fresh, stale, healthy, or failed scheduled feed. A single-component watermark is its latest trusted observation; a composite watermark is the conservative earliest required-component watermark. A day-bucket watermark is normalized to a bounded reporting timestamp and is not an event timestamp. Only `service_probes` uses `freshness_basis: "scheduled_probe"` and the existing 36-hour scheduled fresh/stale rule.

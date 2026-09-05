@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.32.0] - 2026-09-04
+
+- Added an isolated consented Kingston Food Help profile on `/metrics/event`, with exact production origins, strict field/value rejection, GPC/DNT suppression, bounded input and scope-separated fail-closed minute abuse control. No raw event, identity, provider or journey history is stored.
+- Added migration 0016 for constrained daily counts and separate page-view-only attribution, atomic writes and 400-day aggregate retention. Existing cron cadence is unchanged; pruning is independently fail-soft.
+- Added protected `view=kfh` with strict shared contract 1.0, complete UTC comparison windows, nullable unavailable data and observed-only coverage. Raw-event fleet/source-health and existing site/CEO behavior remain separate and unchanged.
+- Added producer fixtures and deterministic privacy, request, real SQLite/atomicity, retention, auth and reporting tests. Added pinned test-only `sql.js`; production runtime dependencies are unchanged.
+- Review candidate only: no remote migration, Worker promotion, secret operation, live collection, report request or Discord interaction performed. The website producer remains disabled pending its separately reviewed change. Existing CEO consumer-first rollout restrictions remain in force.
+
+
 ## [1.31.0] - 2026-08-27
 
 - Advanced only the strict CEO report contract from `1.1` to `1.2`; `metric_definition_version` remains `1.1`, so metric definitions, window boundaries, counts, and historical meaning do not reset.
