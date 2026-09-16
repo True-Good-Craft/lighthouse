@@ -1,5 +1,5 @@
-import { KFH_SITE_KEY, KFH_ORIGINS } from "./kfhContract.js";
-import { ingestKfhEvent, readKfhBody, buildKfhReport, pruneKfhData } from "./kfhAnalytics.js";
+import { KFH_SITE_KEY } from "./kfhContract.js";
+import { KFH_INGEST_ORIGINS, ingestKfhEvent, readKfhBody, buildKfhReport, pruneKfhData } from "./kfhAnalytics.js";
 import {
   BUSCORE_TELEMETRY_PATH,
   BUSCORE_TELEMETRY_PRODUCT_FAILURE_EVENTS,
@@ -585,8 +585,8 @@ const TRACKED_SITES: readonly TrackedSite[] = [
   {
     site_key: KFH_SITE_KEY, label: "Kingston Food Help", status: "active",
     report_profile: "kfh_daily",
-    production_hosts: ["kingstonfoodhelp.ca", "www.kingstonfoodhelp.ca"],
-    allowed_origins: KFH_ORIGINS, staging_hosts: [],
+    production_hosts: KFH_INGEST_ORIGINS.map(origin => new URL(origin).hostname),
+    allowed_origins: KFH_INGEST_ORIGINS, staging_hosts: [],
     cloudflare_traffic_enabled: false, cloudflare_host: null, production_only_default: true,
   },
   {
@@ -5307,7 +5307,7 @@ function withCors(request: Request, response: Response, allowMethods: string = "
     const activeOrigins = getAllActiveAllowedOrigins();
     if (origin && activeOrigins.has(origin)) {
       headers.set("Access-Control-Allow-Origin", origin);
-      if (!(KFH_ORIGINS as readonly string[]).includes(origin)) headers.set("Access-Control-Allow-Credentials", "true");
+      if (!KFH_INGEST_ORIGINS.includes(origin)) headers.set("Access-Control-Allow-Credentials", "true");
       headers.set("Access-Control-Allow-Headers", "Content-Type");
       headers.set("Vary", "Origin");
     } else {
@@ -6703,7 +6703,7 @@ export default {
     }
 
     if (url.pathname === SITE_EVENT_METRICS_PATH && request.method === "POST") {
-      if ((KFH_ORIGINS as readonly string[]).includes(request.headers.get("Origin") ?? "")) {
+      if (KFH_INGEST_ORIGINS.includes(request.headers.get("Origin") ?? "")) {
         if (request.headers.get("Sec-GPC") === "1" || request.headers.get("DNT") === "1") {
           return withCors(request, new Response(null, { status: 204 }), "POST, OPTIONS");
         }

@@ -1,5 +1,15 @@
 # Lighthouse Operations and Diagnostics
 
+## Kingston domain restoration — 1.34.1 staged review
+
+Source preparation and staging are approved; the operator is reviewing before approving a commit. The collector-local `KFH_INGEST_ORIGINS` accepts exactly the two legacy Kingston HTTPS origins plus `https://kingston.food-help.ca`. The new origin must use the dedicated Kingston parser and credential-free CORS, with no raw-event fallback or wildcard. Shared Smith report-contract bytes remain unchanged.
+
+For an approved rollout, confirm current Worker/migration and report-consumer state and the upload-only Workers Builds settings. Preserve the previous complete collector and website artifacts. Promote Lighthouse through the validated manual main workflow, verify OPTIONS CORS for the new origin (and absence of credentials), then publish the reviewed Food Help Kingston revision. No new migration is part of this change. If existing v3 storage or consumer evidence is missing, resolve it before promoting; do not infer it from local tests or old dated receipts.
+
+Verification before activation uses the real parser, route, local SQLite aggregates and strict report validator with synthetic events in local storage only. After an approved promotion, an OPTIONS request and a valid v3 POST carrying `Sec-GPC: 1` can check CORS and privacy-suppressed routing without entering Kingston rate or aggregate storage. The local tests must establish that the suppression branch touches no database before using that procedure. These checks do not prove production persistence or reporting continuity. Do not use test flags (the strict parser rejects them), unsuppressed synthetic submissions, deletion of genuine daily buckets, or an HTTP 204 as storage proof. A later persistence proof needs an established exclusion-safe method and the appropriate production-read approval and credential access.
+
+The website restores default-on collection with its off switch and discloses that old-domain localStorage choices cannot transfer. Existing new-origin choices and privacy/operator signals remain effective. Rollback disables website collection by restoring its previous complete artifact before reverting the collector. Root `food-help.ca`, other sites, routes, DNS and schedules are outside this change.
+
 ## 2026-09-09 outreach review candidate
 
 The coordinated review changes and exact owner-controlled release order are in [KFH_OUTREACH_RELEASE.md](KFH_OUTREACH_RELEASE.md). Branch publication is authorized; production activation is pending owner review. Older dated operations below remain historical where the new release review supersedes them.

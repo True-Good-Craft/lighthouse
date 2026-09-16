@@ -1,5 +1,8 @@
 import { KFH_SITE_KEY, KFH_ORIGINS, KFH_SOURCES, KFH_CAMPAIGNS, KFH_CONTENTS, KFH_COUNT_KEYS, KFH_WINDOW_KEYS, KFH_OUTREACH_LIMITATIONS, type CountKey, type Counts, type WindowKey, type KfhReport, isKfhReport } from "./kfhContract.js";
 import { KFH_OUTREACH_SOURCES, KFH_OUTREACH_CAMPAIGNS, KFH_OUTREACH_CONTENTS, KFH_ATTRIBUTABLE_KEYS, type AttributableKey, type Outreach, type OutreachCounts, type OutreachRow } from "./kfhOutreachContract.js";
+
+// Collector routing is local to Lighthouse; the pinned Smith report contract stays unchanged.
+export const KFH_INGEST_ORIGINS: readonly string[] = [...KFH_ORIGINS, "https://kingston.food-help.ca"];
 type Row = { day: string; metric: string; value: string; count: number };
 type StoredOutreach = OutreachRow & { day: string; dimension: string };
 type Dimension = { value: string; count: number };
@@ -83,7 +86,7 @@ export async function ingestKfhEvent(
   payload: unknown, db: D1Database, origin: string | null,
   allowRate: () => Promise<boolean>, now: Date = new Date(),
 ): Promise<void> {
-  if (!origin || !(KFH_ORIGINS as readonly string[]).includes(origin)) return;
+  if (!origin || !KFH_INGEST_ORIGINS.includes(origin)) return;
   const event = parseKfhEvent(payload);
   if (!event || !(await allowRate())) return;
   const dimensions = [["event", event.counter]];

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.1] - 2026-09-16 (staged review candidate)
+
+- Add the exact `https://kingston.food-help.ca` production origin to Kingston's registry, credential-free CORS and dedicated ingestion, while preserving both legacy HTTPS origins for cached clients.
+- Keep collector routing in `kfhAnalytics.ts` so the pinned Smith report contracts and payload/report versions stay unchanged. Retain all existing privacy, body/rate limits, aggregate storage and retention rules.
+- Add local route, SQL/report and origin-boundary regression tests and document the coordinated Food Help restoration and non-persisting production verification limits.
+- Align package versions at 1.34.1. No dependency, migration, binding, secret, schedule, other-site behavior or production state changed; commit/publication remains pending review.
+
 ## [1.34.0] - 2026-09-09 (review candidate)
 
 - Add strict KFH v3 public outreach labels on broad actions with atomic independent daily margins and additive migration 0017.

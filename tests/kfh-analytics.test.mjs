@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import initSqlJs from "sql.js";
 import workerModule, { parseCanonicalEventPayload, resolveReportRequest } from "../dist/index.js";
-import { parseKfhEvent, ingestKfhEvent, buildKfhReport, pruneKfhData } from "../dist/kfhAnalytics.js";
+import { KFH_INGEST_ORIGINS, parseKfhEvent, ingestKfhEvent, buildKfhReport, pruneKfhData } from "../dist/kfhAnalytics.js";
 import { isKfhReport, KFH_SITE_KEY, KFH_ORIGINS, KFH_COUNT_KEYS } from "../dist/kfhContract.js";
 
 const worker = workerModule.fetch ? workerModule : workerModule.default;
@@ -81,6 +81,56 @@ async function submit(body, options = {}) {
   await Promise.all(pending);
   return response;
 }
+
+test("Kingston CORS accepts the migrated and legacy origins without admitting siblings or credentials", async () => {
+  const origins = ["https://kingston.food-help.ca", "https://kingstonfoodhelp.ca", "https://www.kingstonfoodhelp.ca"];
+  assert.deepEqual([...KFH_INGEST_ORIGINS].sort(), [...origins].sort());
+  const databaseMustNotBeUsed = { prepare() { throw new Error("preflight must not access storage"); } };
+  for (const origin of [...origins, "https://food-help.ca", "https://www.kingston.food-help.ca", "http://kingston.food-help.ca", "https://kingston.food-help.ca.evil.example", "https://other.food-help.ca", "https://preview.pages.dev"]) {
+    const response = await worker.fetch(new Request("https://lighthouse.test/metrics/event", { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" } }), { DB: databaseMustNotBeUsed }, { waitUntil() { throw new Error("preflight must not schedule work"); } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), origins.includes(origin) ? origin : null);
+    assert.equal(response.headers.get("Access-Control-Allow-Credentials"), null);
+    if (origins.includes(origin)) assert.equal(response.headers.get("Access-Control-Allow-Headers"), "Content-Type");
+    else await ingestKfhEvent(payload(), db, origin, async () => { throw new Error("unregistered origin reached rate gate"); }, now);
+  }
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_daily").first()).n, 0);
+});
+
+test("migrated origin routes all six v3 events into aggregate storage and the existing strict report", async () => {
+  const origin = "https://kingston.food-help.ca";
+  const common = { site_key: KFH_SITE_KEY, contract_version: 3, collection_mode: "opt_out", page: "directory" };
+  for (const event of [
+    { event_name: "page_view" },
+    { event_name: "contact_click", event_value: "resource_call" },
+    { event_name: "contact_click", event_value: "help_211" },
+    { event_name: "outbound_click", event_value: "directions" },
+    { event_name: "outbound_click", event_value: "official_source" },
+    { event_name: "pwa_install" },
+  ]) {
+    const attribution = event.event_name === "pwa_install" ? {} : { source: "reddit", campaign: "outreach_2026_09", content: "post_02" };
+    const response = await submit({ ...common, ...event, ...attribution }, { headers: { Origin: origin, "Content-Type": "text/plain;charset=UTF-8" } });
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), origin);
+    assert.equal(response.headers.get("Access-Control-Allow-Credentials"), null);
+  }
+  const report = await buildKfhReport(db, new Date());
+  assert.ok(isKfhReport(report));
+  assert.deepEqual(report.windows.today.counts, Object.fromEntries(KFH_COUNT_KEYS.map(key => [key, 1])));
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_outreach_daily").first()).n, 15);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='site_events_raw'").first()).n, 0);
+});
+
+test("migrated-origin privacy-suppressed verification never reads or schedules database work", async () => {
+  for (const privacy of [{ "Sec-GPC": "1" }, { DNT: "1" }]) {
+    let databaseReads = 0, scheduled = 0;
+    const response = await worker.fetch(new Request("https://lighthouse.test/metrics/event", { method: "POST", headers: { Origin: "https://kingston.food-help.ca", ...privacy }, body: JSON.stringify({ site_key: KFH_SITE_KEY, contract_version: 3, collection_mode: "opt_out", page: "directory", event_name: "page_view", source: "direct_unknown", campaign: "none", content: "none" }) }), { get DB() { databaseReads++; throw new Error("privacy suppression must precede DB access"); } }, { waitUntil() { scheduled++; } });
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://kingston.food-help.ca");
+    assert.equal(databaseReads, 0);
+    assert.equal(scheduled, 0);
+  }
+});
 
 test("public route is fail-soft, production-only, privacy-suppressed and rate-bounded", async () => {
   for (const options of [{ headers: { DNT: "1" } }, { headers: { "Sec-GPC": "1" } }, { headers: { "CF-Connecting-IP": "" } }, { env: { TELEMETRY_RATE_LIMIT_SECRET: "" } }, { env: { IGNORED_IP: "192.0.2.5" } }]) assert.equal((await submit(payload(), options)).status, 204);

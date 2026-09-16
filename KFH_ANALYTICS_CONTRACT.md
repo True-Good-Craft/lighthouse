@@ -1,5 +1,11 @@
 # Kingston Food Help analytics contract
 
+## Domain restoration — 1.34.1 staged source
+
+The collector-local `KFH_INGEST_ORIGINS` in `src/kfhAnalytics.ts` adds `https://kingston.food-help.ca` to the two legacy production HTTPS origins. Registry matching, CORS and the bounded Kingston ingestion branch share this allowlist. Both legacy origins remain accepted for cached clients. Root `https://food-help.ca`, preview hosts, other subdomains, HTTP and lookalike hosts remain excluded.
+
+This changes origin acceptance only. Ingestion v1/v2/v3, report 1.0/1.1/1.2 compatibility, strict payload fields, privacy/rate checks, storage and retention stay unchanged. The TypeScript report contracts pinned in Smith remain byte-identical; the legacy origin constant in that shared file supplies the base of the collector-local allowlist. The coordinated Food Help producer retains v3 default-on/opt-out semantics and discloses the domain-specific preference limitation. This staged source is not a production activation receipt; see OPERATIONS.md for rollout and verification limits.
+
 ## Current reviewed contract — 1.34.0, public outreach action attribution
 
 Jamie authorized the coordinated code changes, review branches, commits/pushes and pull requests on 2026-09-09. These are review candidates; this work does not authorize or record a main merge, migration application, production deployment, secret or settings change. The current production report pasted by Jamie contains observed activity; it is not a website-health or outcome receipt.
@@ -28,7 +34,7 @@ The owner authorized staging and review PRs. No migration, deployment, secret op
 
 ## Ingestion
 
-`POST /metrics/event`, with `Origin` exactly `https://kingstonfoodhelp.ca` or `https://www.kingstonfoodhelp.ca`. These origins are registered with the dedicated `kfh_daily` reporting profile and `event_only` support class. No Pages preview, HTTP, localhost, wildcard or foreign origin is accepted. CORS does not allow credentials for Kingston. The browser must send with credentials omitted and no referrer.
+`POST /metrics/event`, with `Origin` exactly `https://kingston.food-help.ca`, `https://kingstonfoodhelp.ca` or `https://www.kingstonfoodhelp.ca` in the 1.34.1 source. These origins are registered with the dedicated `kfh_daily` reporting profile and `event_only` support class. No Pages preview, HTTP, localhost, wildcard or foreign origin is accepted. CORS does not allow credentials for Kingston. The browser must send with credentials omitted and no referrer.
 
 The Kingston-origin path reads at most 1,024 UTF-8 bytes and accepts only this exact common object:
 

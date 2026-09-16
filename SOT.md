@@ -1,5 +1,13 @@
 # Lighthouse — Source of Truth
 
+## Staged source — 1.34.1, Kingston domain restoration
+
+The operator approved preparation and staging on 2026-09-16, with commit approval reserved until review. This source change adds only `https://kingston.food-help.ca` to the Kingston collector's exact HTTPS origins, retaining `https://kingstonfoodhelp.ca` and `https://www.kingstonfoodhelp.ca` for cached clients. Registry matching, credential-free CORS and dedicated bounded ingestion all use `KFH_INGEST_ORIGINS` in `src/kfhAnalytics.ts`. The shared report-contract files and Smith consumer remain unchanged; their legacy `KFH_ORIGINS` constant is the base of the collector-local allowlist, not its complete runtime inventory.
+
+Food Help's `deployments/kingston/site.json` restores the existing ingestion v3 default-on/opt-out configuration with disclosure that old-domain preferences cannot transfer. Only the interactive Emergency food home directory emits; root project-site activity is excluded. Same-origin saved choices, privacy/operator suppression, fixed payloads, report 1.2, atomic daily/outreach aggregates, retention and rate controls keep their existing behavior. No new migration, dependency, secret, binding, schedule, raw-event field or report contract is introduced.
+
+This is an uncommitted review candidate, not a production receipt. Verify deployed v3 storage and consumer compatibility, promote the collector through the governed workflow, and verify exact-origin CORS before publishing the website after review. Keep synthetic persistence tests local. OPTIONS and privacy-suppressed production requests prove only transport/routing, never persistence; an HTTP 204 is not acceptance evidence. See OPERATIONS.md for the activation and verification boundary. Older dated production/candidate statements below are historical and do not establish the current deployed version.
+
 ## Review candidate — 1.34.0, public outreach action attribution
 
 Jamie authorized the coordinated code changes, review branches, commits/pushes and pull requests on 2026-09-09. These are review candidates; this work does not authorize or record a main merge, migration application, production deployment, secret or settings change. The current production report pasted by Jamie contains observed activity; it is not a website-health or outcome receipt.
