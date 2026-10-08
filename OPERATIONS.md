@@ -1,5 +1,9 @@
 # Lighthouse Operations and Diagnostics
 
+## Kingston product signals — 1.35.0 draft review
+
+Before applying migration 0018, confirm with approved Class 1 access that production D1 already has `kfh_outreach_daily` (migration 0017); the repository does not record it. Apply 0018 only with explicit approval and before or after promotion (promotion first is safe: signals are dropped and `/kfh` shows product signals unavailable). After promotion, an approved `/kfh` read should show `product_signals.availability: "available"` with zero counts until Food Help emits. A public 204 for a signal is not persistence evidence. Rollback is the 1.34.1 Worker version; keep the additive table.
+
 ## Kingston domain restoration — 1.34.1 staged review
 
 Source preparation and staging are approved; the operator is reviewing before approving a commit. The collector-local `KFH_INGEST_ORIGINS` accepts exactly the two legacy Kingston HTTPS origins plus `https://kingston.food-help.ca`. The new origin must use the dedicated Kingston parser and credential-free CORS, with no raw-event fallback or wildcard. Shared Smith report-contract bytes remain unchanged.

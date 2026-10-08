@@ -1,0 +1,59 @@
+{
+  "view": "kfh",
+  "report_contract_version": "1.3",
+  "site_key": "kingston_food_help",
+  "generated_at": "2026-09-04T12:00:00.000Z",
+  "source": {
+    "availability": "unavailable",
+    "reason": "query_failed",
+    "first_observed_day": null,
+    "last_observed_day": null
+  },
+  "windows": {
+    "today": {
+      "start_day": "2026-09-04",
+      "end_day": "2026-09-04",
+      "partial": true,
+      "counts": null
+    },
+    "latest_complete_day": {
+      "start_day": "2026-09-03",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": null
+    },
+    "last_7_complete_days": {
+      "start_day": "2026-08-28",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": null
+    },
+    "previous_7_complete_days": {
+      "start_day": "2026-08-21",
+      "end_day": "2026-08-27",
+      "partial": false,
+      "counts": null
+    },
+    "last_30_complete_days": {
+      "start_day": "2026-08-05",
+      "end_day": "2026-09-03",
+      "partial": false,
+      "counts": null
+    }
+  },
+  "discovery_last_7_complete_days": null,
+  "outreach_last_7_complete_days": null,
+  "product_signals": {
+    "availability": "unavailable",
+    "windows": null
+  },
+  "limitations": {
+    "coverage": "observed_only",
+    "counts_are": "observed_activity_not_people_or_service_outcomes",
+    "attribution": "separate_daily_public_outreach_action_totals",
+    "activity_is_health": false,
+    "raw_events_stored": false,
+    "identifiers_reported": false,
+    "aggregate_retention_days": 400
+  }
+}

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.35.0] - 2026-10-08 (draft review candidate)
+
+- Accept two fixed, unattributed Kingston v3 product signals, `resource_open` and `install_prompt` (`show`/`dismiss`), from the existing Kingston origins only. Extra fields, labels, visit/session tokens and `engagement` are rejected; the six existing events and their storage are unchanged.
+- Add additive migration 0018 (`kfh_signal_daily`) with single-row writes outside the core batch and a separate fail-soft 400-day prune, so a missing table cannot affect core counts or retention.
+- Emit KFH report 1.3: the 1.2 body plus `product_signals`, independently unavailable when its table or query fails. Add the shared `src/kfhSignalsContract.ts`, builder-generated `signals-*` fixtures and ingestion, route, retention, missing-table and validation tests.
+- Align package versions at 1.35.0. No migration applied, Worker promoted, secret, binding, schedule, other-site or production state changed. Rollout is Smith 0.31.0 first, 0017 confirmed, 0018 applied, then manual promotion.
+
 ## [1.34.1] - 2026-09-16 (staged review candidate)
 
 - Add the exact `https://kingston.food-help.ca` production origin to Kingston's registry, credential-free CORS and dedicated ingestion, while preserving both legacy HTTPS origins for cached clients.

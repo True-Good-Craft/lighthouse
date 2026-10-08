@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import initSqlJs from "sql.js";
 import workerModule, { parseCanonicalEventPayload, resolveReportRequest } from "../dist/index.js";
-import { KFH_INGEST_ORIGINS, parseKfhEvent, ingestKfhEvent, buildKfhReport, pruneKfhData } from "../dist/kfhAnalytics.js";
+import { KFH_INGEST_ORIGINS, parseKfhEvent, parseKfhSignal, ingestKfhEvent, buildKfhReport, pruneKfhData } from "../dist/kfhAnalytics.js";
 import { isKfhReport, KFH_SITE_KEY, KFH_ORIGINS, KFH_COUNT_KEYS } from "../dist/kfhContract.js";
 
 const worker = workerModule.fetch ? workerModule : workerModule.default;
@@ -30,12 +30,12 @@ before(async () => {
     try { const results = []; for (const statement of statements) results.push(await statement.run()); sqlite.run("COMMIT"); return results; }
     catch (error) { sqlite.run("ROLLBACK"); throw error; }
   } };
-  for (const name of ["0008_add_site_event_rate_limit.sql", "0016_add_kfh_daily.sql", "0017_add_kfh_outreach_attribution.sql"]) {
+  for (const name of ["0008_add_site_event_rate_limit.sql", "0016_add_kfh_daily.sql", "0017_add_kfh_outreach_attribution.sql", "0018_add_kfh_signal_daily.sql"]) {
     await db.exec(fs.readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
 });
 after(() => { sqlite?.close(); });
-beforeEach(async () => { await db.exec("DELETE FROM kfh_daily; DELETE FROM kfh_outreach_daily; DELETE FROM site_event_rate_limit;"); });
+beforeEach(async () => { await db.exec("DELETE FROM kfh_daily; DELETE FROM kfh_outreach_daily; DELETE FROM kfh_signal_daily; DELETE FROM site_event_rate_limit;"); });
 
 test("strict Kingston payload rejects sensitive fields and action attribution", () => {
   assert.equal(parseKfhEvent(payload()).counter, "page_views");
@@ -232,7 +232,7 @@ test("v2 default-on contract is explicit, isolated and persists the same bounded
   const rows = await db.prepare("SELECT metric,value,count FROM kfh_daily ORDER BY metric").all();
   assert.equal(rows.results.length,4); assert.ok(rows.results.every(row => row.count === 1));
   const report = await buildKfhReport(db,now);
-  assert.equal(report.report_contract_version,"1.2");
+  assert.equal(report.report_contract_version,"1.3");
   assert.equal(report.limitations.counts_are,"observed_activity_not_people_or_service_outcomes");
 });
 
@@ -270,7 +270,7 @@ test("v3 persists atomic independent margins; legacy totals remain readable on r
   const rows = (await db.prepare("SELECT * FROM kfh_outreach_daily").all()).results;
   assert.equal(rows.length, 6);
   assert.ok(rows.every(row => Object.keys(row).sort().join(',') === 'count,day,dimension,event,value'));
-  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/outreach-sample.json', import.meta.url), 'utf8')));
+  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-sample.json', import.meta.url), 'utf8')));
   await db.exec(fs.readFileSync(new URL('../migrations/0017_add_kfh_outreach_attribution.sql', import.meta.url), 'utf8'));
   assert.deepEqual(await buildKfhReport(db, now), report);
 });
@@ -284,22 +284,100 @@ test("failure in new attribution rolls back both tables, while missing migration
   const noMigration = { prepare(sql) { if (sql.includes('kfh_outreach_daily')) throw new Error('missing table'); return db.prepare(sql); } };
   const report = await buildKfhReport(noMigration, now);
   assert.equal(report.source.reason, 'query_failed'); assert.equal(report.outreach_last_7_complete_days, null);
-  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/outreach-unavailable.json', import.meta.url), 'utf8')));
+  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-unavailable.json', import.meta.url), 'utf8')));
 });
 
 test("v3 UTC windows, retention and inconsistent margins fail honestly", async () => {
   const accept = (date) => ingestKfhEvent(v3(), db, KFH_ORIGINS[0], async () => true, date);
   const empty = await buildKfhReport(db, now);
-  assert.deepEqual(empty, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/outreach-empty.json', import.meta.url), 'utf8')));
+  assert.deepEqual(empty, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-empty.json', import.meta.url), 'utf8')));
   for (const offset of [-400, -399, -8, -7, -1, 0]) await accept(new Date(now.getTime() + offset * 86400000));
   const report = await buildKfhReport(db, now);
   assert.equal(report.outreach_last_7_complete_days.classified.page_views, 2);
   assert.deepEqual(Object.values(report.windows).map(w => w.counts.page_views), [1, 1, 2, 1, 3]);
   await pruneKfhData(db, now);
   for (const table of ['kfh_daily', 'kfh_outreach_daily']) assert.equal((await db.prepare(`SELECT COUNT(DISTINCT day) AS n FROM ${table}`).first()).n, 5);
-  for (const mutate of [r => r.outreach_last_7_complete_days.classified.page_views++, r => r.outreach_last_7_complete_days.sources[0].count++, r => r.outreach_last_7_complete_days.sources[0].resource_id='private', r => r.outreach_last_7_complete_days.sources[0].event='pwa_installs', r => r.outreach_last_7_complete_days.sources.push(r.outreach_last_7_complete_days.sources[0]), r => r.outreach_last_7_complete_days.sources[0].value='facebook', r => r.report_contract_version='1.1']) {
+  for (const mutate of [r => r.outreach_last_7_complete_days.classified.page_views++, r => r.outreach_last_7_complete_days.sources[0].count++, r => r.outreach_last_7_complete_days.sources[0].resource_id='private', r => r.outreach_last_7_complete_days.sources[0].event='pwa_installs', r => r.outreach_last_7_complete_days.sources.push(r.outreach_last_7_complete_days.sources[0]), r => r.outreach_last_7_complete_days.sources[0].value='facebook', r => r.report_contract_version='1.1', r => r.report_contract_version='1.2', r => delete r.product_signals]) {
     const changed = structuredClone(report); mutate(changed); assert.equal(isKfhReport(changed), false);
   }
   await db.exec("DELETE FROM kfh_outreach_daily WHERE dimension='content' AND day='2026-09-03'");
   assert.equal((await buildKfhReport(db, now)).source.reason, 'query_failed');
+});
+
+const signal = (overrides = {}) => ({ site_key: KFH_SITE_KEY, contract_version: 3, collection_mode: "opt_out", page: "directory", event_name: "resource_open", ...overrides });
+
+test("v3 product signals are exact, unattributed and never alter the six core events", () => {
+  assert.equal(parseKfhSignal(signal()), "resource_opens");
+  assert.equal(parseKfhSignal(signal({ event_name: "install_prompt", event_value: "show" })), "install_prompt_shows");
+  assert.equal(parseKfhSignal(signal({ event_name: "install_prompt", event_value: "dismiss" })), "install_prompt_dismissals");
+  for (const change of [{ source: "reddit" }, { campaign: "none" }, { content: "none" }, { visit: "0123456789abcdef" }, { event_value: "resource_open" },
+    { event_name: "engagement", event_value: "resource_open" }, { event_name: "install_prompt" }, { event_name: "install_prompt", event_value: "accept" },
+    { event_name: "install_prompt", event_value: "show", visit: "x" }, { resource_id: "private" }, { contract_version: 2 }, { contract_version: 4 },
+    { collection_mode: undefined, consent: true }, { page: "home" }, { site_key: "tgc_site" }]) assert.equal(parseKfhSignal(signal(change)), null, JSON.stringify(change));
+  for (const body of [signal(), signal({ event_name: "install_prompt", event_value: "show" })]) assert.equal(parseKfhEvent(body), null);
+  for (const event of [v3(), v3({ event_name: "outbound_click", event_value: "directions" })]) assert.equal(parseKfhSignal(event), null);
+});
+
+test("signals persist in their own table and a missing 0018 never affects core counts or retention", async () => {
+  const at = new Date("2026-09-03T12:00:00Z");
+  const accept = (body, target = db) => ingestKfhEvent(body, target, KFH_ORIGINS[0], async () => true, at);
+  await accept(payload({ source: "facebook", campaign: "launch_2026_09", content: "post_01" }));
+  await accept(v3()); await accept(v3());
+  await accept(v3({ event_name: "outbound_click", event_value: "directions" }));
+  await accept(payload({ event_name: "contact_click", event_value: "resource_call" }));
+  for (const body of [signal(), signal(), signal({ event_name: "install_prompt", event_value: "show" }), signal({ event_name: "install_prompt", event_value: "dismiss" })]) await accept(body);
+  await ingestKfhEvent(signal(), db, "https://brockville.food-help.ca", async () => true, at);
+  await ingestKfhEvent(signal(), db, KFH_ORIGINS[0], async () => false, at);
+  assert.deepEqual((await db.prepare("SELECT signal, count FROM kfh_signal_daily ORDER BY signal").all()).results,
+    [{ signal: "install_prompt_dismissals", count: 1 }, { signal: "install_prompt_shows", count: 1 }, { signal: "resource_opens", count: 2 }]);
+  const report = await buildKfhReport(db, now);
+  assert.equal(isKfhReport(report), true);
+  assert.deepEqual(report.product_signals.windows.last_7_complete_days, { resource_opens: 2, install_prompt_shows: 1, install_prompt_dismissals: 1 });
+  assert.deepEqual(report.product_signals.windows.today, { resource_opens: 0, install_prompt_shows: 0, install_prompt_dismissals: 0 });
+  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-observed.json', import.meta.url), 'utf8')));
+  // Core rows are exactly what the earlier v3 test stores; signals touched nothing else.
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_outreach_daily").first()).n, 6);
+  const { product_signals, ...core } = report;
+  const { product_signals: _ignored, ...expected } = JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-sample.json', import.meta.url), 'utf8'));
+  assert.deepEqual(core, expected);
+
+  const noSignals = { prepare(sql) { if (sql.includes('kfh_signal_daily')) throw new Error('missing table'); return db.prepare(sql); }, batch: statements => db.batch(statements) };
+  await accept(signal(), noSignals).catch(() => {});
+  const withoutTable = await buildKfhReport(noSignals, now);
+  assert.equal(isKfhReport(withoutTable), true);
+  assert.deepEqual(withoutTable.product_signals, { availability: "unavailable", windows: null });
+  assert.deepEqual({ ...withoutTable, product_signals: null }, { ...report, product_signals: null });
+  await pruneKfhData(noSignals, now);
+  await db.exec("DROP TABLE kfh_signal_daily");
+  try {
+    await accept(v3());
+    assert.equal((await buildKfhReport(db, now)).windows.last_7_complete_days.counts.page_views, 4);
+  } finally { await db.exec(fs.readFileSync(new URL('../migrations/0018_add_kfh_signal_daily.sql', import.meta.url), 'utf8')); }
+});
+
+test("signal report windows, retention and validation fail closed per section", async () => {
+  for (const offset of [-400, -399, -8, -7, -1, 0]) await ingestKfhEvent(signal(), db, KFH_ORIGINS[0], async () => true, new Date(now.getTime() + offset * 86400000));
+  await ingestKfhEvent(v3(), db, KFH_ORIGINS[0], async () => true, new Date(now.getTime() - 86400000));
+  const report = await buildKfhReport(db, now);
+  assert.deepEqual(Object.values(report.product_signals.windows).map(w => w.resource_opens), [1, 1, 2, 1, 3]);
+  await pruneKfhData(db, now);
+  assert.equal((await db.prepare("SELECT COUNT(DISTINCT day) AS n FROM kfh_signal_daily").first()).n, 5);
+  for (const mutate of [r => r.product_signals.windows.today.resource_opens = -1, r => r.product_signals.windows.today.visit = 1,
+    r => r.product_signals.windows.latest_complete_day.resource_opens = 99, r => r.product_signals.availability = "partial",
+    r => r.product_signals.windows = null, r => { r.product_signals.availability = "unavailable"; },
+    r => r.product_signals.windows.today.install_prompt_shows = "1", r => r.product_signals.sources = []]) {
+    const changed = structuredClone(report); mutate(changed); assert.equal(isKfhReport(changed), false);
+  }
+  const unavailable = JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-unavailable.json', import.meta.url), 'utf8'));
+  assert.equal(isKfhReport({ ...unavailable, product_signals: report.product_signals }), false);
+  for (const name of ['outreach-sample', 'outreach-empty', 'outreach-unavailable', 'sample', 'legacy-empty', 'signals-sample', 'signals-empty', 'signals-unavailable', 'signals-observed']) {
+    assert.equal(isKfhReport(JSON.parse(fs.readFileSync(new URL(`../contracts/kfh-v1/${name}.json`, import.meta.url), 'utf8'))), true, name);
+  }
+});
+
+test("migrated origin delivers a product signal through the public route into its own table", async () => {
+  const response = await submit(signal({ event_name: "install_prompt", event_value: "show" }), { headers: { Origin: "https://kingston.food-help.ca", "Content-Type": "text/plain;charset=UTF-8" } });
+  assert.equal(response.status, 204);
+  assert.deepEqual((await db.prepare("SELECT signal, count FROM kfh_signal_daily").all()).results, [{ signal: "install_prompt_shows", count: 1 }]);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_daily").first()).n, 0);
 });
