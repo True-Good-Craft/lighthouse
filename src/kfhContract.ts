@@ -1,4 +1,5 @@
 import { KFH_OUTREACH_SOURCES, KFH_OUTREACH_CAMPAIGNS, KFH_OUTREACH_CONTENTS, isKfhOutreach, type Outreach } from "./kfhOutreachContract.js";
+import { isKfhProductSignals, type ProductSignals } from "./kfhSignalsContract.js";
 // Kingston's sensitive-use directory keeps only separate daily totals.
 // No raw event, provider context, identity or cross-dimension journey is stored.
 export const KFH_SITE_KEY = "kingston_food_help";
@@ -28,7 +29,7 @@ export type Counts = Record<CountKey, number>;
 type Dimension = { value: string; count: number };
 export type KfhReport = {
   view: "kfh";
-  report_contract_version: "1.0" | "1.1" | "1.2";
+  report_contract_version: "1.0" | "1.1" | "1.2" | "1.3";
   site_key: typeof KFH_SITE_KEY;
   generated_at: string;
   source: {
@@ -40,6 +41,7 @@ export type KfhReport = {
   windows: Record<WindowKey, { start_day: string; end_day: string; partial: boolean; counts: Counts | null }>;
   discovery_last_7_complete_days: { sources: Dimension[]; campaigns: Dimension[]; contents: Dimension[] } | null;
   outreach_last_7_complete_days?: Outreach | null;
+  product_signals?: ProductSignals;
   limitations: typeof KFH_LIMITATIONS | typeof KFH_LEGACY_LIMITATIONS | typeof KFH_OUTREACH_LIMITATIONS;
 };
 
@@ -62,8 +64,10 @@ export function kfhWindowDays(now: Date): Record<WindowKey, [string, string]> {
 
 // Strict shared producer/consumer contract. No runtime schema compiler is needed.
 export function isKfhReport(value: unknown): value is KfhReport {
-  const outreach = isObject(value) && value.report_contract_version === "1.2";
-  if (!exact(value, [...(outreach ? ["outreach_last_7_complete_days"] : []), "view", "report_contract_version", "site_key", "generated_at", "source", "windows", "discovery_last_7_complete_days", "limitations"])) return false;
+  // 1.3 is 1.2 plus separate unattributed product signals.
+  const signals = isObject(value) && value.report_contract_version === "1.3";
+  const outreach = isObject(value) && (value.report_contract_version === "1.2" || signals);
+  if (!exact(value, [...(outreach ? ["outreach_last_7_complete_days"] : []), ...(signals ? ["product_signals"] : []), "view", "report_contract_version", "site_key", "generated_at", "source", "windows", "discovery_last_7_complete_days", "limitations"])) return false;
   if (value.view !== "kfh" || (value.report_contract_version !== "1.0" && value.report_contract_version !== "1.1" && !outreach) || value.site_key !== KFH_SITE_KEY) return false;
   if (typeof value.generated_at !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.generated_at)
     || !Number.isFinite(Date.parse(value.generated_at)) || new Date(value.generated_at).toISOString() !== value.generated_at) return false;
@@ -95,6 +99,7 @@ export function isKfhReport(value: unknown): value is KfhReport {
     }
   }
   const discovery = value.discovery_last_7_complete_days;
+  if (signals && !isKfhProductSignals(value.product_signals, !unavailable)) return false;
   if (unavailable) return discovery === null && (!outreach || value.outreach_last_7_complete_days === null);
   if (!exact(discovery, ["sources", "campaigns", "contents"])) return false;
   const windows = value.windows as KfhReport["windows"];
