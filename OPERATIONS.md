@@ -2,6 +2,8 @@
 
 ## Kingston product signals — 1.35.0 draft review
 
+**Brockville 1.36.0 (staged).** `view=bfh` and the `bfh_*` tables are new and unapplied. Before promotion apply migration 0019 only with explicit approval, after confirming migration 0017 (Kingston's v3 write path) in production D1. After promotion an approved `/bfh` read should show `no_observed_history` with zero counts until Food Help emits. A test page view from the live origin is permanently counted and cannot be removed by identity; verify against a local collector first and record any live test in the release notes. A public 204 is not persistence evidence. Rollback: disable website emission, then redeploy 1.35.0; keep the additive tables. Reading `view=bfh` is Class 1 production read-mostly, like `view=kfh`.
+
 Before applying migration 0018, confirm with approved Class 1 access that production D1 already has `kfh_outreach_daily` (migration 0017); the repository does not record it. Apply 0018 only with explicit approval and before or after promotion (promotion first is safe: signals are dropped and `/kfh` shows product signals unavailable). After promotion, an approved `/kfh` read should show `product_signals.availability: "available"` with zero counts until Food Help emits. A public 204 for a signal is not persistence evidence. Rollback is the 1.34.1 Worker version; keep the additive table.
 
 ## Kingston domain restoration — 1.34.1 staged review
