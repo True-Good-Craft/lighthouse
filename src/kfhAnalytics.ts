@@ -1,9 +1,22 @@
-import { KFH_SITE_KEY, KFH_ORIGINS, KFH_SOURCES, KFH_CAMPAIGNS, KFH_CONTENTS, KFH_COUNT_KEYS, KFH_WINDOW_KEYS, KFH_OUTREACH_LIMITATIONS, type CountKey, type Counts, type WindowKey, type KfhReport, isKfhReport } from "./kfhContract.js";
+import { KFH_SITE_KEY, KFH_ORIGINS, BFH_SITE_KEY, BFH_ORIGINS, KFH_SOURCES, KFH_CAMPAIGNS, KFH_CONTENTS, KFH_COUNT_KEYS, KFH_WINDOW_KEYS, KFH_OUTREACH_LIMITATIONS, type CountKey, type Counts, type WindowKey, type KfhReport, isKfhReport } from "./kfhContract.js";
 import { KFH_SIGNAL_KEYS, KFH_SIGNAL_WINDOW_KEYS, type SignalKey, type ProductSignals } from "./kfhSignalsContract.js";
 import { KFH_OUTREACH_SOURCES, KFH_OUTREACH_CAMPAIGNS, KFH_OUTREACH_CONTENTS, KFH_ATTRIBUTABLE_KEYS, type AttributableKey, type Outreach, type OutreachCounts, type OutreachRow } from "./kfhOutreachContract.js";
 
 // Collector routing is local to Lighthouse; the pinned Smith report contract stays unchanged.
 export const KFH_INGEST_ORIGINS: readonly string[] = [...KFH_ORIGINS, "https://kingston.food-help.ca"];
+
+// One parameterized collector per community. Each has its own key, origins, tables and report.
+export type KfhProfile = {
+  readonly siteKey: typeof KFH_SITE_KEY | typeof BFH_SITE_KEY;
+  readonly origins: readonly string[];
+  readonly daily: string;
+  readonly outreach: string;
+  readonly signals: boolean;
+  readonly legacy: boolean;
+};
+export const KINGSTON_PROFILE: KfhProfile = { siteKey: KFH_SITE_KEY, origins: KFH_INGEST_ORIGINS, daily: "kfh_daily", outreach: "kfh_outreach_daily", signals: true, legacy: true };
+export const BROCKVILLE_INGEST_ORIGINS: readonly string[] = BFH_ORIGINS;
+export const BROCKVILLE_PROFILE: KfhProfile = { siteKey: BFH_SITE_KEY, origins: BROCKVILLE_INGEST_ORIGINS, daily: "bfh_daily", outreach: "bfh_outreach_daily", signals: false, legacy: false };
 type Row = { day: string; metric: string; value: string; count: number };
 type StoredOutreach = OutreachRow & { day: string; dimension: string };
 type Dimension = { value: string; count: number };
@@ -15,12 +28,12 @@ function member(value: unknown, allowed: readonly string[]): value is string {
   return typeof value === "string" && allowed.includes(value);
 }
 
-export function parseKfhEvent(value: unknown): { counter: CountKey; outreach?: true; source?: string; campaign?: string; content?: string } | null {
+export function parseKfhEvent(value: unknown, profile: KfhProfile = KINGSTON_PROFILE): { counter: CountKey; outreach?: true; source?: string; campaign?: string; content?: string } | null {
   if (!object(value)) return null;
-  if (value.site_key !== KFH_SITE_KEY || value.page !== "directory") return null;
-  const legacy = value.contract_version === 1 && value.consent === true;
+  if (value.site_key !== profile.siteKey || value.page !== "directory") return null;
+  const legacy = profile.legacy && value.contract_version === 1 && value.consent === true;
   const outreach = value.contract_version === 3 && value.collection_mode === "opt_out";
-  const optOut = (value.contract_version === 2 || outreach) && value.collection_mode === "opt_out";
+  const optOut = ((profile.legacy && value.contract_version === 2) || outreach) && value.collection_mode === "opt_out";
   if (!legacy && !optOut) return null;
   const keys = ["site_key", "contract_version", legacy ? "consent" : "collection_mode", "page", "event_name"];
   if (value.event_name === "page_view" || (outreach && (value.event_name === "contact_click" || value.event_name === "outbound_click"))) {
@@ -98,11 +111,12 @@ const shiftDay = (now: Date, offset: number) => day(new Date(now.getTime() + off
 
 export async function ingestKfhEvent(
   payload: unknown, db: D1Database, origin: string | null,
-  allowRate: () => Promise<boolean>, now: Date = new Date(),
+  allowRate: () => Promise<boolean>, now: Date = new Date(), profile: KfhProfile = KINGSTON_PROFILE,
 ): Promise<void> {
-  if (!origin || !KFH_INGEST_ORIGINS.includes(origin)) return;
-  const event = parseKfhEvent(payload);
+  if (!origin || !profile.origins.includes(origin)) return;
+  const event = parseKfhEvent(payload, profile);
   if (!event) {
+    if (!profile.signals) return;
     // Signals use only their own table, so a missing 0018 cannot affect core counters.
     const signal = parseKfhSignal(payload);
     if (!signal || !(await allowRate())) return;
@@ -116,18 +130,19 @@ export async function ingestKfhEvent(
     dimensions.push(["source", legacyLabel("source", event.source!)], ["campaign", legacyLabel("campaign", event.campaign!)], ["content", legacyLabel("content", event.content!)]);
   }
   const statements = dimensions.map(([metric, value]) => db.prepare(
-    "INSERT INTO kfh_daily(day, metric, value, count) VALUES (?, ?, ?, 1) ON CONFLICT(day, metric, value) DO UPDATE SET count = count + 1",
+    `INSERT INTO ${profile.daily}(day, metric, value, count) VALUES (?, ?, ?, 1) ON CONFLICT(day, metric, value) DO UPDATE SET count = count + 1`,
   ).bind(day(now), metric, value));
   if (event.outreach) for (const [dimension, value] of [["source", event.source], ["campaign", event.campaign], ["content", event.content]]) {
-    statements.push(db.prepare("INSERT INTO kfh_outreach_daily(day, event, dimension, value, count) VALUES (?, ?, ?, ?, 1) ON CONFLICT(day, event, dimension, value) DO UPDATE SET count = count + 1")
+    statements.push(db.prepare(`INSERT INTO ${profile.outreach}(day, event, dimension, value, count) VALUES (?, ?, ?, ?, 1) ON CONFLICT(day, event, dimension, value) DO UPDATE SET count = count + 1`)
       .bind(day(now), event.counter, dimension, value));
   }
   // All totals and independent margins succeed together; never store a raw event.
   await db.batch(statements);
 }
 
-export async function pruneKfhData(db: D1Database, now: Date = new Date()): Promise<void> {
-  await db.batch(["kfh_daily", "kfh_outreach_daily"].map(table => db.prepare(`DELETE FROM ${table} WHERE day < ?`).bind(shiftDay(now, -399))));
+export async function pruneKfhData(db: D1Database, now: Date = new Date(), profile: KfhProfile = KINGSTON_PROFILE): Promise<void> {
+  await db.batch([profile.daily, profile.outreach].map(table => db.prepare(`DELETE FROM ${table} WHERE day < ?`).bind(shiftDay(now, -399))));
+  if (!profile.signals) return;
   // Separate so a missing additive 0018 table never blocks core retention.
   try { await db.prepare("DELETE FROM kfh_signal_daily WHERE day < ?").bind(shiftDay(now, -399)).run(); } catch {}
 }
@@ -157,16 +172,16 @@ async function readProductSignals(db: D1Database, now: Date): Promise<ProductSig
   } catch { return { availability: "unavailable", windows: null }; }
 }
 
-export async function buildKfhReport(db: D1Database, now: Date = new Date()): Promise<KfhReport> {
+export async function buildKfhReport(db: D1Database, now: Date = new Date(), profile: KfhProfile = KINGSTON_PROFILE): Promise<KfhReport> {
   let rows: Row[] = [];
   let outreachRows: StoredOutreach[] = [];
   let available = true;
   try {
-    const result = await db.prepare("SELECT day, metric, value, count FROM kfh_daily WHERE day >= ? AND day <= ? ORDER BY day, metric, value")
+    const result = await db.prepare(`SELECT day, metric, value, count FROM ${profile.daily} WHERE day >= ? AND day <= ? ORDER BY day, metric, value`)
       .bind(shiftDay(now, -399), day(now)).all<Row>();
     if (!result.success || !Array.isArray(result.results)) throw new Error("unavailable");
     rows = result.results;
-    const outreach = await db.prepare("SELECT day, event, dimension, value, count FROM kfh_outreach_daily WHERE day >= ? AND day <= ? ORDER BY day, event, dimension, value")
+    const outreach = await db.prepare(`SELECT day, event, dimension, value, count FROM ${profile.outreach} WHERE day >= ? AND day <= ? ORDER BY day, event, dimension, value`)
       .bind(shiftDay(now, -399), day(now)).all<StoredOutreach>();
     if (!outreach.success || !Array.isArray(outreach.results)) throw new Error("unavailable");
     outreachRows = outreach.results;
@@ -183,12 +198,12 @@ export async function buildKfhReport(db: D1Database, now: Date = new Date()): Pr
         || !member(row.value, allowed) || !Number.isSafeInteger(row.count) || row.count < 1) throw new Error("unavailable");
     }
   } catch { available = false; rows = []; }
-  const signals: ProductSignals = available ? await readProductSignals(db, now) : { availability: "unavailable", windows: null };
-  return kfhReportFromRows(available ? rows : null, now, available ? outreachRows : [], signals);
+  const signals: ProductSignals | null = !profile.signals ? null : available ? await readProductSignals(db, now) : { availability: "unavailable", windows: null };
+  return kfhReportFromRows(available ? rows : null, now, available ? outreachRows : [], signals, profile);
 }
 
 function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredOutreach[] = [],
-  signals: ProductSignals = { availability: "unavailable", windows: null }): KfhReport {
+  signals: ProductSignals | null = { availability: "unavailable", windows: null }, profile: KfhProfile = KINGSTON_PROFILE): KfhReport {
   const available = input !== null;
   const rows = input ?? [];
   const eventDays = rows.filter(row => row.metric === "event").map(row => row.day).sort();
@@ -201,7 +216,7 @@ function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredO
     const [start, end] = ranges[key].map(offset => shiftDay(now, offset));
     const counts = Object.fromEntries(KFH_COUNT_KEYS.map(key => [key, 0])) as Counts;
     for (const row of rows) if (row.metric === "event" && row.day >= start && row.day <= end) counts[row.value as CountKey] += row.count;
-    if (Object.values(counts).some(count => !Number.isSafeInteger(count))) return kfhReportFromRows(null, now);
+    if (Object.values(counts).some(count => !Number.isSafeInteger(count))) return kfhReportFromRows(null, now, [], signals, profile);
     windows[key] = { start_day: start, end_day: end, partial: key === "today", counts: available ? counts : null };
   }
   const rank = (metric: string): Dimension[] => {
@@ -234,7 +249,7 @@ function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredO
   }
   if (available) for (const key of KFH_ATTRIBUTABLE_KEYS) outreach.unclassified[key] = windows.last_7_complete_days.counts![key] - outreach.classified[key];
   const report: KfhReport = {
-    view: "kfh", report_contract_version: "1.3", site_key: KFH_SITE_KEY, generated_at: now.toISOString(),
+    view: "kfh", report_contract_version: signals ? "1.3" : "1.2", site_key: profile.siteKey, generated_at: now.toISOString(),
     source: {
       availability: available ? "available" : "unavailable",
       reason: !available ? "query_failed" : eventDays.length ? "observed_activity" : "no_observed_history",
@@ -243,12 +258,12 @@ function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredO
     windows,
     discovery_last_7_complete_days: available ? { sources: rank("source"), campaigns: rank("campaign"), contents: rank("content") } : null,
     outreach_last_7_complete_days: available ? outreach : null,
-    product_signals: available ? signals : { availability: "unavailable", windows: null },
+    ...(signals ? { product_signals: available ? signals : { availability: "unavailable" as const, windows: null } } : {}),
     limitations: KFH_OUTREACH_LIMITATIONS,
   };
-  if (isKfhReport(report)) return report;
+  if (isKfhReport(report, profile.siteKey)) return report;
   // Bad signal rows must not take down the core report.
-  if (signals.availability === "available") return kfhReportFromRows(input, now, outreachRows, { availability: "unavailable", windows: null });
-  return kfhReportFromRows(null, now);
+  if (signals?.availability === "available") return kfhReportFromRows(input, now, outreachRows, { availability: "unavailable", windows: null }, profile);
+  return kfhReportFromRows(null, now, [], signals, profile);
 }
 

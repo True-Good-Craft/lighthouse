@@ -1,5 +1,9 @@
 # Lighthouse — Source of Truth
 
+## Brockville Food Help — 1.36.0 review candidate (2026-10-10)
+
+Brockville Food Help is a second tracked aggregate-only site (`brockville_food_help`, profile `kfh_daily`), enabled by the owner's 2026-10-10 decision to mirror Kingston: default-on with opt-out, Kingston's labels, no product signals. Staged only; no merge, migration, promotion or Food Help change is recorded. `kfhAnalytics.ts` now takes a `KfhProfile` (site key, origins, tables, signals and legacy flags) with `KINGSTON_PROFILE` as the default, so Kingston behavior is unchanged. Brockville accepts only `https://brockville.food-help.ca` and ingestion v3, writes only `bfh_daily` and `bfh_outreach_daily` (migration 0019, same constraints as 0016/0017), rejects signals, and is reported by `GET /report?view=bfh` as exactly report 1.2 with its own site key. `isKfhReport(value, siteKey)` keeps the two reports mutually invalid. It is excluded from raw-event storage, `view=site`, fleet and source-health like Kingston. Cron prunes both communities independently. See [KFH_ANALYTICS_CONTRACT.md](KFH_ANALYTICS_CONTRACT.md). Newest entry wins; 1.35.0 below is otherwise unchanged. Migration 0017's production state is still not recorded here.
+
 ## Product signals — 1.35.0 review candidate (2026-10-08)
 
 Jamie authorized staging this Lighthouse change as a draft pull request on 2026-10-08. It is a review candidate: no merge, migration application, Worker promotion, secret, setting or production request is authorized or recorded by this change.

@@ -1,5 +1,7 @@
 # buscore-lighthouse
 
+**1.36.0 draft review candidate:** Brockville Food Help as a separate aggregate-only community mirroring Kingston (`brockville_food_help`, `view=bfh`, report 1.2, migration 0019). See [KFH_ANALYTICS_CONTRACT.md](KFH_ANALYTICS_CONTRACT.md). Nothing is applied or promoted by this change.
+
 **1.35.0 draft review candidate:** Kingston product signals (`resource_open`, install-prompt show/dismiss) as unattributed daily totals in additive migration 0018 and KFH report 1.3. See [KFH_ANALYTICS_CONTRACT.md](KFH_ANALYTICS_CONTRACT.md) for rollout and rollback. Nothing is applied or promoted by this change.
 
 Kingston Food Help review candidate: see [KFH_ANALYTICS_CONTRACT.md](KFH_ANALYTICS_CONTRACT.md) for the isolated aggregate report, privacy bounds and owner-controlled rollout. No live collection is enabled by this repository change.

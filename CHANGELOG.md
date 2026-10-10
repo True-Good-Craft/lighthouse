@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.36.0] - 2026-10-10 (draft review candidate)
+
+- Add Brockville Food Help as a second aggregate-only community that mirrors Kingston: ingestion v3 from `https://brockville.food-help.ca` only, the same six events and labels, no product signals.
+- Parameterize the Kingston collector by profile instead of copying it. Add additive migration 0019 (`bfh_daily`, `bfh_outreach_daily`), `GET /report?view=bfh` returning exactly report 1.2 under `brockville_food_help`, an independent fail-soft 400-day prune, and a site-key-aware `isKfhReport`. Kingston behavior, tables and `view=kfh` are unchanged.
+- Add builder-generated `contracts/bfh-v1` fixtures and isolation, privacy, rollback, retention and route tests. Pin the package version test at 1.36.0.
+- No migration applied, Worker promoted, secret, binding, schedule, Food Help or production state changed. Rollout is Smith 0.33.0 first, then 0019, then manual promotion, then the Food Help block.
+
 ## [1.35.0] - 2026-10-08 (draft review candidate)
 
 - Accept two fixed, unattributed Kingston v3 product signals, `resource_open` and `install_prompt` (`show`/`dismiss`), from the existing Kingston origins only. Extra fields, labels, visit/session tokens and `engagement` are rejected; the six existing events and their storage are unchanged.

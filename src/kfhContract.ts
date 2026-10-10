@@ -4,6 +4,9 @@ import { isKfhProductSignals, type ProductSignals } from "./kfhSignalsContract.j
 // No raw event, provider context, identity or cross-dimension journey is stored.
 export const KFH_SITE_KEY = "kingston_food_help";
 export const KFH_ORIGINS = ["https://kingstonfoodhelp.ca", "https://www.kingstonfoodhelp.ca"] as const;
+// Brockville reuses Kingston's v3 labels and report 1.2 shape under its own key, origin, tables and view.
+export const BFH_SITE_KEY = "brockville_food_help";
+export const BFH_ORIGINS = ["https://brockville.food-help.ca"] as const;
 export const KFH_SOURCES = ["direct_unknown", "facebook", "community", "search", "other"] as const;
 export const KFH_CAMPAIGNS = ["none", "launch_2026_09"] as const;
 export const KFH_CONTENTS = ["none", "post_01", "poster_01"] as const;
@@ -30,7 +33,7 @@ type Dimension = { value: string; count: number };
 export type KfhReport = {
   view: "kfh";
   report_contract_version: "1.0" | "1.1" | "1.2" | "1.3";
-  site_key: typeof KFH_SITE_KEY;
+  site_key: typeof KFH_SITE_KEY | typeof BFH_SITE_KEY;
   generated_at: string;
   source: {
     availability: "available" | "unavailable";
@@ -63,12 +66,14 @@ export function kfhWindowDays(now: Date): Record<WindowKey, [string, string]> {
 }
 
 // Strict shared producer/consumer contract. No runtime schema compiler is needed.
-export function isKfhReport(value: unknown): value is KfhReport {
+export function isKfhReport(value: unknown, siteKey: typeof KFH_SITE_KEY | typeof BFH_SITE_KEY = KFH_SITE_KEY): value is KfhReport {
   // 1.3 is 1.2 plus separate unattributed product signals.
   const signals = isObject(value) && value.report_contract_version === "1.3";
   const outreach = isObject(value) && (value.report_contract_version === "1.2" || signals);
   if (!exact(value, [...(outreach ? ["outreach_last_7_complete_days"] : []), ...(signals ? ["product_signals"] : []), "view", "report_contract_version", "site_key", "generated_at", "source", "windows", "discovery_last_7_complete_days", "limitations"])) return false;
-  if (value.view !== "kfh" || (value.report_contract_version !== "1.0" && value.report_contract_version !== "1.1" && !outreach) || value.site_key !== KFH_SITE_KEY) return false;
+  if (value.view !== "kfh" || (value.report_contract_version !== "1.0" && value.report_contract_version !== "1.1" && !outreach) || value.site_key !== siteKey) return false;
+  // Brockville began at ingestion v3: only report 1.2, never legacy or signals.
+  if (siteKey === BFH_SITE_KEY && value.report_contract_version !== "1.2") return false;
   if (typeof value.generated_at !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.generated_at)
     || !Number.isFinite(Date.parse(value.generated_at)) || new Date(value.generated_at).toISOString() !== value.generated_at) return false;
   if (!exact(value.limitations, Object.keys(KFH_LIMITATIONS))) return false;

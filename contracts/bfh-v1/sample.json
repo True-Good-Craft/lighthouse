@@ -1,0 +1,175 @@
+{
+  "view": "kfh",
+  "report_contract_version": "1.2",
+  "site_key": "brockville_food_help",
+  "generated_at": "2026-10-20T12:00:00.000Z",
+  "source": {
+    "availability": "available",
+    "reason": "observed_activity",
+    "first_observed_day": "2026-10-12",
+    "last_observed_day": "2026-10-20"
+  },
+  "windows": {
+    "today": {
+      "start_day": "2026-10-20",
+      "end_day": "2026-10-20",
+      "partial": true,
+      "counts": {
+        "page_views": 1,
+        "resource_calls": 0,
+        "help_211": 0,
+        "directions": 0,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "latest_complete_day": {
+      "start_day": "2026-10-19",
+      "end_day": "2026-10-19",
+      "partial": false,
+      "counts": {
+        "page_views": 0,
+        "resource_calls": 1,
+        "help_211": 0,
+        "directions": 1,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "last_7_complete_days": {
+      "start_day": "2026-10-13",
+      "end_day": "2026-10-19",
+      "partial": false,
+      "counts": {
+        "page_views": 1,
+        "resource_calls": 1,
+        "help_211": 0,
+        "directions": 1,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "previous_7_complete_days": {
+      "start_day": "2026-10-06",
+      "end_day": "2026-10-12",
+      "partial": false,
+      "counts": {
+        "page_views": 1,
+        "resource_calls": 0,
+        "help_211": 0,
+        "directions": 0,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    },
+    "last_30_complete_days": {
+      "start_day": "2026-09-20",
+      "end_day": "2026-10-19",
+      "partial": false,
+      "counts": {
+        "page_views": 2,
+        "resource_calls": 1,
+        "help_211": 0,
+        "directions": 1,
+        "official_sources": 0,
+        "pwa_installs": 0
+      }
+    }
+  },
+  "discovery_last_7_complete_days": {
+    "sources": [
+      {
+        "value": "reddit",
+        "count": 1
+      }
+    ],
+    "campaigns": [
+      {
+        "value": "outreach_2026_09",
+        "count": 1
+      }
+    ],
+    "contents": [
+      {
+        "value": "post_02",
+        "count": 1
+      }
+    ]
+  },
+  "outreach_last_7_complete_days": {
+    "classified": {
+      "page_views": 1,
+      "resource_calls": 1,
+      "help_211": 0,
+      "directions": 1,
+      "official_sources": 0
+    },
+    "unclassified": {
+      "page_views": 0,
+      "resource_calls": 0,
+      "help_211": 0,
+      "directions": 0,
+      "official_sources": 0
+    },
+    "sources": [
+      {
+        "event": "directions",
+        "value": "facebook",
+        "count": 1
+      },
+      {
+        "event": "page_views",
+        "value": "reddit",
+        "count": 1
+      },
+      {
+        "event": "resource_calls",
+        "value": "reddit",
+        "count": 1
+      }
+    ],
+    "campaigns": [
+      {
+        "event": "directions",
+        "value": "launch_2026_09",
+        "count": 1
+      },
+      {
+        "event": "page_views",
+        "value": "outreach_2026_09",
+        "count": 1
+      },
+      {
+        "event": "resource_calls",
+        "value": "outreach_2026_09",
+        "count": 1
+      }
+    ],
+    "contents": [
+      {
+        "event": "directions",
+        "value": "poster_01",
+        "count": 1
+      },
+      {
+        "event": "page_views",
+        "value": "post_02",
+        "count": 1
+      },
+      {
+        "event": "resource_calls",
+        "value": "post_02",
+        "count": 1
+      }
+    ]
+  },
+  "limitations": {
+    "coverage": "observed_only",
+    "counts_are": "observed_activity_not_people_or_service_outcomes",
+    "attribution": "separate_daily_public_outreach_action_totals",
+    "activity_is_health": false,
+    "raw_events_stored": false,
+    "identifiers_reported": false,
+    "aggregate_retention_days": 400
+  }
+}
