@@ -1,5 +1,6 @@
 import { KFH_OUTREACH_SOURCES, KFH_OUTREACH_CAMPAIGNS, KFH_OUTREACH_CONTENTS, isKfhOutreach, type Outreach } from "./kfhOutreachContract.js";
 import { isKfhProductSignals, type ProductSignals } from "./kfhSignalsContract.js";
+import { isKfhHelpFeedback, type HelpFeedback } from "./kfhFeedbackContract.js";
 // Kingston's sensitive-use directory keeps only separate daily totals.
 // No raw event, provider context, identity or cross-dimension journey is stored.
 export const KFH_SITE_KEY = "kingston_food_help";
@@ -32,7 +33,7 @@ export type Counts = Record<CountKey, number>;
 type Dimension = { value: string; count: number };
 export type KfhReport = {
   view: "kfh";
-  report_contract_version: "1.0" | "1.1" | "1.2" | "1.3";
+  report_contract_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
   site_key: typeof KFH_SITE_KEY | typeof BFH_SITE_KEY;
   generated_at: string;
   source: {
@@ -45,6 +46,7 @@ export type KfhReport = {
   discovery_last_7_complete_days: { sources: Dimension[]; campaigns: Dimension[]; contents: Dimension[] } | null;
   outreach_last_7_complete_days?: Outreach | null;
   product_signals?: ProductSignals;
+  help_feedback?: HelpFeedback;
   limitations: typeof KFH_LIMITATIONS | typeof KFH_LEGACY_LIMITATIONS | typeof KFH_OUTREACH_LIMITATIONS;
 };
 
@@ -67,10 +69,11 @@ export function kfhWindowDays(now: Date): Record<WindowKey, [string, string]> {
 
 // Strict shared producer/consumer contract. No runtime schema compiler is needed.
 export function isKfhReport(value: unknown, siteKey: typeof KFH_SITE_KEY | typeof BFH_SITE_KEY = KFH_SITE_KEY): value is KfhReport {
-  // 1.3 is 1.2 plus separate unattributed product signals.
-  const signals = isObject(value) && value.report_contract_version === "1.3";
+  // 1.3 is 1.2 plus separate unattributed product signals; 1.4 adds "Did this help?" answers.
+  const feedback = isObject(value) && value.report_contract_version === "1.4";
+  const signals = isObject(value) && (value.report_contract_version === "1.3" || feedback);
   const outreach = isObject(value) && (value.report_contract_version === "1.2" || signals);
-  if (!exact(value, [...(outreach ? ["outreach_last_7_complete_days"] : []), ...(signals ? ["product_signals"] : []), "view", "report_contract_version", "site_key", "generated_at", "source", "windows", "discovery_last_7_complete_days", "limitations"])) return false;
+  if (!exact(value, [...(outreach ? ["outreach_last_7_complete_days"] : []), ...(signals ? ["product_signals"] : []), ...(feedback ? ["help_feedback"] : []), "view", "report_contract_version", "site_key", "generated_at", "source", "windows", "discovery_last_7_complete_days", "limitations"])) return false;
   if (value.view !== "kfh" || (value.report_contract_version !== "1.0" && value.report_contract_version !== "1.1" && !outreach) || value.site_key !== siteKey) return false;
   // Brockville began at ingestion v3: only report 1.2, never legacy or signals.
   if (siteKey === BFH_SITE_KEY && value.report_contract_version !== "1.2") return false;
@@ -105,6 +108,7 @@ export function isKfhReport(value: unknown, siteKey: typeof KFH_SITE_KEY | typeo
   }
   const discovery = value.discovery_last_7_complete_days;
   if (signals && !isKfhProductSignals(value.product_signals, !unavailable)) return false;
+  if (feedback && !isKfhHelpFeedback(value.help_feedback, !unavailable, value.generated_at)) return false;
   if (unavailable) return discovery === null && (!outreach || value.outreach_last_7_complete_days === null);
   if (!exact(discovery, ["sources", "campaigns", "contents"])) return false;
   const windows = value.windows as KfhReport["windows"];

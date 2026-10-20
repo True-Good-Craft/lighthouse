@@ -1,5 +1,6 @@
 import { KFH_SITE_KEY, KFH_ORIGINS, BFH_SITE_KEY, BFH_ORIGINS, KFH_SOURCES, KFH_CAMPAIGNS, KFH_CONTENTS, KFH_COUNT_KEYS, KFH_WINDOW_KEYS, KFH_OUTREACH_LIMITATIONS, type CountKey, type Counts, type WindowKey, type KfhReport, isKfhReport } from "./kfhContract.js";
 import { KFH_SIGNAL_KEYS, KFH_SIGNAL_WINDOW_KEYS, type SignalKey, type ProductSignals } from "./kfhSignalsContract.js";
+import { KFH_FEEDBACK_ANSWERS, KFH_FEEDBACK_COUNT_KEYS, KFH_FEEDBACK_MONTH_KEYS, kfhFeedbackMonths, type FeedbackAnswer, type FeedbackCounts, type HelpFeedback } from "./kfhFeedbackContract.js";
 import { KFH_OUTREACH_SOURCES, KFH_OUTREACH_CAMPAIGNS, KFH_OUTREACH_CONTENTS, KFH_ATTRIBUTABLE_KEYS, type AttributableKey, type Outreach, type OutreachCounts, type OutreachRow } from "./kfhOutreachContract.js";
 
 // Collector routing is local to Lighthouse; the pinned Smith report contract stays unchanged.
@@ -71,6 +72,15 @@ export function parseKfhSignal(value: unknown): SignalKey | null {
   return value.event_value === "show" ? "install_prompt_shows" : value.event_value === "dismiss" ? "install_prompt_dismissals" : null;
 }
 
+// "Did this help?" answers: the six exact v3 keys and one of two fixed values, nothing else.
+export function parseKfhFeedback(value: unknown): FeedbackAnswer | null {
+  if (!object(value) || value.site_key !== KFH_SITE_KEY || value.page !== "directory") return null;
+  if (value.contract_version !== 3 || value.collection_mode !== "opt_out" || value.event_name !== "help_feedback") return null;
+  const keys = ["site_key", "contract_version", "collection_mode", "page", "event_name", "event_value"];
+  if (Object.keys(value).some(key => !keys.includes(key))) return null;
+  return member(value.event_value, KFH_FEEDBACK_ANSWERS) ? value.event_value as FeedbackAnswer : null;
+}
+
 function actionCounter(name: unknown, value: unknown): AttributableKey | null {
   if (name === "contact_click" && value === "resource_call") return "resource_calls";
   if (name === "contact_click" && value === "help_211") return "help_211";
@@ -117,11 +127,14 @@ export async function ingestKfhEvent(
   const event = parseKfhEvent(payload, profile);
   if (!event) {
     if (!profile.signals) return;
-    // Signals use only their own table, so a missing 0018 cannot affect core counters.
+    // Signals and answers use only their own tables, so a missing 0018 or 0020 cannot affect core counters.
     const signal = parseKfhSignal(payload);
-    if (!signal || !(await allowRate())) return;
-    await db.prepare("INSERT INTO kfh_signal_daily(day, signal, count) VALUES (?, ?, 1) ON CONFLICT(day, signal) DO UPDATE SET count = count + 1")
+    const answer = signal ? null : parseKfhFeedback(payload);
+    if ((!signal && !answer) || !(await allowRate())) return;
+    if (signal) await db.prepare("INSERT INTO kfh_signal_daily(day, signal, count) VALUES (?, ?, 1) ON CONFLICT(day, signal) DO UPDATE SET count = count + 1")
       .bind(day(now), signal).run();
+    else await db.prepare("INSERT INTO kfh_feedback_daily(day, answer, count) VALUES (?, ?, 1) ON CONFLICT(day, answer) DO UPDATE SET count = count + 1")
+      .bind(day(now), answer).run();
     return;
   }
   if (!(await allowRate())) return;
@@ -145,6 +158,7 @@ export async function pruneKfhData(db: D1Database, now: Date = new Date(), profi
   if (!profile.signals) return;
   // Separate so a missing additive 0018 table never blocks core retention.
   try { await db.prepare("DELETE FROM kfh_signal_daily WHERE day < ?").bind(shiftDay(now, -399)).run(); } catch {}
+  try { await db.prepare("DELETE FROM kfh_feedback_daily WHERE day < ?").bind(shiftDay(now, -399)).run(); } catch {}
 }
 
 async function readProductSignals(db: D1Database, now: Date): Promise<ProductSignals> {
@@ -170,6 +184,33 @@ async function readProductSignals(db: D1Database, now: Date): Promise<ProductSig
     }
     return { availability: "available", windows };
   } catch { return { availability: "unavailable", windows: null }; }
+}
+
+// Calendar-month answer totals plus listing opens for the same months.
+async function readHelpFeedback(db: D1Database, now: Date): Promise<HelpFeedback> {
+  try {
+    const months = kfhFeedbackMonths(now);
+    const start = months.previous_month.start_day, end = months.current_month.end_day;
+    const answers = await db.prepare("SELECT day, answer, count FROM kfh_feedback_daily WHERE day >= ? AND day <= ? ORDER BY day, answer")
+      .bind(start, end).all<{ day: string; answer: string; count: number }>();
+    const opens = await db.prepare("SELECT day, count FROM kfh_signal_daily WHERE signal = 'resource_opens' AND day >= ? AND day <= ? ORDER BY day")
+      .bind(start, end).all<{ day: string; count: number }>();
+    if (!answers.success || !Array.isArray(answers.results) || !opens.success || !Array.isArray(opens.results)) throw new Error("unavailable");
+    const rows = [...answers.results.map(row => ({ day: row.day, key: row.answer, count: row.count })),
+      ...opens.results.map(row => ({ day: row.day, key: "resource_opens", count: row.count }))];
+    const result = {} as NonNullable<HelpFeedback["months"]>;
+    for (const key of KFH_FEEDBACK_MONTH_KEYS) {
+      const counts = Object.fromEntries(KFH_FEEDBACK_COUNT_KEYS.map(name => [name, 0])) as FeedbackCounts;
+      for (const row of rows) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(row.day) || !member(row.key, KFH_FEEDBACK_COUNT_KEYS)
+          || !Number.isSafeInteger(row.count) || row.count < 1) throw new Error("unavailable");
+        if (row.day >= months[key].start_day && row.day <= months[key].end_day) counts[row.key as keyof FeedbackCounts] += row.count;
+      }
+      if (Object.values(counts).some(value => !Number.isSafeInteger(value))) throw new Error("unavailable");
+      result[key] = { ...months[key], counts };
+    }
+    return { availability: "available", months: result };
+  } catch { return { availability: "unavailable", months: null }; }
 }
 
 export async function buildKfhReport(db: D1Database, now: Date = new Date(), profile: KfhProfile = KINGSTON_PROFILE): Promise<KfhReport> {
@@ -199,11 +240,13 @@ export async function buildKfhReport(db: D1Database, now: Date = new Date(), pro
     }
   } catch { available = false; rows = []; }
   const signals: ProductSignals | null = !profile.signals ? null : available ? await readProductSignals(db, now) : { availability: "unavailable", windows: null };
-  return kfhReportFromRows(available ? rows : null, now, available ? outreachRows : [], signals, profile);
+  const feedback: HelpFeedback | null = !profile.signals ? null : available ? await readHelpFeedback(db, now) : { availability: "unavailable", months: null };
+  return kfhReportFromRows(available ? rows : null, now, available ? outreachRows : [], signals, profile, feedback);
 }
 
 function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredOutreach[] = [],
-  signals: ProductSignals | null = { availability: "unavailable", windows: null }, profile: KfhProfile = KINGSTON_PROFILE): KfhReport {
+  signals: ProductSignals | null = { availability: "unavailable", windows: null }, profile: KfhProfile = KINGSTON_PROFILE,
+  feedback: HelpFeedback | null = signals ? { availability: "unavailable", months: null } : null): KfhReport {
   const available = input !== null;
   const rows = input ?? [];
   const eventDays = rows.filter(row => row.metric === "event").map(row => row.day).sort();
@@ -216,7 +259,7 @@ function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredO
     const [start, end] = ranges[key].map(offset => shiftDay(now, offset));
     const counts = Object.fromEntries(KFH_COUNT_KEYS.map(key => [key, 0])) as Counts;
     for (const row of rows) if (row.metric === "event" && row.day >= start && row.day <= end) counts[row.value as CountKey] += row.count;
-    if (Object.values(counts).some(count => !Number.isSafeInteger(count))) return kfhReportFromRows(null, now, [], signals, profile);
+    if (Object.values(counts).some(count => !Number.isSafeInteger(count))) return kfhReportFromRows(null, now, [], signals, profile, feedback && { availability: "unavailable", months: null });
     windows[key] = { start_day: start, end_day: end, partial: key === "today", counts: available ? counts : null };
   }
   const rank = (metric: string): Dimension[] => {
@@ -249,7 +292,7 @@ function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredO
   }
   if (available) for (const key of KFH_ATTRIBUTABLE_KEYS) outreach.unclassified[key] = windows.last_7_complete_days.counts![key] - outreach.classified[key];
   const report: KfhReport = {
-    view: "kfh", report_contract_version: signals ? "1.3" : "1.2", site_key: profile.siteKey, generated_at: now.toISOString(),
+    view: "kfh", report_contract_version: feedback ? "1.4" : signals ? "1.3" : "1.2", site_key: profile.siteKey, generated_at: now.toISOString(),
     source: {
       availability: available ? "available" : "unavailable",
       reason: !available ? "query_failed" : eventDays.length ? "observed_activity" : "no_observed_history",
@@ -259,11 +302,13 @@ function kfhReportFromRows(input: Row[] | null, now: Date, outreachRows: StoredO
     discovery_last_7_complete_days: available ? { sources: rank("source"), campaigns: rank("campaign"), contents: rank("content") } : null,
     outreach_last_7_complete_days: available ? outreach : null,
     ...(signals ? { product_signals: available ? signals : { availability: "unavailable" as const, windows: null } } : {}),
+    ...(feedback ? { help_feedback: available ? feedback : { availability: "unavailable" as const, months: null } } : {}),
     limitations: KFH_OUTREACH_LIMITATIONS,
   };
   if (isKfhReport(report, profile.siteKey)) return report;
-  // Bad signal rows must not take down the core report.
-  if (signals?.availability === "available") return kfhReportFromRows(input, now, outreachRows, { availability: "unavailable", windows: null }, profile);
-  return kfhReportFromRows(null, now, [], signals, profile);
+  // Bad answer or signal rows must not take down the core report.
+  if (feedback?.availability === "available") return kfhReportFromRows(input, now, outreachRows, signals, profile, { availability: "unavailable", months: null });
+  if (signals?.availability === "available") return kfhReportFromRows(input, now, outreachRows, { availability: "unavailable", windows: null }, profile, feedback);
+  return kfhReportFromRows(null, now, [], signals, profile, feedback && { availability: "unavailable", months: null });
 }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.0] - 2026-10-20 (draft review candidate)
+
+- Accept Kingston's "Did this help you find food?" answers as v3 `help_feedback` with `event_value` exactly `yes` or `not_this_time`, from the existing Kingston origins only. Extra keys, outreach labels, other values and other site keys are rejected; existing events, storage and Brockville are unchanged.
+- Add additive migration 0020 (`kfh_feedback_daily`) with single-row writes outside the core batch and a separate fail-soft 400-day prune.
+- Emit KFH report 1.4: the 1.3 body plus `help_feedback` with previous-month and month-to-date UTC totals of each answer and the same months' listing opens, independently unavailable on any table, query or row failure. Add the shared `src/kfhFeedbackContract.ts`, `feedback-*` fixtures and parser, storage, month-boundary, retention, missing-table, route and isolation tests.
+- Align package versions at 1.37.0. No migration applied, Worker promoted, secret, binding, schedule, Food Help or production state changed. Rollout is Smith 0.34.0 first, 0020 applied, manual promotion, then the Kingston site release.
+
 ## [1.36.0] - 2026-10-10 (draft review candidate)
 
 - Add Brockville Food Help as a second aggregate-only community that mirrors Kingston: ingestion v3 from `https://brockville.food-help.ca` only, the same six events and labels, no product signals.
