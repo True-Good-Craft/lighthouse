@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import initSqlJs from "sql.js";
 import workerModule, { parseCanonicalEventPayload, resolveReportRequest } from "../dist/index.js";
-import { KFH_INGEST_ORIGINS, parseKfhEvent, parseKfhSignal, ingestKfhEvent, buildKfhReport, pruneKfhData } from "../dist/kfhAnalytics.js";
+import { KFH_INGEST_ORIGINS, parseKfhEvent, parseKfhSignal, parseKfhFeedback, ingestKfhEvent, buildKfhReport, pruneKfhData } from "../dist/kfhAnalytics.js";
 import { isKfhReport, KFH_SITE_KEY, KFH_ORIGINS, KFH_COUNT_KEYS } from "../dist/kfhContract.js";
 
 const worker = workerModule.fetch ? workerModule : workerModule.default;
@@ -30,12 +30,12 @@ before(async () => {
     try { const results = []; for (const statement of statements) results.push(await statement.run()); sqlite.run("COMMIT"); return results; }
     catch (error) { sqlite.run("ROLLBACK"); throw error; }
   } };
-  for (const name of ["0008_add_site_event_rate_limit.sql", "0016_add_kfh_daily.sql", "0017_add_kfh_outreach_attribution.sql", "0018_add_kfh_signal_daily.sql"]) {
+  for (const name of ["0008_add_site_event_rate_limit.sql", "0016_add_kfh_daily.sql", "0017_add_kfh_outreach_attribution.sql", "0018_add_kfh_signal_daily.sql", "0020_add_kfh_feedback_daily.sql"]) {
     await db.exec(fs.readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
 });
 after(() => { sqlite?.close(); });
-beforeEach(async () => { await db.exec("DELETE FROM kfh_daily; DELETE FROM kfh_outreach_daily; DELETE FROM kfh_signal_daily; DELETE FROM site_event_rate_limit;"); });
+beforeEach(async () => { await db.exec("DELETE FROM kfh_daily; DELETE FROM kfh_outreach_daily; DELETE FROM kfh_signal_daily; DELETE FROM kfh_feedback_daily; DELETE FROM site_event_rate_limit;"); });
 
 test("strict Kingston payload rejects sensitive fields and action attribution", () => {
   assert.equal(parseKfhEvent(payload()).counter, "page_views");
@@ -232,7 +232,7 @@ test("v2 default-on contract is explicit, isolated and persists the same bounded
   const rows = await db.prepare("SELECT metric,value,count FROM kfh_daily ORDER BY metric").all();
   assert.equal(rows.results.length,4); assert.ok(rows.results.every(row => row.count === 1));
   const report = await buildKfhReport(db,now);
-  assert.equal(report.report_contract_version,"1.3");
+  assert.equal(report.report_contract_version,"1.4");
   assert.equal(report.limitations.counts_are,"observed_activity_not_people_or_service_outcomes");
 });
 
@@ -270,7 +270,7 @@ test("v3 persists atomic independent margins; legacy totals remain readable on r
   const rows = (await db.prepare("SELECT * FROM kfh_outreach_daily").all()).results;
   assert.equal(rows.length, 6);
   assert.ok(rows.every(row => Object.keys(row).sort().join(',') === 'count,day,dimension,event,value'));
-  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-sample.json', import.meta.url), 'utf8')));
+  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/feedback-sample.json', import.meta.url), 'utf8')));
   await db.exec(fs.readFileSync(new URL('../migrations/0017_add_kfh_outreach_attribution.sql', import.meta.url), 'utf8'));
   assert.deepEqual(await buildKfhReport(db, now), report);
 });
@@ -284,20 +284,20 @@ test("failure in new attribution rolls back both tables, while missing migration
   const noMigration = { prepare(sql) { if (sql.includes('kfh_outreach_daily')) throw new Error('missing table'); return db.prepare(sql); } };
   const report = await buildKfhReport(noMigration, now);
   assert.equal(report.source.reason, 'query_failed'); assert.equal(report.outreach_last_7_complete_days, null);
-  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-unavailable.json', import.meta.url), 'utf8')));
+  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/feedback-unavailable.json', import.meta.url), 'utf8')));
 });
 
 test("v3 UTC windows, retention and inconsistent margins fail honestly", async () => {
   const accept = (date) => ingestKfhEvent(v3(), db, KFH_ORIGINS[0], async () => true, date);
   const empty = await buildKfhReport(db, now);
-  assert.deepEqual(empty, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-empty.json', import.meta.url), 'utf8')));
+  assert.deepEqual(empty, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/feedback-empty.json', import.meta.url), 'utf8')));
   for (const offset of [-400, -399, -8, -7, -1, 0]) await accept(new Date(now.getTime() + offset * 86400000));
   const report = await buildKfhReport(db, now);
   assert.equal(report.outreach_last_7_complete_days.classified.page_views, 2);
   assert.deepEqual(Object.values(report.windows).map(w => w.counts.page_views), [1, 1, 2, 1, 3]);
   await pruneKfhData(db, now);
   for (const table of ['kfh_daily', 'kfh_outreach_daily']) assert.equal((await db.prepare(`SELECT COUNT(DISTINCT day) AS n FROM ${table}`).first()).n, 5);
-  for (const mutate of [r => r.outreach_last_7_complete_days.classified.page_views++, r => r.outreach_last_7_complete_days.sources[0].count++, r => r.outreach_last_7_complete_days.sources[0].resource_id='private', r => r.outreach_last_7_complete_days.sources[0].event='pwa_installs', r => r.outreach_last_7_complete_days.sources.push(r.outreach_last_7_complete_days.sources[0]), r => r.outreach_last_7_complete_days.sources[0].value='facebook', r => r.report_contract_version='1.1', r => r.report_contract_version='1.2', r => delete r.product_signals]) {
+  for (const mutate of [r => r.outreach_last_7_complete_days.classified.page_views++, r => r.outreach_last_7_complete_days.sources[0].count++, r => r.outreach_last_7_complete_days.sources[0].resource_id='private', r => r.outreach_last_7_complete_days.sources[0].event='pwa_installs', r => r.outreach_last_7_complete_days.sources.push(r.outreach_last_7_complete_days.sources[0]), r => r.outreach_last_7_complete_days.sources[0].value='facebook', r => r.report_contract_version='1.1', r => r.report_contract_version='1.2', r => r.report_contract_version='1.3', r => delete r.product_signals, r => delete r.help_feedback]) {
     const changed = structuredClone(report); mutate(changed); assert.equal(isKfhReport(changed), false);
   }
   await db.exec("DELETE FROM kfh_outreach_daily WHERE dimension='content' AND day='2026-09-03'");
@@ -334,11 +334,11 @@ test("signals persist in their own table and a missing 0018 never affects core c
   assert.equal(isKfhReport(report), true);
   assert.deepEqual(report.product_signals.windows.last_7_complete_days, { resource_opens: 2, install_prompt_shows: 1, install_prompt_dismissals: 1 });
   assert.deepEqual(report.product_signals.windows.today, { resource_opens: 0, install_prompt_shows: 0, install_prompt_dismissals: 0 });
-  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-observed.json', import.meta.url), 'utf8')));
+  assert.deepEqual(report, JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/feedback-observed.json', import.meta.url), 'utf8')));
   // Core rows are exactly what the earlier v3 test stores; signals touched nothing else.
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_outreach_daily").first()).n, 6);
-  const { product_signals, ...core } = report;
-  const { product_signals: _ignored, ...expected } = JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-sample.json', import.meta.url), 'utf8'));
+  const { product_signals, help_feedback, ...core } = report;
+  const { product_signals: _ignored, help_feedback: _none, ...expected } = JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/feedback-sample.json', import.meta.url), 'utf8'));
   assert.deepEqual(core, expected);
 
   const noSignals = { prepare(sql) { if (sql.includes('kfh_signal_daily')) throw new Error('missing table'); return db.prepare(sql); }, batch: statements => db.batch(statements) };
@@ -346,7 +346,9 @@ test("signals persist in their own table and a missing 0018 never affects core c
   const withoutTable = await buildKfhReport(noSignals, now);
   assert.equal(isKfhReport(withoutTable), true);
   assert.deepEqual(withoutTable.product_signals, { availability: "unavailable", windows: null });
-  assert.deepEqual({ ...withoutTable, product_signals: null }, { ...report, product_signals: null });
+  // Answers report listing opens beside them, so they are unavailable together.
+  assert.deepEqual(withoutTable.help_feedback, { availability: "unavailable", months: null });
+  assert.deepEqual({ ...withoutTable, product_signals: null, help_feedback: null }, { ...report, product_signals: null, help_feedback: null });
   await pruneKfhData(noSignals, now);
   await db.exec("DROP TABLE kfh_signal_daily");
   try {
@@ -370,7 +372,7 @@ test("signal report windows, retention and validation fail closed per section", 
   }
   const unavailable = JSON.parse(fs.readFileSync(new URL('../contracts/kfh-v1/signals-unavailable.json', import.meta.url), 'utf8'));
   assert.equal(isKfhReport({ ...unavailable, product_signals: report.product_signals }), false);
-  for (const name of ['outreach-sample', 'outreach-empty', 'outreach-unavailable', 'sample', 'legacy-empty', 'signals-sample', 'signals-empty', 'signals-unavailable', 'signals-observed']) {
+  for (const name of ['outreach-sample', 'outreach-empty', 'outreach-unavailable', 'sample', 'legacy-empty', 'signals-sample', 'signals-empty', 'signals-unavailable', 'signals-observed', 'feedback-sample', 'feedback-empty', 'feedback-unavailable', 'feedback-observed']) {
     assert.equal(isKfhReport(JSON.parse(fs.readFileSync(new URL(`../contracts/kfh-v1/${name}.json`, import.meta.url), 'utf8'))), true, name);
   }
 });
@@ -380,4 +382,93 @@ test("migrated origin delivers a product signal through the public route into it
   assert.equal(response.status, 204);
   assert.deepEqual((await db.prepare("SELECT signal, count FROM kfh_signal_daily").all()).results, [{ signal: "install_prompt_shows", count: 1 }]);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_daily").first()).n, 0);
+});
+
+// The two exact bodies the Kingston site sends for "Did this help you find food?".
+const YES_BODY = '{"site_key":"kingston_food_help","contract_version":3,"collection_mode":"opt_out","page":"directory","event_name":"help_feedback","event_value":"yes"}';
+const NOT_BODY = '{"site_key":"kingston_food_help","contract_version":3,"collection_mode":"opt_out","page":"directory","event_name":"help_feedback","event_value":"not_this_time"}';
+const answer = (overrides = {}) => ({ ...JSON.parse(YES_BODY), ...overrides });
+
+test("help_feedback accepts exactly the two site bodies and nothing else", () => {
+  assert.equal(parseKfhFeedback(JSON.parse(YES_BODY)), "yes");
+  assert.equal(parseKfhFeedback(JSON.parse(NOT_BODY)), "not_this_time");
+  for (const change of [{ event_value: "maybe" }, { event_value: "Yes" }, { event_value: undefined }, { resource_id: "private" }, { visit: "0123456789abcdef" },
+    { source: "facebook" }, { campaign: "outreach_2026_09" }, { content: "post_02" }, { source: "facebook", campaign: "none", content: "none" },
+    { contract_version: 2 }, { collection_mode: undefined, consent: true }, { page: "home" }, { site_key: "brockville_food_help" }, { site_key: "tgc_site" }]) {
+    const body = answer(change); for (const key of Object.keys(body)) if (body[key] === undefined) delete body[key];
+    assert.equal(parseKfhFeedback(body), null, JSON.stringify(change));
+  }
+  // Answers never become core events or product signals.
+  for (const body of [YES_BODY, NOT_BODY]) { assert.equal(parseKfhEvent(JSON.parse(body)), null); assert.equal(parseKfhSignal(JSON.parse(body)), null); }
+});
+
+test("answers are stored as daily totals and reported as UTC calendar months beside listing opens", async () => {
+  const at = iso => new Date(`${iso}T12:00:00Z`);
+  const accept = (body, date, origin = KFH_ORIGINS[0]) => ingestKfhEvent(JSON.parse(body), db, origin, async () => true, at(date));
+  for (const [body, date] of [[YES_BODY, "2026-07-31"], [YES_BODY, "2026-08-01"], [YES_BODY, "2026-08-31"], [NOT_BODY, "2026-08-15"],
+    [YES_BODY, "2026-09-01"], [YES_BODY, "2026-09-04"], [NOT_BODY, "2026-09-04"]]) await accept(body, date);
+  for (const date of ["2026-08-02", "2026-09-02", "2026-09-03"]) await ingestKfhEvent(signal(), db, KFH_ORIGINS[0], async () => true, at(date));
+  await accept(YES_BODY, "2026-09-04", "https://brockville.food-help.ca");
+  await ingestKfhEvent(JSON.parse(YES_BODY), db, KFH_ORIGINS[0], async () => false, at("2026-09-04"));
+  const rows = (await db.prepare("SELECT * FROM kfh_feedback_daily ORDER BY day, answer").all()).results;
+  assert.ok(rows.every(row => Object.keys(row).sort().join(",") === "answer,count,day"));
+  assert.deepEqual(rows.filter(row => row.day === "2026-09-04"), [{ day: "2026-09-04", answer: "not_this_time", count: 1 }, { day: "2026-09-04", answer: "yes", count: 1 }]);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_daily").first()).n, 0);
+  const report = await buildKfhReport(db, now);
+  assert.equal(isKfhReport(report), true);
+  assert.deepEqual(report.help_feedback, { availability: "available", months: {
+    previous_month: { month: "2026-08", start_day: "2026-08-01", end_day: "2026-08-31", partial: false, counts: { yes: 2, not_this_time: 1, resource_opens: 1 } },
+    current_month: { month: "2026-09", start_day: "2026-09-01", end_day: "2026-09-04", partial: true, counts: { yes: 2, not_this_time: 1, resource_opens: 2 } },
+  } });
+  // January reaches back into the previous year.
+  const january = await buildKfhReport(db, new Date("2027-01-10T00:00:00Z"));
+  assert.equal(january.help_feedback.months.previous_month.month, "2026-12");
+  assert.equal(january.help_feedback.months.previous_month.end_day, "2026-12-31");
+  for (const mutate of [r => r.help_feedback.months.current_month.counts.yes = -1, r => r.help_feedback.months.current_month.counts.resource_id = 1,
+    r => r.help_feedback.months.previous_month.month = "2026-07", r => r.help_feedback.months.current_month.partial = false,
+    r => r.help_feedback.months.current_month.end_day = "2026-09-03", r => r.help_feedback.availability = "partial",
+    r => { r.help_feedback.availability = "unavailable"; }, r => r.help_feedback.months.listings = [], r => r.help_feedback.months.current_month.counts.yes = "2"]) {
+    const changed = structuredClone(report); mutate(changed); assert.equal(isKfhReport(changed), false);
+  }
+});
+
+test("a missing 0020 or bad answer row never affects core counts, signals or retention", async () => {
+  const at = new Date("2026-09-03T12:00:00Z");
+  await ingestKfhEvent(v3(), db, KFH_ORIGINS[0], async () => true, at);
+  await ingestKfhEvent(signal(), db, KFH_ORIGINS[0], async () => true, at);
+  const noFeedback = { prepare(sql) { if (sql.includes('kfh_feedback_daily')) throw new Error('missing table'); return db.prepare(sql); }, batch: statements => db.batch(statements) };
+  await ingestKfhEvent(JSON.parse(YES_BODY), noFeedback, KFH_ORIGINS[0], async () => true, at).catch(() => {});
+  await pruneKfhData(noFeedback, now);
+  const report = await buildKfhReport(noFeedback, now);
+  assert.equal(isKfhReport(report), true);
+  assert.deepEqual(report.help_feedback, { availability: "unavailable", months: null });
+  assert.equal(report.product_signals.availability, "available");
+  assert.equal(report.windows.last_7_complete_days.counts.page_views, 1);
+  const corrupt = { prepare(sql) { const statement = db.prepare(sql); if (!sql.includes('kfh_feedback_daily')) return statement;
+    return { bind: () => ({ all: async () => ({ success: true, results: [{ day: '2026-09-03', answer: 'maybe', count: 1 }] }) }) }; } };
+  const bad = await buildKfhReport(corrupt, now);
+  assert.equal(isKfhReport(bad), true);
+  assert.deepEqual(bad.help_feedback, { availability: "unavailable", months: null });
+  assert.equal(bad.product_signals.availability, "available");
+});
+
+test("answer retention matches the other Kingston daily totals", async () => {
+  for (const offset of [-400, -399, 0]) await ingestKfhEvent(JSON.parse(NOT_BODY), db, KFH_ORIGINS[0], async () => true, new Date(now.getTime() + offset * 86400000));
+  await pruneKfhData(db, now);
+  assert.equal((await db.prepare("SELECT COUNT(DISTINCT day) AS n FROM kfh_feedback_daily").first()).n, 2);
+});
+
+test("both exact answers travel the public route from the Kingston origin like existing events", async () => {
+  const origin = "https://kingston.food-help.ca";
+  const preflight = await worker.fetch(new Request("https://lighthouse.test/metrics/event", { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" } }), { DB: db }, { waitUntil() {} });
+  assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), origin);
+  for (const body of [YES_BODY, NOT_BODY, answer({ event_value: "maybe" }), answer({ visit: "x" })]) {
+    const response = await submit(typeof body === "string" ? JSON.parse(body) : body, { headers: { Origin: origin, "Content-Type": "text/plain;charset=UTF-8" } });
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), origin);
+    assert.equal(response.headers.get("Access-Control-Allow-Credentials"), null);
+  }
+  assert.deepEqual((await db.prepare("SELECT answer, count FROM kfh_feedback_daily ORDER BY answer").all()).results, [{ answer: "not_this_time", count: 1 }, { answer: "yes", count: 1 }]);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_daily").first()).n, 0);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM kfh_signal_daily").first()).n, 0);
 });

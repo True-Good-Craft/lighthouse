@@ -35,12 +35,12 @@ before(async () => {
     try { const results = []; for (const statement of statements) results.push(await statement.run()); sqlite.run("COMMIT"); return results; }
     catch (error) { sqlite.run("ROLLBACK"); throw error; }
   } };
-  for (const name of ["0008_add_site_event_rate_limit.sql", "0016_add_kfh_daily.sql", "0017_add_kfh_outreach_attribution.sql", "0018_add_kfh_signal_daily.sql", "0019_add_bfh_daily.sql"]) {
+  for (const name of ["0008_add_site_event_rate_limit.sql", "0016_add_kfh_daily.sql", "0017_add_kfh_outreach_attribution.sql", "0018_add_kfh_signal_daily.sql", "0019_add_bfh_daily.sql", "0020_add_kfh_feedback_daily.sql"]) {
     await db.exec(fs.readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"));
   }
 });
 after(() => { sqlite?.close(); });
-beforeEach(async () => { await db.exec("DELETE FROM kfh_daily; DELETE FROM kfh_outreach_daily; DELETE FROM kfh_signal_daily; DELETE FROM bfh_daily; DELETE FROM bfh_outreach_daily; DELETE FROM site_event_rate_limit;"); });
+beforeEach(async () => { await db.exec("DELETE FROM kfh_daily; DELETE FROM kfh_outreach_daily; DELETE FROM kfh_signal_daily; DELETE FROM kfh_feedback_daily; DELETE FROM bfh_daily; DELETE FROM bfh_outreach_daily; DELETE FROM site_event_rate_limit;"); });
 
 async function submit(body, headers = {}, env = {}) {
   const pending = [];
@@ -74,12 +74,13 @@ test("only the Brockville origin writes, only to Brockville tables, and signals 
   await accept(v3({ site_key: KFH_SITE_KEY }));
   await accept(v3({ event_name: "resource_open", source: undefined, campaign: undefined, content: undefined }));
   await accept(v3({ event_name: "install_prompt", event_value: "show", source: undefined, campaign: undefined, content: undefined }));
+  await accept(v3({ event_name: "help_feedback", event_value: "yes", source: undefined, campaign: undefined, content: undefined }));
   await accept(v3(), now, origin, async () => false);
-  for (const table of ["bfh_daily", "bfh_outreach_daily", "kfh_daily", "kfh_outreach_daily", "kfh_signal_daily"]) assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first()).n, 0, table);
+  for (const table of ["bfh_daily", "bfh_outreach_daily", "kfh_daily", "kfh_outreach_daily", "kfh_signal_daily", "kfh_feedback_daily"]) assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first()).n, 0, table);
   await accept(v3()); await accept(v3({ event_name: "outbound_click", event_value: "directions" }));
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM bfh_daily").first()).n, 5);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM bfh_outreach_daily").first()).n, 6);
-  for (const table of ["kfh_daily", "kfh_outreach_daily", "kfh_signal_daily"]) assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first()).n, 0, table);
+  for (const table of ["kfh_daily", "kfh_outreach_daily", "kfh_signal_daily", "kfh_feedback_daily"]) assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first()).n, 0, table);
   await assert.rejects(db.prepare("INSERT INTO bfh_daily VALUES ('2026-10-20', 'source', 'person@example.test', 1)").run());
 });
 
@@ -136,7 +137,7 @@ test("report 1.2 matches the pinned fixtures, is Brockville-only and fails close
   assert.equal(isKfhReport(report, BFH_SITE_KEY), true);
   assert.equal(isKfhReport(report), false); // /kfh must reject a Brockville report.
   assert.equal(isKfhReport({ ...report, site_key: KFH_SITE_KEY }, BFH_SITE_KEY), false);
-  for (const version of ["1.0", "1.1", "1.3"]) assert.equal(isKfhReport({ ...report, report_contract_version: version }, BFH_SITE_KEY), false, version);
+  for (const version of ["1.0", "1.1", "1.3", "1.4"]) assert.equal(isKfhReport({ ...report, report_contract_version: version }, BFH_SITE_KEY), false, version);
   const unavailable = await buildKfhReport({ prepare() { throw new Error("fixture failure"); } }, now, BROCKVILLE_PROFILE);
   assert.deepEqual(unavailable, fixture("unavailable"));
   assert.equal(isKfhReport(unavailable, BFH_SITE_KEY), true);
